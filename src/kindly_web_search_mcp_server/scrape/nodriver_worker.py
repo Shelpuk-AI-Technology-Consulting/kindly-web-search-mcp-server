@@ -74,6 +74,7 @@ async def _fetch_html(
     referer: str | None,
     user_agent: str,
     wait_seconds: float,
+    browser_executable_path: str | None,
 ) -> str:
     try:
         import nodriver as uc  # type: ignore
@@ -88,6 +89,7 @@ async def _fetch_html(
     try:
         browser = await uc.start(
             headless=True,
+            browser_executable_path=browser_executable_path,
             browser_args=[
                 "--window-size=1920,1080",
                 "--no-sandbox",
@@ -156,6 +158,7 @@ async def _main_async(args: argparse.Namespace) -> int:
             referer=args.referer,
             user_agent=args.user_agent,
             wait_seconds=args.wait_seconds,
+            browser_executable_path=args.browser_executable_path,
         )
     except Exception as exc:
         # Keep stderr minimal (no traceback) to avoid bloating the parent error string.
@@ -174,6 +177,7 @@ def main() -> int:
     parser.add_argument("--referer", required=False, default=None)
     parser.add_argument("--user-agent", required=True)
     parser.add_argument("--wait-seconds", type=float, default=2.0)
+    parser.add_argument("--browser-executable-path", required=False, default=None)
     args = parser.parse_args()
 
     os.environ.setdefault("PYTHONUNBUFFERED", "1")

@@ -73,6 +73,12 @@ This server expects environment variables to be provided by the runtime (IDE run
 - `SERPER_API_KEY`: Serper API key used for search requests.
   - Get it from Serper: create an account and generate an API key.
 
+### Required (System Dependency)
+- A **Chromium-based browser** is required for the universal HTML loader (`nodriver`) used by `get_content()` and by `web_search(return_full_pages=true)`.
+  - `uv` / `pip` can install Python dependencies, but **cannot install system browsers** (Chrome/Chromium/Edge/Brave). Users must install a browser separately, or run via Docker.
+  - If nodriver can’t auto-detect a browser, set `KINDLY_BROWSER_EXECUTABLE_PATH` (or `CHROME_BIN`) to the full path of the browser binary.
+  - WSL note: install the **Linux** browser inside WSL (a Windows Chrome install is not visible as a Linux binary).
+
 ### Optional (Recommended)
 - `GITHUB_TOKEN`: GitHub Personal Access Token used to retrieve GitHub Issue threads via GitHub APIs.
   - Create it in GitHub → Settings → Developer settings → Personal access tokens.
@@ -370,6 +376,9 @@ Notes:
 
 ## Troubleshooting
 
+- **nodriver says it can’t find Chrome/Chromium**: install a Chromium-based browser and/or set `KINDLY_BROWSER_EXECUTABLE_PATH`.
+  - Ubuntu/WSL example: `sudo apt-get update && sudo apt-get install -y chromium`
+  - Then: `export KINDLY_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium`
 - **No `page_content` / empty content**: the site may block automation or require login; try `get_content(url)` directly and inspect the returned Markdown error note.
 - **GitHub Issues retrieval fails**: ensure `GITHUB_TOKEN` is set and has permission to read the target repo’s issues.
 - **Noisy stdout during PDF conversion**: this repo suppresses third-party PDF conversion prints to keep MCP stdio clean (see `content/arxiv.py`).

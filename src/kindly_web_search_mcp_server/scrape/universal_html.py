@@ -64,6 +64,25 @@ def _maybe_add_src_to_pythonpath(env: dict[str, str]) -> dict[str, str]:
         return env
 
 
+def _resolve_browser_executable_path() -> str | None:
+    """
+    Resolve a Chromium-based browser binary path for nodriver.
+
+    This is required on some systems (notably fresh WSL/Linux installs) where
+    no default Chrome/Chromium binary exists in standard locations.
+    """
+    for key in (
+        "KINDLY_BROWSER_EXECUTABLE_PATH",
+        "BROWSER_EXECUTABLE_PATH",
+        "CHROME_BIN",
+        "CHROME_PATH",
+    ):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
 async def fetch_html_via_nodriver(
     url: str,
     *,
@@ -95,6 +114,10 @@ async def fetch_html_via_nodriver(
     ]
     if referer:
         cmd.extend(["--referer", referer])
+
+    browser_executable_path = _resolve_browser_executable_path()
+    if browser_executable_path:
+        cmd.extend(["--browser-executable-path", browser_executable_path])
 
     env = _maybe_add_src_to_pythonpath(dict(os.environ))
 

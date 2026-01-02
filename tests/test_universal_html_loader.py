@@ -55,6 +55,26 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("env", kwargs)
         self.assertIn("PYTHONPATH", kwargs["env"])
 
+    async def test_fetch_html_passes_browser_executable_path_when_set(self) -> None:
+        from kindly_web_search_mcp_server.scrape.universal_html import fetch_html_via_nodriver
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"<html><body><p>ok</p></body></html>", b""
+
+        with patch.dict("os.environ", {"KINDLY_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium"}), patch(
+            "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_spawn:
+            mock_spawn.return_value = _FakeProc()
+            await fetch_html_via_nodriver("https://example.com")
+
+        args, _kwargs = mock_spawn.call_args
+        self.assertIn("--browser-executable-path", args)
+        self.assertIn("/usr/bin/chromium", args)
+
 
 if __name__ == "__main__":
     unittest.main()
