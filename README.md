@@ -199,7 +199,8 @@ Project config (`.mcp.json` in repo root):
       "args": ["--stdio"],
       "env": {
         "SERPER_API_KEY": "${SERPER_API_KEY}",
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+        "KINDLY_BROWSER_EXECUTABLE_PATH": "${KINDLY_BROWSER_EXECUTABLE_PATH}"
       }
     }
   }
@@ -238,7 +239,7 @@ command = "/ABS/PATH/TO/REPO/.venv/bin/mcp-web-search"
 args = ["--stdio"]
 
 # Prefer keeping secrets out of config files:
-env_vars = ["SERPER_API_KEY", "GITHUB_TOKEN"]
+env_vars = ["SERPER_API_KEY", "GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH"]
 ```
 
 ### Gemini CLI
@@ -378,7 +379,11 @@ Notes:
 
 - **nodriver says it can’t find Chrome/Chromium**: install a Chromium-based browser and/or set `KINDLY_BROWSER_EXECUTABLE_PATH`.
   - Ubuntu/WSL example: `sudo apt-get update && sudo apt-get install -y chromium`
-  - Then: `export KINDLY_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium`
+  - Confirm it launches: run `chromium`
+  - Find the binary path: `which chromium`
+  - Then set it for your MCP client environment (or its config): `export KINDLY_BROWSER_EXECUTABLE_PATH="$(which chromium)"`
+- **nodriver can’t connect to the browser (sandbox/root error)**: Chrome’s sandbox often fails in WSL/Docker/headless environments.
+  - This repo disables nodriver sandbox by default for reliability. To force sandbox on: `export KINDLY_NODRIVER_SANDBOX=1`
 - **No `page_content` / empty content**: the site may block automation or require login; try `get_content(url)` directly and inspect the returned Markdown error note.
 - **GitHub Issues retrieval fails**: ensure `GITHUB_TOKEN` is set and has permission to read the target repo’s issues.
 - **Noisy stdout during PDF conversion**: this repo suppresses third-party PDF conversion prints to keep MCP stdio clean (see `content/arxiv.py`).

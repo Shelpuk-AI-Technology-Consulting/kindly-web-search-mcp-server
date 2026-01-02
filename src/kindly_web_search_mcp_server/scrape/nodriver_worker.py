@@ -86,13 +86,24 @@ async def _fetch_html(
     browser = None
     page = None
     ref_page = None
+    sandbox_enabled = True
+    raw_sandbox = (os.environ.get("KINDLY_NODRIVER_SANDBOX") or "").strip().lower()
+    if raw_sandbox in ("0", "false", "no", "off"):
+        sandbox_enabled = False
+    elif raw_sandbox in ("1", "true", "yes", "on"):
+        sandbox_enabled = True
+    else:
+        # Default: disable sandbox for headless automation to work reliably in WSL/Docker.
+        sandbox_enabled = False
+
     try:
         browser = await uc.start(
             headless=True,
             browser_executable_path=browser_executable_path,
+            sandbox=sandbox_enabled,
             browser_args=[
                 "--window-size=1920,1080",
-                "--no-sandbox",
+                *([] if sandbox_enabled else ["--no-sandbox"]),
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-logging",
