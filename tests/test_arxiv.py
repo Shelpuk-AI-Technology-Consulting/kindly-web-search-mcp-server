@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 class TestArxivParsing(unittest.TestCase):
     def test_parse_arxiv_url_new_id(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.arxiv import parse_arxiv_url
+        from kindly_web_search_mcp_server.content.arxiv import parse_arxiv_url
 
         self.assertEqual(parse_arxiv_url("https://arxiv.org/abs/2205.01491"), "2205.01491")
         self.assertEqual(parse_arxiv_url("https://arxiv.org/pdf/2205.01491"), "2205.01491")
@@ -18,13 +18,13 @@ class TestArxivParsing(unittest.TestCase):
         self.assertEqual(parse_arxiv_url("https://arxiv.org/pdf/2205.01491v2.pdf?download=1"), "2205.01491v2")
 
     def test_parse_arxiv_url_legacy_id(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.arxiv import parse_arxiv_url
+        from kindly_web_search_mcp_server.content.arxiv import parse_arxiv_url
 
         self.assertEqual(parse_arxiv_url("https://arxiv.org/abs/hep-th/9901001"), "hep-th/9901001")
         self.assertEqual(parse_arxiv_url("https://arxiv.org/pdf/hep-th/9901001v1.pdf"), "hep-th/9901001v1")
 
     def test_parse_arxiv_url_rejects_non_arxiv(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.arxiv import ArxivError, parse_arxiv_url
+        from kindly_web_search_mcp_server.content.arxiv import ArxivError, parse_arxiv_url
 
         with self.assertRaises(ArxivError):
             parse_arxiv_url("https://example.com/abs/2205.01491")
@@ -32,7 +32,7 @@ class TestArxivParsing(unittest.TestCase):
 
 class TestArxivAtomParsing(unittest.TestCase):
     def test_parse_atom_xml_extracts_metadata(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.arxiv import _parse_arxiv_atom_xml
+        from kindly_web_search_mcp_server.content.arxiv import _parse_arxiv_atom_xml
 
         xml = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
@@ -79,7 +79,7 @@ class TestPdfToMarkdown(unittest.TestCase):
             except Exception:
                 self.skipTest("PyMuPDF not installed in this environment")
 
-        from mcp_server_web_search_advanced_scraping.content.arxiv import _pdf_bytes_to_markdown_best_effort
+        from kindly_web_search_mcp_server.content.arxiv import _pdf_bytes_to_markdown_best_effort
 
         doc = pymupdf.open()
         try:

@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mcp_server_web_search_advanced_scraping.models import WebSearchResult
+from kindly_web_search_mcp_server.models import WebSearchResult
 
 
 class TestPageContentResolver(unittest.IsolatedAsyncioTestCase):
     async def test_web_search_populates_page_content_for_stackexchange(self) -> None:
-        from mcp_server_web_search_advanced_scraping.server import web_search
+        from kindly_web_search_mcp_server.server import web_search
 
         serper_results = [
             WebSearchResult(
@@ -24,9 +24,9 @@ class TestPageContentResolver(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "mcp_server_web_search_advanced_scraping.server.search_serper", new_callable=AsyncMock
+            "kindly_web_search_mcp_server.server.search_serper", new_callable=AsyncMock
         ) as mock_search, patch(
-            "mcp_server_web_search_advanced_scraping.server.resolve_page_content_markdown",
+            "kindly_web_search_mcp_server.server.resolve_page_content_markdown",
             new_callable=AsyncMock,
         ) as mock_resolve:
             mock_search.return_value = serper_results

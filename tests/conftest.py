@@ -1,5 +1,6 @@
 import pytest
-from mcp_server_web_search_advanced_scraping import settings
+from kindly_web_search_mcp_server import settings
+
 
 @pytest.fixture(scope="session", autouse=True)
 def patch_settings():

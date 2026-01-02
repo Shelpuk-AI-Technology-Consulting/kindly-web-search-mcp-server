@@ -16,7 +16,7 @@ configure_logging()
 LOGGER = logging.getLogger(__name__)
 
 mcp = FastMCP(
-    "web-search-advanced-scraping",
+    "kindly-web-search",
     instructions=(
         "Web search via Serper with optional scraping/extraction of result pages "
         "into Markdown for LLM consumption."

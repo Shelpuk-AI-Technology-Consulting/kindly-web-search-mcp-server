@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 class TestWikipedia(unittest.TestCase):
     def test_parse_wikipedia_url_wiki_path(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.wikipedia import parse_wikipedia_url
+        from kindly_web_search_mcp_server.content.wikipedia import parse_wikipedia_url
 
         target = parse_wikipedia_url("https://en.wikipedia.org/wiki/Apple_Inc.")
         self.assertEqual(target.host, "en.wikipedia.org")
@@ -17,19 +17,19 @@ class TestWikipedia(unittest.TestCase):
         self.assertTrue(target.api_base_url.endswith("/w/api.php"))
 
     def test_parse_wikipedia_url_index_php(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.wikipedia import parse_wikipedia_url
+        from kindly_web_search_mcp_server.content.wikipedia import parse_wikipedia_url
 
         target = parse_wikipedia_url("https://en.wikipedia.org/w/index.php?title=Pet_door")
         self.assertEqual(target.title, "Pet_door")
 
     def test_mobile_host_normalization(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.wikipedia import parse_wikipedia_url
+        from kindly_web_search_mcp_server.content.wikipedia import parse_wikipedia_url
 
         target = parse_wikipedia_url("https://en.m.wikipedia.org/wiki/Python_(programming_language)")
         self.assertEqual(target.host, "en.wikipedia.org")
 
     def test_render_truncation_marker(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.wikipedia import render_wikipedia_markdown
+        from kindly_web_search_mcp_server.content.wikipedia import render_wikipedia_markdown
 
         md = render_wikipedia_markdown(
             title="T",
@@ -43,4 +43,3 @@ class TestWikipedia(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

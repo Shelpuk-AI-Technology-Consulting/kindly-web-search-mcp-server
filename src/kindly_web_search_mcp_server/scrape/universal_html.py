@@ -78,14 +78,14 @@ async def fetch_html_via_nodriver(
     - Avoid Windows shutdown-time asyncio transport noise seen with in-process browser automation.
 
     Implementation detail:
-    - A dedicated subprocess runs `mcp_server_web_search_advanced_scraping.scrape.nodriver_worker`.
+    - A dedicated subprocess runs `kindly_web_search_mcp_server.scrape.nodriver_worker`.
     - The worker writes only HTML to stdout; all incidental output is discarded in the worker.
     """
 
     cmd = [
         sys.executable,
         "-m",
-        "mcp_server_web_search_advanced_scraping.scrape.nodriver_worker",
+        "kindly_web_search_mcp_server.scrape.nodriver_worker",
         "--url",
         url,
         "--user-agent",

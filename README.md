@@ -107,7 +107,7 @@ pip install -e ".[dev]"
 ### Option B: `uv` (fast, zero-friction)
 If you use `uv`, you can run without activating a virtualenv:
 ```bash
-uv run -m mcp_server_web_search_advanced_scraping --stdio
+uv run -m kindly_web_search_mcp_server --stdio
 ```
 
 ### Environment variables
@@ -120,8 +120,9 @@ This server expects environment variables to be set by your runtime (IDE, shell,
 ## Running the Server
 
 An entrypoint is provided via `pyproject.toml`:
-- `mcp-server` → `mcp_server_web_search_advanced_scraping.server:main`
-- `mcp-web-search` → `mcp_server_web_search_advanced_scraping.server:main` (recommended; less likely to conflict)
+- `mcp-server` → `kindly_web_search_mcp_server.server:main`
+- `mcp-web-search` → `kindly_web_search_mcp_server.server:main` (recommended; less likely to conflict)
+- `kindly-web-search` → `kindly_web_search_mcp_server.server:main` (alias)
 
 Examples:
 ```bash
@@ -135,7 +136,7 @@ mcp-web-search --http --host 0.0.0.0 --port 8000
 
 Module form (handy in some environments):
 ```bash
-python -m mcp_server_web_search_advanced_scraping --stdio
+python -m kindly_web_search_mcp_server --stdio
 ```
 
 ## Client Installation (Claude / Codex / Gemini / Cursor / Copilot)
@@ -150,7 +151,7 @@ Important: in **stdio** mode, stdout is reserved for the MCP protocol. This repo
 
 CLI install (stdio):
 ```bash
-claude mcp add --transport stdio web-search \
+claude mcp add --transport stdio kindly-web-search \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
   -- mcp-web-search --stdio
 ```
@@ -159,7 +160,7 @@ Project config (`.mcp.json` in repo root):
 ```json
 {
   "mcpServers": {
-    "web-search": {
+    "kindly-web-search": {
       "command": "mcp-web-search",
       "args": ["--stdio"],
       "env": {
@@ -175,14 +176,14 @@ Project config (`.mcp.json` in repo root):
 
 CLI install (stdio):
 ```bash
-codex mcp add web-search \
+codex mcp add kindly-web-search \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
   -- mcp-web-search --stdio
 ```
 
 Manual config (`~/.codex/config.toml`):
 ```toml
-[mcp_servers.web-search]
+[mcp_servers.kindly-web-search]
 command = "mcp-web-search"
 args = ["--stdio"]
 
@@ -197,7 +198,7 @@ Gemini uses JSON config under `mcpServers` (project `.gemini/settings.json` or u
 ```json
 {
   "mcpServers": {
-    "web-search": {
+    "kindly-web-search": {
       "command": "mcp-web-search",
       "args": ["--stdio"],
       "env": {
@@ -215,7 +216,7 @@ Project config (commonly `.cursor/mcp.json`):
 ```json
 {
   "mcpServers": {
-    "web-search": {
+    "kindly-web-search": {
       "command": "mcp-web-search",
       "args": ["--stdio"],
       "env": {
@@ -236,7 +237,7 @@ Edit `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "web-search": {
+    "kindly-web-search": {
       "command": "mcp-web-search",
       "args": ["--stdio"],
       "env": {
@@ -254,7 +255,7 @@ VS Code MCP config is typically `.vscode/mcp.json`. Example (stdio):
 ```json
 {
   "servers": {
-    "web-search": {
+    "kindly-web-search": {
       "command": "mcp-web-search",
       "args": ["--stdio"],
       "env": {
@@ -277,9 +278,9 @@ This repo is typically developed on Windows, but automation/agents may run in WS
 
 ## Testing
 
-Unit tests:
+Unit tests (recommended):
 ```bash
-python -m unittest discover -s tests -p "test_*.py"
+python -m pytest -q
 ```
 
 Live integration tests:

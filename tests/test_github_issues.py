@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 class TestGitHubIssues(unittest.TestCase):
     def test_parse_github_issue_url(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.github_issues import (
+        from kindly_web_search_mcp_server.content.github_issues import (
             GitHubIssueTarget,
             parse_github_issue_url,
         )
@@ -29,7 +29,7 @@ class TestGitHubIssues(unittest.TestCase):
         self.assertEqual(target2.number, 123)
 
     def test_parse_rejects_non_issue_urls(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.github_issues import (
+        from kindly_web_search_mcp_server.content.github_issues import (
             GitHubIssueError,
             parse_github_issue_url,
         )
@@ -41,7 +41,7 @@ class TestGitHubIssues(unittest.TestCase):
             parse_github_issue_url("https://example.com/owner/repo/issues/1")
 
     def test_render_markdown_structure(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.github_issues import render_issue_thread_markdown
+        from kindly_web_search_mcp_server.content.github_issues import render_issue_thread_markdown
 
         issue = {
             "title": "Bug: Something breaks",
@@ -75,4 +75,3 @@ class TestGitHubIssues(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -16,7 +16,7 @@ class TestSerperParsing(unittest.TestCase):
         async def run() -> None:
             os.environ["SERPER_API_KEY"] = "test_key"
 
-            from mcp_server_web_search_advanced_scraping.search.serper import search_serper
+            from kindly_web_search_mcp_server.search.serper import search_serper
 
             serper_payload = {
                 "searchParameters": {"q": "apple inc", "type": "search", "engine": "google"},

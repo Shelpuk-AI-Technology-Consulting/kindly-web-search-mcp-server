@@ -3,8 +3,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mcp_server_web_search_advanced_scraping"
+name = "kindly-web-search-mcp-server"
 version = "0.0.1"
+description = "MCP server: Serper web search + robust content retrieval."
+readme = "README.md"
+requires-python = ">=3.13"
 dependencies = [
     "mcp",
     "pydantic",
@@ -21,5 +24,6 @@ dependencies = [
 dev = ["pytest", "ruff"]
 
 [project.scripts]
-mcp-server = "mcp_server_web_search_advanced_scraping.server:main"
-mcp-web-search = "mcp_server_web_search_advanced_scraping.server:main"
+mcp-server = "kindly_web_search_mcp_server.server:main"
+mcp-web-search = "kindly_web_search_mcp_server.server:main"
+kindly-web-search = "kindly_web_search_mcp_server.server:main"

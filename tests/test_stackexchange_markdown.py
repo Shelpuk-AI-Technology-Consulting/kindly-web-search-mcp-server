@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 class TestStackExchangeMarkdown(unittest.TestCase):
     def test_renders_question_and_answers_accepted_first(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.stackexchange import render_thread_markdown
+        from kindly_web_search_mcp_server.content.stackexchange import render_thread_markdown
 
         question = {
             "title": "Example question?",
@@ -60,7 +60,7 @@ class TestStackExchangeMarkdown(unittest.TestCase):
         self.assertLess(accepted_idx, non_accepted_idx)
 
     def test_falls_back_to_html_body_when_body_markdown_missing(self) -> None:
-        from mcp_server_web_search_advanced_scraping.content.stackexchange import render_thread_markdown
+        from kindly_web_search_mcp_server.content.stackexchange import render_thread_markdown
 
         question = {
             "title": "Q",

@@ -61,7 +61,7 @@ async def main() -> None:
     ensure_src_on_sys_path(repo_root)
 
     # Environment variables are expected to be configured by the IDE/run configuration.
-    from mcp_server_web_search_advanced_scraping.server import mcp
+    from kindly_web_search_mcp_server.server import mcp
 
     query = sys.argv[1] if len(sys.argv) > 1 else "arxiv page recognition augmentation techniques"
     num_results = int(os.environ.get("NUM_RESULTS", "5"))

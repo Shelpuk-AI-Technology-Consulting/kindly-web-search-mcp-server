@@ -1,26 +1,26 @@
 from __future__ import annotations
 
-from mcp_server_web_search_advanced_scraping.content.stackexchange import (
+from .stackexchange import (
     StackExchangeError,
     fetch_stackexchange_thread_markdown,
     parse_stackexchange_url,
 )
-from mcp_server_web_search_advanced_scraping.content.github_issues import (
+from .github_issues import (
     GitHubIssueError,
     fetch_github_issue_thread_markdown,
     parse_github_issue_url,
 )
-from mcp_server_web_search_advanced_scraping.content.wikipedia import (
+from .wikipedia import (
     WikipediaError,
     fetch_wikipedia_article_markdown,
     parse_wikipedia_url,
 )
-from mcp_server_web_search_advanced_scraping.content.arxiv import (
+from .arxiv import (
     ArxivError,
     fetch_arxiv_paper_markdown,
     parse_arxiv_url,
 )
-from mcp_server_web_search_advanced_scraping.scrape.universal_html import load_url_as_markdown
+from ..scrape.universal_html import load_url_as_markdown
 
 
 async def resolve_page_content_markdown(url: str) -> str | None:

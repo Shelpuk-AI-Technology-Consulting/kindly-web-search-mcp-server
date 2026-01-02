@@ -9,8 +9,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 import anyio
 import httpx
 
-from mcp_server_web_search_advanced_scraping.scrape.extract import extract_content_as_markdown
-from mcp_server_web_search_advanced_scraping.scrape.sanitize import sanitize_markdown
+from ..scrape.extract import extract_content_as_markdown
+from ..scrape.sanitize import sanitize_markdown
 
 
 class WikipediaError(RuntimeError):

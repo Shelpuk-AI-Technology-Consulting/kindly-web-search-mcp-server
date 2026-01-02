@@ -17,7 +17,7 @@ class TestStackExchangeApiClient(unittest.TestCase):
             os.environ.pop("STACKEXCHANGE_KEY", None)
             os.environ["STACKEXCHANGE_FILTER"] = "test_filter"
 
-            from mcp_server_web_search_advanced_scraping.content.stackexchange import (
+            from kindly_web_search_mcp_server.content.stackexchange import (
                 StackExchangeApiClient,
                 StackExchangeTarget,
             )

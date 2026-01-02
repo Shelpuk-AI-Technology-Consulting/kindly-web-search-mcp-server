@@ -7,19 +7,19 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mcp_server_web_search_advanced_scraping.models import WebSearchResult
+from kindly_web_search_mcp_server.models import WebSearchResult
 
 
 class TestWebSearchTool(unittest.IsolatedAsyncioTestCase):
     async def test_web_search_returns_results(self) -> None:
-        from mcp_server_web_search_advanced_scraping.server import web_search
+        from kindly_web_search_mcp_server.server import web_search
 
         mocked_results = [
             WebSearchResult(title="T", link="https://example.com", snippet="S", page_content=None)
         ]
 
         with patch(
-            "mcp_server_web_search_advanced_scraping.server.search_serper", new_callable=AsyncMock
+            "kindly_web_search_mcp_server.server.search_serper", new_callable=AsyncMock
         ) as mock_search:
             mock_search.return_value = mocked_results
 
@@ -34,10 +34,10 @@ class TestWebSearchTool(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(out["results"][0].get("page_content"))
 
     async def test_get_content_returns_markdown(self) -> None:
-        from mcp_server_web_search_advanced_scraping.server import get_content
+        from kindly_web_search_mcp_server.server import get_content
 
         with patch(
-            "mcp_server_web_search_advanced_scraping.server.resolve_page_content_markdown",
+            "kindly_web_search_mcp_server.server.resolve_page_content_markdown",
             new_callable=AsyncMock,
         ) as mock_resolve:
             mock_resolve.return_value = "# Title\n\nHello"
@@ -48,10 +48,10 @@ class TestWebSearchTool(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Hello", out["page_content"])
 
     async def test_get_content_handles_none(self) -> None:
-        from mcp_server_web_search_advanced_scraping.server import get_content
+        from kindly_web_search_mcp_server.server import get_content
 
         with patch(
-            "mcp_server_web_search_advanced_scraping.server.resolve_page_content_markdown",
+            "kindly_web_search_mcp_server.server.resolve_page_content_markdown",
             new_callable=AsyncMock,
         ) as mock_resolve:
             mock_resolve.return_value = None
