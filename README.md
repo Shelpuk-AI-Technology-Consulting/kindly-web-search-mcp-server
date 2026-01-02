@@ -161,7 +161,12 @@ from your project directory, so relative paths often break).
 
 ### Claude Code
 
-Prereq (WSL/Linux): install into the repo virtualenv so the executable exists:
+Prereq (WSL/Linux): install into a virtualenv so the executable exists.
+
+If you used `uv`, it will typically create `.venv/` automatically; in that case the executable will be at:
+- `$(pwd)/.venv/bin/mcp-web-search`
+
+If you prefer a dedicated virtualenv for agents/automation in this repo, use `.venv-codex/`:
 ```bash
 python -m venv .venv-codex
 .venv-codex/bin/python -m pip install -U pip
@@ -173,7 +178,10 @@ CLI install (stdio):
 claude mcp add --transport stdio kindly-web-search \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
   --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  -- "$(pwd)/.venv-codex/bin/mcp-web-search" --stdio
+  -- "$(pwd)/.venv/bin/mcp-web-search" --stdio
+
+# If you used `.venv-codex/` instead of `.venv/`, use:
+#   -- "$(pwd)/.venv-codex/bin/mcp-web-search" --stdio
 ```
 
 Project config (`.mcp.json` in repo root):
@@ -181,7 +189,7 @@ Project config (`.mcp.json` in repo root):
 {
   "mcpServers": {
     "kindly-web-search": {
-      "command": "/ABS/PATH/TO/REPO/.venv-codex/bin/mcp-web-search",
+      "command": "/ABS/PATH/TO/REPO/.venv/bin/mcp-web-search",
       "args": ["--stdio"],
       "env": {
         "SERPER_API_KEY": "${SERPER_API_KEY}",
@@ -194,18 +202,33 @@ Project config (`.mcp.json` in repo root):
 
 ### Codex (CLI / IDE extension)
 
+Prereq (WSL/Linux): install into a virtualenv so the executable exists.
+
+If you used `uv`, it will typically create `.venv/` automatically; in that case the executable will be at:
+- `$(pwd)/.venv/bin/mcp-web-search`
+
+If you prefer a dedicated virtualenv for agents/automation in this repo, use `.venv-codex/`:
+```bash
+python -m venv .venv-codex
+.venv-codex/bin/python -m pip install -U pip
+.venv-codex/bin/python -m pip install -e .
+```
+
 CLI install (stdio):
 ```bash
 codex mcp add kindly-web-search \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
   --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  -- mcp-web-search --stdio
+  -- "$(pwd)/.venv/bin/mcp-web-search" --stdio
+
+# If you used `.venv-codex/` instead of `.venv/`, use:
+#   -- "$(pwd)/.venv-codex/bin/mcp-web-search" --stdio
 ```
 
 Manual config (`~/.codex/config.toml`):
 ```toml
 [mcp_servers.kindly-web-search]
-command = "mcp-web-search"
+command = "/ABS/PATH/TO/REPO/.venv/bin/mcp-web-search"
 args = ["--stdio"]
 
 # Prefer keeping secrets out of config files:
