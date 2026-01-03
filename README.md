@@ -152,7 +152,7 @@ Make sure your API keys are set in the same shell/OS environment that launches t
 
 ## Client setup
 
-### Codex (recommended)
+### Codex
 Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
 
 CLI (no file editing) — add a local stdio MCP server:
