@@ -129,8 +129,14 @@ async def fetch_html_via_nodriver(
     )
 
     try:
+        raw_timeout = (os.environ.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS") or "").strip()
+        try:
+            timeout_seconds = float(raw_timeout) if raw_timeout else config.total_timeout_seconds
+        except ValueError:
+            timeout_seconds = config.total_timeout_seconds
+        timeout_seconds = max(1.0, min(timeout_seconds, 300.0))
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=config.total_timeout_seconds
+            proc.communicate(), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
         with contextlib.suppress(Exception):

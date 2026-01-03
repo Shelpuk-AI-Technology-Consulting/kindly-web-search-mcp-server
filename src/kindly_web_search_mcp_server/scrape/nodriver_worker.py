@@ -6,6 +6,7 @@ import io
 import os
 import shutil
 import sys
+import tempfile
 from typing import TextIO
 
 
@@ -112,6 +113,52 @@ def _resolve_sandbox_enabled() -> bool:
     return False
 
 
+def _is_retryable_browser_connect_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    if "failed to connect to browser" in message:
+        return True
+    if "connection refused" in message:
+        return True
+    if "devtoolsactiveport" in message:
+        return True
+    return False
+
+
+def _is_snap_browser(executable_path: str) -> bool:
+    try:
+        resolved = os.path.realpath(executable_path)
+    except Exception:
+        resolved = executable_path
+    return resolved.startswith("/snap/") or "/snap/" in resolved
+
+
+def _resolve_start_retry_attempts() -> int:
+    raw = (os.environ.get("KINDLY_NODRIVER_RETRY_ATTEMPTS") or "").strip()
+    try:
+        value = int(raw) if raw else 2
+    except ValueError:
+        value = 2
+    return max(1, min(value, 5))
+
+
+def _resolve_retry_backoff_seconds() -> float:
+    raw = (os.environ.get("KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else 0.5
+    except ValueError:
+        value = 0.5
+    return max(0.0, min(value, 10.0))
+
+
+def _resolve_snap_backoff_multiplier() -> float:
+    raw = (os.environ.get("KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER") or "").strip()
+    try:
+        value = float(raw) if raw else 3.0
+    except ValueError:
+        value = 3.0
+    return max(1.0, min(value, 20.0))
+
+
 async def _fetch_html(
     url: str,
     *,
@@ -137,79 +184,101 @@ async def _fetch_html(
             "No Chromium-based browser executable found. "
             "Install Chromium/Chrome or set KINDLY_BROWSER_EXECUTABLE_PATH to the browser binary path."
         )
+    is_snap = _is_snap_browser(resolved_browser_executable_path)
+    attempts = _resolve_start_retry_attempts()
+    base_backoff_seconds = _resolve_retry_backoff_seconds()
+    snap_multiplier = _resolve_snap_backoff_multiplier() if is_snap else 1.0
 
-    try:
-        browser = await uc.start(
-            headless=True,
-            browser_executable_path=resolved_browser_executable_path,
-            sandbox=sandbox_enabled,
-            browser_args=[
-                "--window-size=1920,1080",
-                *([] if sandbox_enabled else ["--no-sandbox"]),
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-logging",
-                "--log-level=3",
-                f"--user-agent={user_agent}",
-            ],
-        )
-
-        if referer:
-            ref_page = await browser.get(referer)
-            await asyncio.sleep(0.25)
-
-        page = await browser.get(url)
-        await asyncio.sleep(wait_seconds)
-
-        getter = getattr(page, "get_content", None)
-        if callable(getter):
-            content = getter()
-            if asyncio.iscoroutine(content):
-                content = await content
-        else:
-            getter = getattr(page, "content", None)
-            content = getter()
-            if asyncio.iscoroutine(content):
-                content = await content
-
-        if isinstance(content, (bytes, bytearray)):
-            return bytes(content).decode("utf-8", errors="ignore")
-        return str(content or "")
-    except Exception as exc:
-        msg = str(exc)
-        if "Failed to connect to browser" in msg:
-            is_root = False
-            try:
-                is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-            except Exception:
-                is_root = False
-            raise RuntimeError(
-                "Failed to connect to browser. "
-                f"(root={is_root}, sandbox={sandbox_enabled}, browser_executable_path={resolved_browser_executable_path!r}) "
-                "If running as root (e.g., in Docker), ensure sandbox is disabled (KINDLY_NODRIVER_SANDBOX=0). "
-                "If the browser cannot be found/started, set KINDLY_BROWSER_EXECUTABLE_PATH."
-            ) from exc
-        raise
-    finally:
-        # Best-effort cleanup. Errors here should not mask the page retrieval.
+    with tempfile.TemporaryDirectory(prefix="kindly-nodriver-") as user_data_dir:
         try:
-            for maybe_page in (page, ref_page):
-                if maybe_page is None:
-                    continue
-                closer = getattr(maybe_page, "close", None)
-                if callable(closer):
-                    maybe = closer()
-                    if asyncio.iscoroutine(maybe):
-                        await maybe
+            last_start_error: BaseException | None = None
+            for attempt in range(attempts):
+                try:
+                    browser = await uc.start(
+                        headless=True,
+                        user_data_dir=user_data_dir,
+                        browser_executable_path=resolved_browser_executable_path,
+                        sandbox=sandbox_enabled,
+                        browser_args=[
+                            "--window-size=1920,1080",
+                            *([] if sandbox_enabled else ["--no-sandbox"]),
+                            "--disable-dev-shm-usage",
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-logging",
+                            "--log-level=3",
+                            f"--user-agent={user_agent}",
+                        ],
+                    )
+                    last_start_error = None
+                    break
+                except Exception as exc:
+                    last_start_error = exc
+                    if attempt >= attempts - 1 or not _is_retryable_browser_connect_error(exc):
+                        raise
+                    backoff = base_backoff_seconds * (2**attempt) * snap_multiplier
+                    await asyncio.sleep(backoff)
 
-            if browser is not None:
-                stopper = getattr(browser, "stop", None)
-                if callable(stopper):
-                    maybe = stopper()
-                    if asyncio.iscoroutine(maybe):
-                        await maybe
-        except Exception:
-            pass
+            if browser is None:
+                raise RuntimeError(
+                    f"nodriver failed to start browser after {attempts} attempt(s)"
+                ) from last_start_error
+
+            if referer:
+                ref_page = await browser.get(referer)
+                await asyncio.sleep(0.25)
+
+            page = await browser.get(url)
+            await asyncio.sleep(wait_seconds)
+
+            getter = getattr(page, "get_content", None)
+            if callable(getter):
+                content = getter()
+                if asyncio.iscoroutine(content):
+                    content = await content
+            else:
+                getter = getattr(page, "content", None)
+                content = getter()
+                if asyncio.iscoroutine(content):
+                    content = await content
+
+            if isinstance(content, (bytes, bytearray)):
+                return bytes(content).decode("utf-8", errors="ignore")
+            return str(content or "")
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "failed to connect to browser" in msg:
+                is_root = False
+                try:
+                    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+                except Exception:
+                    is_root = False
+                raise RuntimeError(
+                    f"Failed to connect to browser after {attempts} attempt(s). "
+                    f"(root={is_root}, sandbox={sandbox_enabled}, browser_executable_path={resolved_browser_executable_path!r}) "
+                    "If running as root (e.g., in Docker), ensure sandbox is disabled (KINDLY_NODRIVER_SANDBOX=0). "
+                    "If the browser cannot be found/started, set KINDLY_BROWSER_EXECUTABLE_PATH."
+                ) from exc
+            raise
+        finally:
+            # Best-effort cleanup. Errors here should not mask the page retrieval.
+            try:
+                for maybe_page in (page, ref_page):
+                    if maybe_page is None:
+                        continue
+                    closer = getattr(maybe_page, "close", None)
+                    if callable(closer):
+                        maybe = closer()
+                        if asyncio.iscoroutine(maybe):
+                            await maybe
+
+                if browser is not None:
+                    stopper = getattr(browser, "stop", None)
+                    if callable(stopper):
+                        maybe = stopper()
+                        if asyncio.iscoroutine(maybe):
+                            await maybe
+            except Exception:
+                pass
 
 
 async def _main_async(args: argparse.Namespace) -> int:

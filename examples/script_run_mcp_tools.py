@@ -63,7 +63,7 @@ async def main() -> None:
     # Environment variables are expected to be configured by the IDE/run configuration.
     from kindly_web_search_mcp_server.server import mcp
 
-    query = sys.argv[1] if len(sys.argv) > 1 else "arxiv page recognition augmentation techniques"
+    query = sys.argv[1] if len(sys.argv) > 1 else "OpenCV affine image transformation"
     num_results = int(os.environ.get("NUM_RESULTS", "5"))
     return_full_pages = parse_bool(os.environ.get("RETURN_FULL_PAGES", "true"), default=True)
 

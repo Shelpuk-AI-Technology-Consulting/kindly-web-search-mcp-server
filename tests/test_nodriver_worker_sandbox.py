@@ -164,6 +164,41 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
                     browser_executable_path=None,
                 )
 
+    async def test_retries_on_failed_to_connect_to_browser(self) -> None:
+        from kindly_web_search_mcp_server.scrape.nodriver_worker import _fetch_html
+
+        class _FakePage:
+            def get_content(self):
+                return "<html><body>ok</body></html>"
+
+            async def close(self):
+                return None
+
+        class _FakeBrowser:
+            async def get(self, _url: str):
+                return _FakePage()
+
+            async def stop(self):
+                return None
+
+        fake_start = AsyncMock(side_effect=[RuntimeError("Failed to connect to browser"), _FakeBrowser()])
+
+        with (
+            patch.dict("sys.modules", {"nodriver": type("X", (), {"start": fake_start})}),
+            patch.dict("os.environ", {"KINDLY_NODRIVER_RETRY_ATTEMPTS": "2"}, clear=False),
+            patch("shutil.which", return_value="/snap/bin/chromium"),
+        ):
+            html = await _fetch_html(
+                "https://example.com",
+                referer=None,
+                user_agent="ua",
+                wait_seconds=0.0,
+                browser_executable_path=None,
+            )
+
+        self.assertIn("ok", html)
+        self.assertEqual(fake_start.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

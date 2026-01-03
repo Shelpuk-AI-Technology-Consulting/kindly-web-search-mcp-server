@@ -433,6 +433,9 @@ Notes:
   - Then set it for your MCP client environment (or its config): `export KINDLY_BROWSER_EXECUTABLE_PATH="$(which chromium)"`
 - **nodriver can’t connect to the browser (sandbox/root error)**: Chrome’s sandbox often fails in WSL/Docker/headless environments.
   - This repo disables nodriver sandbox by default for reliability. To force sandbox on: `export KINDLY_NODRIVER_SANDBOX=1`
+  - If this happens intermittently on first run (common with snap Chromium cold starts), increase retries/timeouts:
+    - `export KINDLY_NODRIVER_RETRY_ATTEMPTS=3`
+    - `export KINDLY_HTML_TOTAL_TIMEOUT_SECONDS=45`
 - **No `page_content` / empty content**: the site may block automation or require login; try `get_content(url)` directly and inspect the returned Markdown error note.
 - **GitHub Issues retrieval fails**: ensure `GITHUB_TOKEN` is set and has permission to read the target repo’s issues.
 - **Noisy stdout during PDF conversion**: this repo suppresses third-party PDF conversion prints to keep MCP stdio clean (see `content/arxiv.py`).
