@@ -154,6 +154,50 @@ Make sure your API keys are set in the same shell/OS environment that launches t
 
 ### Codex (recommended)
 Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+
+CLI (no file editing) — add a local stdio MCP server:
+
+macOS / Linux (Serper):
+```bash
+codex mcp add kindly-web-search \
+  --env SERPER_API_KEY="$SERPER_API_KEY" \
+  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+macOS / Linux (Tavily):
+```bash
+codex mcp add kindly-web-search \
+  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
+  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+Windows (PowerShell):
+```powershell
+codex mcp add kindly-web-search `
+  --env SERPER_API_KEY="$env:SERPER_API_KEY" `
+  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+Windows (PowerShell, Tavily):
+```powershell
+codex mcp add kindly-web-search `
+  --env TAVILY_API_KEY="$env:TAVILY_API_KEY" `
+  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+Alternative (file-based):
 Edit `~/.codex/config.toml`:
 ```toml
 [mcp_servers.kindly-web-search]
@@ -171,6 +215,49 @@ startup_timeout_sec = 120.0
 
 ### Claude Code
 Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+
+CLI (no file editing) — add a local stdio MCP server:
+
+macOS / Linux (Serper):
+```bash
+claude mcp add --transport stdio kindly-web-search \
+  --env SERPER_API_KEY="$SERPER_API_KEY" \
+  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+macOS / Linux (Tavily):
+```bash
+claude mcp add --transport stdio kindly-web-search \
+  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
+  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+Windows (PowerShell):
+```powershell
+claude mcp add --transport stdio kindly-web-search `
+  --env SERPER_API_KEY="$env:SERPER_API_KEY" `
+  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+Windows (PowerShell, Tavily):
+```powershell
+claude mcp add --transport stdio kindly-web-search `
+  --env TAVILY_API_KEY="$env:TAVILY_API_KEY" `
+  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
+  kindly-web-search-mcp-server start-mcp-server
+```
+
 If Claude Code times out while starting the server, set a 120s startup timeout (milliseconds):
 
 macOS / Linux:
@@ -183,6 +270,7 @@ Windows (PowerShell):
 $env:MCP_TIMEOUT="120000"
 ```
 
+Alternative (file-based):
 Create/edit `.mcp.json` (project scope) or `~/.config/claude-code/.mcp.json` (user scope):
 ```json
 {
