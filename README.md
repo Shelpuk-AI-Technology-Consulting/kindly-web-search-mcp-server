@@ -1,6 +1,6 @@
-# Kindly Web Search + Robust Content Retrieval MCP Server for Coding Tools
+# Kindly Web Search MCP Server
 
-Web search + "open the page and extract useful text" for AI coding tools.
+## Web search + robust content retrieval for AI coding tools.
 
 ![Kindly Web Search](assets/kindly_header.png)
 
