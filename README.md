@@ -1,591 +1,313 @@
-# Kindly MCP Server: Web Search + Robust Content Retrieval
+# Kindly Web Search MCP Server
 
-This repository contains a Python MCP server focused on **web search + high-quality content retrieval** for LLM agents.
+Web search + "open the page and extract useful text" for AI coding tools.
 
-Core idea:
-- Use **Serper** (default when configured) or **Tavily** for search results (title/link/snippet).
-- For any URL, retrieve **LLM-ready Markdown** using a robust pipeline:
-  - Prefer **source APIs** when available (StackExchange / GitHub Issues / Wikipedia / arXiv).
-  - Fall back to a **universal HTML loader** (headless browser) for other sites.
+![Kindly Web Search](assets/kindly_header.png)
 
-## MCP Tools
+## Why do we need another web search MCP server?
 
-### `web_search(query, num_results=3)`
-Searches the web and returns the top results, always including `page_content` (Markdown) for each result (best-effort) using the same pipeline as `get_content`.
+Picture this: You're debugging a cryptic error in Google Cloud Batch with GPU instances. Your AI coding assistant searches the web and finds the *perfect* StackOverflow thread. Great, right? Not quite. Here's what most web search MCP servers give your AI:
 
-Search providers (at least one required):
-- Provide `SERPER_API_KEY` and/or `TAVILY_API_KEY`.
-- If both are set, Serper is used by default and Tavily may be used as a fallback if Serper fails.
-
-**Output shape**
 ```json
 {
-  "results": [
-    {
-      "title": "Example",
-      "link": "https://example.com",
-      "snippet": "Preview text…",
-      "page_content": "# … (Markdown) …"
-    }
-  ]
+  "title": "GCP Cloud Batch fails with the GPU instance template",
+  "url": "https://stackoverflow.com/questions/76546453/...",
+  "snippet": "I am trying to run a GCP Cloud Batch job with K80 GPU. The job runs for ~30 min. and then fails..."
 }
 ```
 
-### `get_content(url)`
-Fetches a single URL and returns best-effort Markdown using the same content-resolution pipeline as `web_search(...)`.
+The question is there, but **where are the answers?** Where are the solutions that other developers tried? The workarounds? The "this worked for me" comments?
 
-**Output shape**
-```json
-{
-  "url": "https://example.com",
-  "page_content": "# … (Markdown) …"
-}
-```
+They're not there. Your AI now has to make a second call to scrape the page. Sometimes it does, sometimes it doesn't. And even when it does, most scrapers return either incomplete content or the entire webpage with navigation panels, ads, and other noise that wastes tokens and confuses the AI.
 
-## Content Resolution Pipeline (How `page_content` Is Produced)
+### The Real Problem
 
-`content.resolver.resolve_page_content_markdown()` attempts these stages in order:
-1. **StackExchange (StackOverflow + StackExchange network)** via StackExchange API.
-2. **GitHub Issues** via GitHub GraphQL API.
-3. **Wikipedia** via MediaWiki Action API (`parse`).
-4. **arXiv** via arXiv Atom API + **PDF → Markdown** (PDF-first, in-memory).
-5. **Universal HTML loader** fallback via headless `nodriver` (subprocess) → HTML → Markdown.
+At [Shelpuk AI Technology Consulting](https://shelpuk.com), we build custom AI products under a fixed-price model. Development efficiency isn't just nice to have—it's the foundation of our business. We've been using AI coding assistants since 2023 (GitHub Copilot, Cursor, Windsurf, Claude Code, Codex), and we noticed something frustrating:
 
-Important notes:
-- The universal HTML loader intentionally **skips obvious PDFs**. Generic PDF support is not implemented yet.
-- arXiv is handled as PDF (by design).
-- All retrieval is **best-effort**; anti-bot measures, paywalls, or rate limits may prevent full extraction.
+**When we developers face a complex bug, we don't just want to find a URL—we want to find the conversation.** We want to see what others tried, what worked, what didn't, and why. We want the GitHub Issue with all the comments. We want the StackOverflow thread with upvoted answers and follow-up discussions. We want the arXiv paper content, not just its abstract.
 
-## Output Limits (Defaults)
+Existing web search MCP servers are basically wrappers around search APIs. They're great at *finding* content, but terrible at *delivering* it in a way that's useful for AI coding assistants.
 
-To avoid “context bombs”, content is capped per source:
-- StackExchange: `STACKEXCHANGE_MAX_CHARS` default `20000`
-- GitHub Issues: `GITHUB_MAX_CHARS` default `20000`
-- Wikipedia: `WIKIPEDIA_MAX_CHARS` default `50000`
-- arXiv: `ARXIV_MAX_CHARS` default `50000`
-- arXiv page cap: `ARXIV_MAX_PAGES` default `30`
+### What Kindly Does Differently
 
-When truncated, the Markdown includes a `…(truncated)` marker (and/or a truncation note).
+We built Kindly Web Search because we needed our AI assistants to work the way *we* work. When searching for solutions, Kindly:
 
-## Configuration (Environment Variables)
+- **Integrates directly with APIs** for StackExchange, GitHub Issues, arXiv, and Wikipedia—presenting content in LLM-optimized formats with proper structure
+- **Returns the full conversation** in a single call: questions, answers, comments, reactions, and metadata
+- **Parses any webpage in real-time** using a headless browser for cutting-edge issues that were literally posted yesterday
+- **Passes all useful content to the LLM immediately**—no need for a second scraping call
+- **Supports multiple search providers** (Serper and Tavily) with intelligent fallback
 
-This server expects environment variables to be provided by the runtime (IDE run configuration, shell export, or container env). The application code **does not auto-load** a local `.env` file.
+The result? When Claude Code or Codex searches for that GPU batch error, it gets the question *and* the answers. The code snippets. The "this fixed it for me" comments. Everything it needs to help you solve the problem—**in one call**.
 
-### Required
-- `SERPER_API_KEY` or `TAVILY_API_KEY`: at least one search provider API key must be set.
-  - If both are set, Serper is used by default and Tavily is used as a fallback if Serper fails.
-  - If only one is set, that provider is used.
-  - Get it from Serper or Tavily: create an account and generate an API key.
+## One MCP Server to Rule Them All
 
-### Required (System Dependency)
-- A **Chromium-based browser** is required for the universal HTML loader (`nodriver`) used by `get_content()` and by `web_search(...)` for most non-API sources.
-  - `uv` / `pip` can install Python dependencies, but **cannot install system browsers** (Chrome/Chromium/Edge/Brave). Users must install a browser separately, or run via Docker.
-  - If nodriver can’t auto-detect a browser, set `KINDLY_BROWSER_EXECUTABLE_PATH` (or one of the fallbacks) to the full path of the browser binary.
-    - Resolution order: `KINDLY_BROWSER_EXECUTABLE_PATH` → `BROWSER_EXECUTABLE_PATH` → `CHROME_BIN` → `CHROME_PATH` → nodriver auto-detect.
-  - WSL note: install the **Linux** browser inside WSL (a Windows Chrome install is not visible as a Linux binary).
+Kindly eliminates the need for:
+- ✅ Generic web search MCP servers
+- ✅ StackOverflow MCP servers
+- ✅ Web scraping MCP servers (Playwright, Puppeteer, etc.)
 
-### Optional (Recommended)
-- `GITHUB_TOKEN`: GitHub Personal Access Token used to retrieve GitHub Issue threads via GitHub APIs.
-  - Create it in GitHub → Settings → Developer settings → Personal access tokens.
-  - For public repos, a **read-only token** is highly recommended: it enables richer `get_content()` / `web_search(...)` results for GitHub Issues pages. It is not mandatory, but without it GitHub Issues URLs may fall back to generic HTML extraction and produce a poorer representation (missing full thread context).
-  - For classic tokens: `public_repo` is usually enough for public repositories. For private repos: `repo` (or equivalent fine-grained read permissions).
-- `WIKIPEDIA_USER_AGENT`: Wikimedia asks API clients to use a descriptive User-Agent (ideally with contact info).
-- `ARXIV_USER_AGENT`: User-Agent string for arXiv API + PDF requests.
+It also significantly reduces reliance on GitHub MCP servers by providing structured Issue/PR content through intelligent extraction.
 
-### Optional (Tuning)
-- `LOG_LEVEL` (default `WARNING`): logging verbosity. Logs go to stderr in stdio mode (stdout is reserved for MCP).
-- `GITHUB_MAX_COMMENTS` (default `50`): max issue comments to fetch.
-- `GITHUB_MAX_CHARS` (default `20000`): max Markdown characters returned for a GitHub issue thread.
-- `STACKEXCHANGE_KEY`: optional StackExchange API key (higher quotas).
-- `STACKEXCHANGE_FILTER`: StackExchange API filter (default `withbody`).
-- `STACKEXCHANGE_MAX_CHARS` (default `20000`): max Markdown characters returned for a StackExchange thread.
-- `WIKIPEDIA_MAX_CHARS` (default `50000`): max Markdown characters returned for a Wikipedia article.
-- `ARXIV_MAX_CHARS` (default `50000`): max Markdown characters returned for an arXiv paper render.
-- `ARXIV_MAX_PAGES` (default `30`): max PDF pages processed for arXiv.
-- `KINDLY_HTML_TOTAL_TIMEOUT_SECONDS` (default `20`, clamped `1–300`): total timeout for a single universal HTML fetch (nodriver worker subprocess).
-- `KINDLY_NODRIVER_RETRY_ATTEMPTS` (default `3`, clamped `1–5`): nodriver start/connect retry attempts.
-- `KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS` (default `0.5`, clamped `0–10`): base backoff between retries.
-- `KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER` (default `3.0`, clamped `1–20`): extra backoff multiplier for snap Chromium cold starts.
-- `KINDLY_NODRIVER_SANDBOX` (default `0`): set to `1` to enable Chrome sandbox (may break in WSL/Docker).
-- `MCP_ALLOW_TTY_STDIO` (default `0`): set to `1` to allow `--stdio` when stdin is a TTY.
+Kindly has been our daily companion in production work for months, saving us countless hours and improving the effectiveness of our AI coding assistants. We're excited to share it with the community!
 
-## Installation
+**Tools**
+- `web_search(query, num_results=3)` → top results with `title`, `link`, `snippet`, and `page_content` (Markdown, best-effort).
+- `get_content(url)` → `page_content` (Markdown, best-effort).
 
-This project is a standard Python package. It exposes a console script and can also be run via `python -m ...`.
+Search uses **Serper** (primary, if configured) or **Tavily**, and page extraction uses a local Chromium-based browser via `nodriver`.
 
-### Option A: `pip`
+## Requirements
+- A search API key: `SERPER_API_KEY` **or** `TAVILY_API_KEY`
+- A Chromium-based browser installed on the same machine running the MCP client (Chrome/Chromium/Edge/Brave)
+- Highly recommended: `GITHUB_TOKEN` (renders GitHub Issues/PRs in a much more LLM-friendly format: question + answers/comments + reactions/metadata; fewer rate limits)
+
+`GITHUB_TOKEN` can be read-only and limited to public repositories to avoid security/privacy concerns.
+
+## Quickstart
+
+### 1) Install `uvx`
+macOS / Linux:
 ```bash
-pip install .
-```
-
-For editable/dev installs:
-```bash
-pip install -e ".[dev]"
-```
-
-### Option B: `uv` (fast, zero-friction)
-If you use `uv`, you can run without activating a virtualenv:
-```bash
-# When launched by an MCP client (stdio):
-uv run -m kindly_web_search_mcp_server --stdio
-
-# For manual testing (Streamable HTTP):
-uv run -m kindly_web_search_mcp_server --http --host 127.0.0.1 --port 8000
-```
-
-### Option C: `uvx` (run from Git, no local install)
-Install `uv` / `uvx` (Astral) if you don’t have it yet:
-```bash
-# macOS / Linux:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Windows (PowerShell):
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+irm https://astral.sh/uv/install.ps1 | iex
 ```
 
-Recommended (runs the server entrypoint directly):
+Restart your terminal so `uvx` is available.
+
+Verify:
 ```bash
-uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server mcp-web-search --stdio
+uvx --version
 ```
 
-You can pin to a branch/tag/commit:
+### 2) Install Chromium (needed by `nodriver`)
+macOS (Homebrew):
 ```bash
-uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server@v0.0.1 mcp-web-search --stdio
+brew install --cask chromium
 ```
 
-### Environment variables
-This server expects environment variables to be set by your runtime (IDE, shell, CI, container).
+Windows:
+- Install **Chrome** or **Edge** normally.
+- Optional (PowerShell): `winget install --id Google.Chrome -e`
 
-- Copy `.env.example` into your secret manager / IDE run config values (do not commit real secrets). This repo does not auto-load `.env`.
-- Required: `SERPER_API_KEY` or `TAVILY_API_KEY`
-- Recommended: `GITHUB_TOKEN`, `WIKIPEDIA_USER_AGENT`, `ARXIV_USER_AGENT`
-
-## Running the Server
-
-An entrypoint is provided via `pyproject.toml`:
-- `mcp-web-search` → `kindly_web_search_mcp_server.server:main` (**recommended**)
-- `kindly-web-search` → `kindly_web_search_mcp_server.server:main` (alias)
-- `mcp-server` → `kindly_web_search_mcp_server.server:main` (generic name; may conflict)
-- `kindly-web-search-mcp-server` → `kindly_web_search_mcp_server.cli:main` (wrapper; supports `start-mcp-server --context ...`)
-
-Note: `--stdio` is meant to be launched by an MCP client. If you run it directly in a terminal and press Enter, the
-server will try to parse your input as JSON-RPC and log errors. For interactive/manual runs, prefer `--http`.
-
-Examples:
+Linux (Ubuntu/Debian):
 ```bash
-mcp-web-search --stdio
+sudo apt-get update
+sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
 ```
 
-Streamable HTTP (useful for gateways / remote deployments):
+Linux (Fedora):
 ```bash
-mcp-web-search --http --host 0.0.0.0 --port 8000
+sudo dnf install -y chromium
 ```
 
-Security note: binding to `0.0.0.0` exposes the server to your network. Prefer `--host 127.0.0.1` for local-only use.
+### 3) Set your key(s)
+Set **one** search key (required):
 
-Module form (handy in some environments):
+macOS / Linux:
 ```bash
-python -m kindly_web_search_mcp_server --stdio
+export SERPER_API_KEY="..."
+# or: export TAVILY_API_KEY="..."
 ```
 
-## Client Installation (Claude / Codex / Gemini / Cursor / Copilot)
-
-This server supports both:
-- **Local stdio** (most common): clients launch a local command and talk over stdin/stdout.
-- **Streamable HTTP** (recommended for remote/container): clients connect to a URL.
-
-Important: in **stdio** mode, stdout is reserved for the MCP protocol. This repo avoids printing on stdout during tool execution.
-
-Note: the command you configure must be executable in the environment your client runs in. If you installed this server
-into a virtualenv, prefer using an **absolute path** to the virtualenv executable (Claude Code does not run MCP servers
-from your project directory, so relative paths often break).
-
-Note on env vars in config files: different clients support different placeholder syntaxes and secret-handling mechanisms:
-- **Claude Code**: `.mcp.json` supports environment variable expansion like `${VAR}` and `${VAR:-default}`.
-- **Cursor**: `.cursor/mcp.json` supports `${env:VAR}` interpolation (and can also load from an `envFile`).
-- **VS Code / GitHub Copilot / Microsoft Copilot**: `.vscode/mcp.json` supports `${input:...}` variables (prompts on first run) and `envFile`.
-- **Gemini CLI**: `.gemini/settings.json` supports `$VAR` and `${VAR}` expansion.
-- **Codex**: `~/.codex/config.toml` does not do string interpolation; prefer `env_vars = ["NAME", ...]` to forward variables from your environment.
-- **Claude Desktop**: `claude_desktop_config.json` uses literal values; avoid hardcoding secrets in a repo.
-
-### Claude Code
-
-Prereq (WSL/Linux): install into a virtualenv so the executable exists.
-
-If you used `uv`, it will typically create `.venv/` automatically; in that case the executable will be at:
-- `$(pwd)/.venv/bin/mcp-web-search`
-
-If you prefer a dedicated virtualenv for agents/automation in this repo, use `.venv-codex/`:
-```bash
-python -m venv .venv-codex
-.venv-codex/bin/python -m pip install -U pip
-.venv-codex/bin/python -m pip install -e .
+Windows (PowerShell):
+```powershell
+$env:SERPER_API_KEY="..."
+# or: $env:TAVILY_API_KEY="..."
 ```
-Note: `.venv-codex/` is intended for Linux/WSL automation; use `.venv/` for typical local development.
 
-CLI install (stdio):
+Optional:
 ```bash
-# WARNING: `--env KEY="$VALUE"` expands in your shell; values may end up in shell history/process listings.
+export GITHUB_TOKEN="..."
+```
+
+Windows (PowerShell):
+```powershell
+$env:GITHUB_TOKEN="..."
+```
+
+If you want the best results when searching/debugging, set `GITHUB_TOKEN`: it lets the server render GitHub Issues/PRs with structure (question, each answer/comment, reactions, and metadata). Use a read-only token limited to public repositories.
+
+### 4) Add the MCP server to your client
+If you don’t have `GITHUB_TOKEN` yet, you can omit it, but GitHub Issues/PRs will be extracted with less structure.
+
+**Codex (recommended: CLI)**
+macOS / Linux:
+```bash
+codex mcp add kindly-web-search \
+  --env SERPER_API_KEY="$SERPER_API_KEY" \
+  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+Windows (PowerShell):
+```powershell
+codex mcp add kindly-web-search `
+  --env SERPER_API_KEY="$env:SERPER_API_KEY" `
+  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
+  kindly-web-search-mcp-server start-mcp-server
+```
+
+**Claude Code (recommended: CLI)**
+macOS / Linux:
+```bash
 claude mcp add --transport stdio kindly-web-search \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
-  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
   --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
-  -- "$(pwd)/.venv/bin/mcp-web-search" --stdio
-
-# If you used `.venv-codex/` instead of `.venv/`, use:
-#   -- "$(pwd)/.venv-codex/bin/mcp-web-search" --stdio
-```
-
-Tip: the `--env KEY="$VALUE"` syntax expands the variable in your shell before passing it to the command, so the actual value may appear in shell history and process listings. If you prefer config-based secrets, use `.mcp.json` with `${VAR}` expansion and set the vars in your environment.
-
-No local install (run from Git via `uvx`):
-```bash
-# WARNING: `--env KEY="$VALUE"` expands in your shell; values may end up in shell history/process listings.
-claude mcp add --transport stdio kindly-web-search \
-  --env SERPER_API_KEY="$SERPER_API_KEY" \
-  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
-  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
-    mcp-web-search --stdio
+  kindly-web-search-mcp-server start-mcp-server
 ```
 
-Project config (`.mcp.json` in repo root):
-```json
-{
-  "mcpServers": {
-    "kindly-web-search": {
-      "command": "/ABS/PATH/TO/REPO/.venv/bin/mcp-web-search",
-      "args": ["--stdio"],
-      "env": {
-        "SERPER_API_KEY": "${SERPER_API_KEY}",
-        "TAVILY_API_KEY": "${TAVILY_API_KEY}",
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}",
-        "KINDLY_BROWSER_EXECUTABLE_PATH": "${KINDLY_BROWSER_EXECUTABLE_PATH}"
-      }
-    }
-  }
-}
+Windows (PowerShell):
+```powershell
+claude mcp add --transport stdio kindly-web-search `
+  --env SERPER_API_KEY="$env:SERPER_API_KEY" `
+  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
+  kindly-web-search-mcp-server start-mcp-server
 ```
 
-### Codex (CLI / IDE extension)
+Only set **one** search key. If you use Tavily instead of Serper, use `TAVILY_API_KEY` *instead of* `SERPER_API_KEY`.
 
-Codex can run this server either from a local virtualenv (traditional install) or directly from Git via `uvx`.
+## Details
 
-#### Option A: virtualenv install
-Prereq (WSL/Linux): install into a virtualenv so the executable exists.
-
-If you used `uv`, it will typically create `.venv/` automatically; in that case the executable will be at:
-- `$(pwd)/.venv/bin/mcp-web-search`
-
-If you prefer a dedicated virtualenv for agents/automation in this repo, use `.venv-codex/`:
+### The server command (for any MCP client)
 ```bash
-python -m venv .venv-codex
-.venv-codex/bin/python -m pip install -U pip
-.venv-codex/bin/python -m pip install -e .
+uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
+  kindly-web-search-mcp-server start-mcp-server
 ```
-Note: `.venv-codex/` is intended for Linux/WSL automation; use `.venv/` for typical local development.
 
-CLI install (stdio):
+### Browser setup (when auto-detection fails)
+If the server can’t find a browser, set `KINDLY_BROWSER_EXECUTABLE_PATH` to your browser binary.
+
+macOS (Homebrew Chromium):
 ```bash
-# WARNING: `--env KEY="$VALUE"` expands in your shell; values may end up in shell history/process listings.
-codex mcp add kindly-web-search \
-  --env SERPER_API_KEY="$SERPER_API_KEY" \
-  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
-  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
-  -- "$(pwd)/.venv/bin/mcp-web-search" --stdio
-
-# If you used `.venv-codex/` instead of `.venv/`, use:
-#   -- "$(pwd)/.venv-codex/bin/mcp-web-search" --stdio
+export KINDLY_BROWSER_EXECUTABLE_PATH="/Applications/Chromium.app/Contents/MacOS/Chromium"
 ```
 
-Tip: for Codex, prefer `~/.codex/config.toml` with `env_vars = ["NAME", ...]` so values stay in your environment and out of config files/command history.
-
-Manual config (`~/.codex/config.toml`):
-```toml
-[mcp_servers.kindly-web-search]
-command = "/ABS/PATH/TO/REPO/.venv/bin/mcp-web-search"
-args = ["--stdio"]
-
-# Prefer keeping secrets out of config files:
-env_vars = ["SERPER_API_KEY", "TAVILY_API_KEY", "GITHUB_TOKEN"]
-#
-# Optional: add "KINDLY_BROWSER_EXECUTABLE_PATH" if browser auto-detection fails.
-#
-# If you only use Tavily, you can omit `SERPER_API_KEY` from the list.
-```
-
-#### Option B: `uvx` from Git (no local install)
-Recommended (direct server entrypoint; simplest):
-
-CLI install (stdio):
+Linux:
 ```bash
-# WARNING: `--env KEY="$VALUE"` expands in your shell; values may end up in shell history/process listings.
-codex mcp add kindly-web-search \
-  --env SERPER_API_KEY="$SERPER_API_KEY" \
-  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
-  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
-  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
-    mcp-web-search --stdio
+export KINDLY_BROWSER_EXECUTABLE_PATH="$(command -v chromium || command -v chromium-browser)"
 ```
 
-Alternative (wrapper with `--context` flag):
-```bash
-# WARNING: `--env KEY="$VALUE"` expands in your shell; values may end up in shell history/process listings.
-codex mcp add kindly-web-search \
-  --env SERPER_API_KEY="$SERPER_API_KEY" \
-  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
-  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
-  -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
-    kindly-web-search-mcp-server start-mcp-server --context codex
+Windows (PowerShell):
+```powershell
+$env:KINDLY_BROWSER_EXECUTABLE_PATH="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 ```
 
-Manual config (`~/.codex/config.toml`):
+### Client configuration (file-based)
+Notes:
+- All examples run the same server command. Use `TAVILY_API_KEY` instead of `SERPER_API_KEY` if you’re using Tavily.
+- `GITHUB_TOKEN` is highly recommended (GitHub Issues/PRs become much more structured/usable).
+
+#### Codex (alternative: config file)
+Edit `~/.codex/config.toml`:
 ```toml
 [mcp_servers.kindly-web-search]
 command = "uvx"
-args = [
-  "--from",
-  "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
-  "mcp-web-search",
-  "--stdio"
-]
+args = ["--from", "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server", "kindly-web-search-mcp-server", "start-mcp-server"]
+env_vars = ["SERPER_API_KEY", "TAVILY_API_KEY", "GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH"]
 startup_timeout_sec = 60.0
-
-# Prefer keeping secrets out of config files:
-env_vars = ["SERPER_API_KEY", "TAVILY_API_KEY", "GITHUB_TOKEN"]
-#
-# Optional: add "KINDLY_BROWSER_EXECUTABLE_PATH" if browser auto-detection fails.
 ```
 
-Note: the wrapper command is equivalent to `mcp-web-search --stdio` but sets `KINDLY_MCP_CONTEXT` from `--context` (currently informational / compatibility-only).
-
-### Gemini CLI
-
-Gemini uses JSON config under `mcpServers` (project `.gemini/settings.json` or user `~/.gemini/settings.json`).
-String values can reference environment variables using `$VAR_NAME` or `${VAR_NAME}`.
-
+#### Claude Code (alternative: `.mcp.json`)
+Create/edit `.mcp.json` (project scope) or `~/.config/claude-code/.mcp.json` (user scope):
 ```json
 {
   "mcpServers": {
     "kindly-web-search": {
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
-        "mcp-web-search",
-        "--stdio"
-      ],
-      "env": {
-        "SERPER_API_KEY": "$SERPER_API_KEY",
-        "TAVILY_API_KEY": "$TAVILY_API_KEY",
-        "GITHUB_TOKEN": "$GITHUB_TOKEN",
-        "KINDLY_BROWSER_EXECUTABLE_PATH": "$KINDLY_BROWSER_EXECUTABLE_PATH"
-      }
+      "args": ["--from", "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server", "kindly-web-search-mcp-server", "start-mcp-server"],
+      "env": { "SERPER_API_KEY": "${SERPER_API_KEY}", "GITHUB_TOKEN": "${GITHUB_TOKEN}", "KINDLY_BROWSER_EXECUTABLE_PATH": "${KINDLY_BROWSER_EXECUTABLE_PATH}" }
     }
   }
 }
 ```
 
-### Cursor
-
-Project config (commonly `.cursor/mcp.json`):
-Note: Cursor requires `"type": "stdio"` for stdio-based servers.
+#### Cursor
+Create `.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
     "kindly-web-search": {
       "type": "stdio",
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
-        "mcp-web-search",
-        "--stdio"
-      ],
-      "env": {
-        "SERPER_API_KEY": "${env:SERPER_API_KEY}",
-        "TAVILY_API_KEY": "${env:TAVILY_API_KEY}",
-        "GITHUB_TOKEN": "${env:GITHUB_TOKEN}",
-        "KINDLY_BROWSER_EXECUTABLE_PATH": "${env:KINDLY_BROWSER_EXECUTABLE_PATH}"
-      }
+      "args": ["--from", "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server", "kindly-web-search-mcp-server", "start-mcp-server"],
+      "env": { "SERPER_API_KEY": "${env:SERPER_API_KEY}", "GITHUB_TOKEN": "${env:GITHUB_TOKEN}", "KINDLY_BROWSER_EXECUTABLE_PATH": "${env:KINDLY_BROWSER_EXECUTABLE_PATH}" }
     }
   }
 }
 ```
 
-### Claude Desktop
+#### Gemini CLI
+Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
+```json
+{
+  "mcpServers": {
+    "kindly-web-search": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server", "kindly-web-search-mcp-server", "start-mcp-server"],
+      "env": { "SERPER_API_KEY": "$SERPER_API_KEY", "GITHUB_TOKEN": "$GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH": "$KINDLY_BROWSER_EXECUTABLE_PATH" }
+    }
+  }
+}
+```
 
+#### Claude Desktop
 Edit `claude_desktop_config.json`:
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\\Claude\\claude_desktop_config.json`
 
-Security note: this file contains secrets if you put API keys in it. Do not commit it into a repository.
-
 ```json
 {
   "mcpServers": {
     "kindly-web-search": {
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
-        "mcp-web-search",
-        "--stdio"
-      ],
-      "env": {
-        "SERPER_API_KEY": "YOUR_SERPER_API_KEY",
-        "TAVILY_API_KEY": "YOUR_TAVILY_API_KEY",
-        "GITHUB_TOKEN": "YOUR_GITHUB_TOKEN",
-        "KINDLY_BROWSER_EXECUTABLE_PATH": "/path/to/chromium"
-      }
+      "args": ["--from", "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server", "kindly-web-search-mcp-server", "start-mcp-server"],
+      "env": { "SERPER_API_KEY": "PASTE_SERPER_OR_USE_TAVILY_API_KEY", "GITHUB_TOKEN": "PASTE_GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH": "PASTE_IF_NEEDED" }
     }
   }
 }
 ```
 
-### GitHub Copilot (VS Code) + Microsoft Copilot (local)
-
-VS Code MCP config is typically `.vscode/mcp.json`.
-VS Code MCP support is available starting from VS Code `1.102` and requires access to Copilot.
-
-This example uses **input variables** so you don’t have to hardcode secrets in the file (VS Code will prompt once and store them):
-Security best practice: this `${input:...}` approach stores secrets in VS Code’s secret storage rather than in your repo files.
+#### GitHub Copilot / Microsoft Copilot (VS Code)
+Create `.vscode/mcp.json`:
 ```json
 {
-  "inputs": [
-    {
-      "type": "promptString",
-      "id": "serper-api-key",
-      "description": "Serper API key (leave empty if using Tavily only)",
-      "password": true
-    },
-    {
-      "type": "promptString",
-      "id": "tavily-api-key",
-      "description": "Tavily API key (leave empty if using Serper only)",
-      "password": true
-    },
-    {
-      "type": "promptString",
-      "id": "github-token",
-      "description": "GitHub token (optional; improves GitHub Issues extraction)",
-      "password": true
-    },
-    {
-      "type": "promptString",
-      "id": "chromium-path",
-      "description": "Chromium/Chrome binary path (optional; leave empty to auto-detect)",
-      "password": false
-    }
-  ],
   "servers": {
-    "kindlyWebSearch": {
+    "kindly-web-search": {
       "type": "stdio",
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
-        "mcp-web-search",
-        "--stdio"
-      ],
+      "args": ["--from", "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server", "kindly-web-search-mcp-server", "start-mcp-server"],
       "env": {
         "SERPER_API_KEY": "${input:serper-api-key}",
         "TAVILY_API_KEY": "${input:tavily-api-key}",
         "GITHUB_TOKEN": "${input:github-token}",
-        "KINDLY_BROWSER_EXECUTABLE_PATH": "${input:chromium-path}"
+        "KINDLY_BROWSER_EXECUTABLE_PATH": "${input:browser-path}"
       }
     }
-  }
+  },
+  "inputs": [
+    { "id": "serper-api-key", "type": "promptString", "description": "Serper API key (leave empty if using Tavily)" },
+    { "id": "tavily-api-key", "type": "promptString", "description": "Tavily API key (leave empty if using Serper)" },
+    { "id": "github-token", "type": "promptString", "description": "GitHub token (recommended)" },
+    { "id": "browser-path", "type": "promptString", "description": "Browser binary path (only if needed)" }
+  ]
 }
 ```
 
-Note: the server key `kindlyWebSearch` uses camelCase to match VS Code naming conventions; other clients use kebab-case like `kindly-web-search`.
+### Troubleshooting (common)
+- “No Chromium-based browser executable found”: install Chrome/Chromium/Edge and (if needed) set `KINDLY_BROWSER_EXECUTABLE_PATH`.
+- “web_search fails: no provider key”: set `SERPER_API_KEY` or `TAVILY_API_KEY` in your client config.
+- “GitHub Issues/PRs look unstructured”: set `GITHUB_TOKEN` (read-only, public-only is fine).
+- Some sites block automation: `page_content` may contain a short error note; try `get_content(url)` to see the exact failure.
 
-For enterprise / hosted scenarios (Copilot Studio / Microsoft Copilot), prefer running this MCP server remotely over **HTTPS Streamable HTTP** and store secrets in the hosting platform (not in client config files).
-
-## Development Environments (Windows + WSL)
-
-This repo is typically developed on Windows, but automation/agents may run in WSL/Linux.
-
-- `.venv/` may contain **Windows** Python. Use it in PyCharm/Windows only.
-- `.venv-codex/` is a **Linux/WSL** virtualenv used by automation in this repo. Do not use `.venv/` from WSL.
-
-## Testing
-
-Unit tests (recommended):
-```bash
-python -m pytest -q
-```
-
-## Logging
-
-Logs go to **stderr** (stdout is reserved for MCP stdio transport). Control verbosity with `LOG_LEVEL` (default `WARNING`).
-
-Live integration tests:
-- Set `RUN_LIVE_TESTS=1` to enable (default: skipped).
-- `tests/test_serper_live.py` will load `SERPER_API_KEY` from:
-  1) your environment (preferred), otherwise
-  2) `tests/.env.test` (gitignored)
-
-## Examples
-
-- `examples/script_run_mcp_tools.py` demonstrates calling the tool functions directly (useful for local debugging).
-
-## Docker
-
-This repo includes a `Dockerfile` for a “no local Python install” path.
-
-Build:
-```bash
-docker build -t mcp-web-search:local .
-```
-
-Run as a stdio MCP server (works with clients that can launch `docker run -i ...`):
-```bash
-docker run -i --rm \
-  -e SERPER_API_KEY \
-  -e TAVILY_API_KEY \
-  -e GITHUB_TOKEN \
-  -e KINDLY_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
-  mcp-web-search:local --stdio
-```
-
-Run as Streamable HTTP (for gateways / remote clients):
-```bash
-docker run --rm -p 8000:8000 \
-  -e SERPER_API_KEY \
-  -e TAVILY_API_KEY \
-  -e GITHUB_TOKEN \
-  -e KINDLY_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
-  -e FASTMCP_HOST=0.0.0.0 \
-  -e FASTMCP_PORT=8000 \
-  mcp-web-search:local --http
-```
-
-Notes:
-- Use `-i` for stdio so stdin stays open.
-- For clean signal handling, consider `docker run --init ...`.
-
-## Troubleshooting
-
-- **nodriver says it can’t find Chrome/Chromium**: install a Chromium-based browser and/or set `KINDLY_BROWSER_EXECUTABLE_PATH`.
-  - Ubuntu/WSL example: `sudo apt-get update && sudo apt-get install -y chromium`
-  - Confirm it launches: run `chromium`
-  - Find the binary path: `which chromium`
-  - Then set it for your MCP client environment (or its config): `export KINDLY_BROWSER_EXECUTABLE_PATH="$(which chromium)"`
-  - Browser executable resolution order: `KINDLY_BROWSER_EXECUTABLE_PATH` → `BROWSER_EXECUTABLE_PATH` → `CHROME_BIN` → `CHROME_PATH` → nodriver auto-detect
-- **nodriver can’t connect to the browser (sandbox/root error)**: Chrome’s sandbox often fails in WSL/Docker/headless environments.
-  - This repo disables nodriver sandbox by default for reliability. To force sandbox on: `export KINDLY_NODRIVER_SANDBOX=1`
-  - If this happens intermittently on first run (common with snap Chromium cold starts), increase retries/timeouts:
-    - `export KINDLY_NODRIVER_RETRY_ATTEMPTS=3`
-    - `export KINDLY_HTML_TOTAL_TIMEOUT_SECONDS=45`
-- **No `page_content` / empty content**: the site may block automation or require login; try `get_content(url)` directly and inspect the returned Markdown error note.
-- **GitHub Issues retrieval fails**: ensure `GITHUB_TOKEN` is set and has permission to read the target repo’s issues.
-- **Noisy stdout during PDF conversion**: this repo suppresses third-party PDF conversion prints to keep MCP stdio clean (see `content/arxiv.py`).
+### Security notes
+- Don’t commit API keys.
+- Prefer env-var expansion in config files (when supported) instead of hardcoding secrets.

@@ -71,7 +71,7 @@ def extract_content_as_markdown(html: str) -> str:
         if main_content:
             # Convert the cleaned HTML to Markdown
             # Strip out unwanted tags and configure markdownify
-            markdown_text = md(str(main_content), heading_style="ATX", strip=["a", "img"])
+            markdown_text = md(str(main_content), heading_style="ATX", strip=["a", "assets"])
             return markdown_text
         return "Could not extract main content."
 
