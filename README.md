@@ -33,9 +33,13 @@ Existing web search MCP servers are basically wrappers around search APIs. They'
 We built Kindly Web Search because we needed our AI assistants to work the way *we* work. When searching for solutions, Kindly:
 
 ✅ **Integrates directly with APIs** for StackExchange, GitHub Issues, arXiv, and Wikipedia - presenting content in LLM-optimized formats with proper structure
+
 ✅ **Returns the full conversation** in a single call: questions, answers, comments, reactions, and metadata
+
 ✅ **Parses any webpage in real-time** using a headless browser for cutting-edge issues that were literally posted yesterday
+
 ✅ **Passes all useful content to the LLM immediately** - no need for a second scraping call
+
 ✅ **Supports multiple search providers** (Serper and Tavily) with intelligent fallback
 
 Now, when Claude Code or Codex searches for that GPU batch error, it gets the question *and* the answers. The code snippets. The "this fixed it for me" comments. Everything it needs to help you solve the problem - **in one call**.
@@ -43,8 +47,11 @@ Now, when Claude Code or Codex searches for that GPU batch error, it gets the qu
 ## One MCP Server to Rule Them All
 
 Kindly eliminates the need for:
+
 ✅ Generic web search MCP servers
+
 ✅ StackOverflow MCP servers
+
 ✅ Web scraping MCP servers (Playwright, Puppeteer, etc.)
 
 It also significantly reduces reliance on GitHub MCP servers by providing structured Issue/PR content through intelligent extraction.
