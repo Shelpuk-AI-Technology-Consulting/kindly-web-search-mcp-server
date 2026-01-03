@@ -24,7 +24,7 @@ class TestPageContentResolver(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "kindly_web_search_mcp_server.server.search_serper", new_callable=AsyncMock
+            "kindly_web_search_mcp_server.server.search_web", new_callable=AsyncMock
         ) as mock_search, patch(
             "kindly_web_search_mcp_server.server.resolve_page_content_markdown",
             new_callable=AsyncMock,

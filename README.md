@@ -70,7 +70,9 @@ When truncated, the Markdown includes a `…(truncated)` marker (and/or a trunca
 This server expects environment variables to be provided by the runtime (IDE run configuration, shell export, or container env). The application code **does not auto-load** a local `.env` file.
 
 ### Required
-- `SERPER_API_KEY`: Serper API key used for search requests.
+- `SERPER_API_KEY` or `TAVILY_API_KEY`: at least one search provider API key must be set.
+  - If both are set, Serper is used by default and Tavily is used as a fallback if Serper fails.
+  - If only one is set, that provider is used.
   - Get it from Serper: create an account and generate an API key.
 
 ### Required (System Dependency)

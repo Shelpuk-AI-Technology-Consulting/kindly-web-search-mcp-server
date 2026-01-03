@@ -1,54 +1,94 @@
-# Universal HTML Loader: Chromium/nodriver Connect Failures — Requirements
+# Add Tavily as a Backup Web Search Provider — Requirements
 
 ## As Is
-- `web_search(..., return_full_pages=true)` and `get_content(url)` rely on a universal HTML fallback implemented via a `nodriver` subprocess worker (`src/kindly_web_search_mcp_server/scrape/nodriver_worker.py`).
-- Some environments fail to fetch HTML and return errors like:
-  - `Failed to connect to browser ... One of the causes could be when you are running as root ... need to pass no_sandbox=True`
-- The error is not always actionable:
-  - The server may not be running as root, yet the same message appears.
-  - Browser discovery can differ across environments (WSL/Docker/snap/apt installs).
-  - Users may not have set `KINDLY_BROWSER_EXECUTABLE_PATH`, and auto-discovery may fail.
+- The MCP server exposes `web_search(query, num_results=3, return_full_pages=true)`.
+- `web_search` currently queries **Serper** only, via `src/kindly_web_search_mcp_server/search/serper.py`.
+  - Auth: `SERPER_API_KEY` in environment.
+  - Endpoint: `POST https://google.serper.dev/search` with JSON `{ "q": "<query>", "num": <num_results> }`.
+- If `SERPER_API_KEY` is not set, `web_search` fails.
 
 ## To Be
-- The universal HTML loader should reliably launch a Chromium-based browser across common environments (WSL, Docker, local Linux) and provide actionable diagnostics when it cannot.
-- The worker should:
-  - Prefer a known browser binary when available (from env vars or `PATH`) instead of relying purely on nodriver auto-discovery.
-  - Force sandbox off when running as root (Chromium often cannot start with sandbox as root).
-  - Preserve the “no stdout noise” invariant required by MCP stdio.
+- `web_search` supports two providers:
+  1) **Serper** (primary if configured)
+  2) **Tavily** (secondary / fallback)
+- The user provides either:
+  - `SERPER_API_KEY`, or
+  - `TAVILY_API_KEY`, or
+  - both.
+- Selection rules:
+  - If both keys are present, **default to Serper**.
+  - If the primary provider fails and the other provider is available, automatically **fallback** to the secondary provider.
+  - If only one provider key is present, use that provider only (no fallback).
+  - If no provider keys are present, `web_search` fails with a clear, actionable error.
 
 ## Requirements
-1. Root-safe sandbox behavior
-   - If the worker runs as root (`os.geteuid() == 0`), it must force sandbox disabled regardless of `KINDLY_NODRIVER_SANDBOX`.
-2. Browser executable resolution
-   - If `--browser-executable-path` is not provided, the worker must attempt to resolve a browser binary from:
-     - env: `KINDLY_BROWSER_EXECUTABLE_PATH`, `BROWSER_EXECUTABLE_PATH`, `CHROME_BIN`, `CHROME_PATH`
-     - `PATH` via `shutil.which` for common names (e.g., `chromium`, `google-chrome`, `chrome`, `chromium-browser`)
-   - If no browser binary can be resolved, the worker must fail with a concise error explaining how to fix it (install Chromium or set `KINDLY_BROWSER_EXECUTABLE_PATH`).
-3. Actionable errors
-   - When nodriver fails with “Failed to connect to browser”, the worker error should include enough context to debug:
-     - whether sandbox was enabled
-     - whether the process is root
-     - which `browser_executable_path` was used (if any)
+1. Tavily search provider
+   - Implement a Tavily-backed search function with behavior equivalent to Serper for our tool output:
+     - input: `query`, `num_results`
+     - output: list of `WebSearchResult(title, link, snippet, page_content=None)`
+   - Use Tavily HTTP API (Bearer auth):
+     - `POST https://api.tavily.com/search`
+     - `Authorization: Bearer <TAVILY_API_KEY>`
+     - JSON body includes:
+       - `query` (required)
+       - `max_results` (mapped from `num_results`)
+       - `search_depth` default `basic`
+       - disable extra payloads: `include_answer=false`, `include_images=false`, `include_raw_content=false`
+   - Response mapping:
+     - Tavily `results[].title` → `WebSearchResult.title`
+     - Tavily `results[].url` → `WebSearchResult.link`
+     - Tavily `results[].content` → `WebSearchResult.snippet`
+2. Provider routing (selection + fallback)
+   - Determine available providers from environment:
+     - `SERPER_API_KEY` and `TAVILY_API_KEY`.
+   - Routing rules:
+     - If `SERPER_API_KEY` is set: primary = Serper; secondary = Tavily if `TAVILY_API_KEY` is set.
+     - Else if `TAVILY_API_KEY` is set: primary = Tavily; secondary = none.
+   - Failure handling:
+     - Fallback triggers only on transient/provider failures:
+       - HTTP 5xx, HTTP 429
+       - network/timeout errors
+       - malformed/unparseable responses
+     - Fallback does NOT trigger on:
+       - missing/invalid API key (auth/config issues; e.g., HTTP 401/403)
+       - HTTP 400 (client error)
+       - empty result sets (0 results is a valid response)
+     - If primary search raises a fallback-triggering error and a secondary provider exists, call secondary.
+     - If both fail, return the primary error (with a short note that fallback also failed), without leaking secrets.
+3. No API keys in outputs/logs
+   - Never include API keys in returned Markdown or raised error messages.
+4. Docs + env example
+   - Update `README.md` and `.env.example` to mention `TAVILY_API_KEY` and precedence/fallback behavior.
 
-## Acceptance Criteria
-1. With `os.geteuid()==0`, `_fetch_html(... )` calls `nodriver.start(..., sandbox=False, ...)` even if `KINDLY_NODRIVER_SANDBOX=1`.
-2. If `shutil.which("chromium")` returns a path and no explicit executable path is passed, `_fetch_html` forwards that path to `nodriver.start(..., browser_executable_path=...)`.
-3. When no browser executable can be resolved, `_fetch_html` raises a `RuntimeError` containing guidance to set `KINDLY_BROWSER_EXECUTABLE_PATH`.
+## Acceptance Criteria (mapped to requirements)
+1. With only `TAVILY_API_KEY` set, `web_search` returns results without requiring `SERPER_API_KEY`.
+2. With both keys set, `web_search` uses Serper by default.
+3. With both keys set and Serper returns an error (e.g., HTTP 500), `web_search` returns Tavily results instead.
+4. With neither key set, `web_search` fails with an actionable error mentioning both env vars.
+5. Errors never include the raw values of `SERPER_API_KEY` or `TAVILY_API_KEY`.
+6. If the primary provider returns fewer than `num_results`, return the available results without error.
 
 ## Testing Plan (TDD)
-- Unit tests (no real browser)
-  - Extend the existing nodriver worker sandbox tests to verify root override.
-  - Add a test for browser executable resolution via `shutil.which`.
-  - Add a test for missing browser executable producing a helpful error message.
-- Smoke test (manual)
-  - Run `get_content("https://docs.astral.sh/uv/guides/tools/")` in:
-    - local Linux/WSL with Chromium installed
-    - Docker container (root) with Chromium installed and sandbox disabled
+- Unit tests (no network)
+  - Tavily parser:
+    - Use `httpx.MockTransport` to validate request formation (`Authorization: Bearer ...`) and response parsing.
+  - Provider selection:
+    - Only Tavily key → Tavily search invoked.
+    - Both keys → Serper invoked, Tavily not invoked.
+  - Fallback behavior:
+    - Serper raises error → Tavily invoked and results returned.
+    - Serper raises error and Tavily raises error → error propagated (no secrets).
+    - Serper raises HTTP 401/403 → fallback NOT triggered.
+    - Serper returns empty results → fallback NOT triggered.
+    - Serper raises HTTP 429 → fallback triggered.
+- Live integration tests (opt-in)
+  - Similar to Serper live test pattern, gated behind `RUN_LIVE_TESTS=1` and presence of the relevant key(s).
 
 ## Implementation Plan (smallest safe increments)
-1. Implement browser executable resolution helper in `scrape/nodriver_worker.py`.
-   - Test: mock `shutil.which` and assert the chosen path is forwarded.
-2. Force sandbox off when root.
-   - Test: patch `os.geteuid` to return `0` and assert `sandbox=False`.
-3. Improve connect-failure error message with context (root/sandbox/path).
-   - Test: simulate connect failure by making `nodriver.start` raise and verify the error string.
+1. Add `src/kindly_web_search_mcp_server/search/tavily.py` implementing Tavily search.
+   - Test: unit test for request + response parsing via `MockTransport`.
+2. Add a provider router `search_web(...)` (or similar) that selects Serper/Tavily and implements fallback.
+   - Test: unit tests using mocks to assert call order and fallback behavior.
+3. Switch `server.web_search` to call the router instead of calling Serper directly.
+   - Test: update `tests/test_server.py` to patch the router rather than `search_serper`.
+4. Update `README.md` and `.env.example` to include `TAVILY_API_KEY` and document precedence/fallback.

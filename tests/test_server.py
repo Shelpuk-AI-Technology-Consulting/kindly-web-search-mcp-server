@@ -19,7 +19,7 @@ class TestWebSearchTool(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "kindly_web_search_mcp_server.server.search_serper", new_callable=AsyncMock
+            "kindly_web_search_mcp_server.server.search_web", new_callable=AsyncMock
         ) as mock_search:
             mock_search.return_value = mocked_results
 

@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
-from .search.serper import search_serper
+from .search import search_web
 from .utils.logging import configure_logging
 
 configure_logging()
@@ -130,10 +130,12 @@ def main(argv: list[str] | None = None) -> None:
         )
         raise SystemExit(2)
 
-    if not os.environ.get("SERPER_API_KEY"):
+    if not (os.environ.get("SERPER_API_KEY", "").strip() or os.environ.get("TAVILY_API_KEY", "").strip()):
         # Do not hard-fail on startup: many clients set env vars in their MCP config
         # and expect the server to at least come up for tool discovery.
-        LOGGER.warning("SERPER_API_KEY is not set; `web_search` calls will fail until it is provided.")
+        LOGGER.warning(
+            "Neither SERPER_API_KEY nor TAVILY_API_KEY is set; `web_search` calls will fail until one is provided."
+        )
 
     if transport in ("sse", "streamable-http"):
         host, port = _resolve_host_port(args.host, args.port)
@@ -177,7 +179,7 @@ async def web_search(
       - Other links fall back to a universal HTML loader (headless Nodriver) and are converted to Markdown.
     """
 
-    results = await search_serper(query, num_results=num_results)
+    results = await search_web(query, num_results=num_results)
 
     if return_full_pages:
         enriched = []

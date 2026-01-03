@@ -12,10 +12,14 @@ class SerperError(RuntimeError):
     pass
 
 
+class SerperConfigError(SerperError):
+    pass
+
+
 def _get_serper_api_key() -> str:
     api_key = os.environ.get("SERPER_API_KEY", "").strip()
     if not api_key:
-        raise SerperError(
+        raise SerperConfigError(
             "SERPER_API_KEY is not set. Configure it as an environment variable in your IDE/run configuration."
         )
     return api_key
@@ -48,7 +52,10 @@ async def search_serper(
     async def _do_request(client: httpx.AsyncClient) -> dict[str, Any]:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise SerperError("Serper response was not valid JSON.") from exc
         if not isinstance(data, dict):
             raise SerperError("Serper response was not a JSON object.")
         return data
@@ -79,4 +86,3 @@ async def search_serper(
             break
 
     return results
-
