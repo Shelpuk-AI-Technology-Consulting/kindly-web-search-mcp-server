@@ -54,7 +54,7 @@ Kindly eliminates the need for:
 
 ✅ Web scraping MCP servers (Playwright, Puppeteer, etc.)
 
-It also significantly reduces reliance on GitHub MCP servers by providing structured Issue/PR content through intelligent extraction.
+It also significantly reduces reliance on GitHub MCP servers by providing structured Issue content through intelligent extraction.
 
 Kindly has been our daily companion in production work for months, saving us countless hours and improving the effectiveness of our AI coding assistants. We're excited to share it with the community!
 
