@@ -1,113 +1,90 @@
-# Kindly Web Search MCP Server — Requirements (Tavily + uvx + non-null `page_content`)
+# Tool Description Improvements — `web_search` + `get_content`
+
+This task focuses on improving the *tool descriptions* (the `@mcp.tool()` docstrings) so that
+coding agents (Claude Code, Codex CLI, Cursor, etc.) reliably:
+- Select the correct tool (“tool discovery”).
+- Provide correct inputs (query vs. URL).
+- Interpret outputs correctly without extra back-and-forth.
+- Avoid context/token “bombs” from overly broad calls.
 
 ## As Is
-- The server is a Python MCP server built on `FastMCP`.
-- Tools:
-  - `web_search(query: str, num_results: int = 3)`:
-    - Queries a web search provider (Serper and/or Tavily).
-    - For each result, fetches and extracts the linked page into LLM-ready Markdown.
-    - Returns `{ "results": [{title, link, snippet, page_content}, ...] }`.
-  - `get_content(url: str)`:
-    - Fetches a single URL and returns `{ "url": url, "page_content": <markdown> }`.
-- Search providers:
-  - Serper: `SERPER_API_KEY` (Google Serper API).
-  - Tavily: `TAVILY_API_KEY` (Tavily Search API).
-  - If both keys are present, Serper is primary and Tavily is fallback on transient errors.
-- Content extraction pipeline:
-  - Specialized loaders (StackExchange, GitHub Issues, Wikipedia, arXiv) with a universal HTML fallback (Nodriver/Chromium in a subprocess).
-- Known pain points observed by users:
-  - Browser automation (Nodriver/Chromium) may intermittently fail to connect on the first run, especially with Snap Chromium in Linux/WSL, then succeed on subsequent invocations.
-  - Older versions exposed `return_full_pages`; when set to false, clients saw `"page_content": null` and assumed a bug.
+- `src/kindly_web_search_mcp_server/server.py` defines two MCP tools:
+  - `web_search(query: str, num_results: int = 3) -> dict`
+  - `get_content(url: str) -> dict`
+- Both tools already work and have docstrings, but the descriptions are mostly “implementation focused”
+  (pipeline details) and do not explicitly encode *agent-facing guidance* that improves:
+  - tool choice (when to use which tool),
+  - parameter selection (query vs. URL, choosing small `num_results`),
+  - expectations (best-effort extraction, truncation, PDFs/paywalls, required API keys),
+  - and safe/debugging-oriented usage patterns for coding agents.
 
 ## To Be
-- `web_search` must be a single, stable contract:
-  - No `return_full_pages` flag (no “off” switch).
-  - Always returns parsed search results and always includes a **non-null** `page_content` string for each result.
-    - If content cannot be fetched/extracted, `page_content` is a deterministic Markdown error note (never `null`).
-- Search provider routing:
-  - The server works when **either** Serper or Tavily key is present.
-  - If both keys are present:
-    - Serper is used by default.
-    - If the primary provider fails with a transient error, the server transparently retries via the secondary provider.
-- Installation:
-  - The server must be runnable via `uvx --from git+...` (no local install) on all MCP clients that support stdio commands.
-  - A thin wrapper CLI must exist for “Serena-style” invocation: `kindly-web-search-mcp-server start-mcp-server --context codex`.
-- Robustness:
-  - Nodriver should tolerate intermittent “Failed to connect to browser” startup failures via retry/backoff.
-  - All errors must avoid leaking secrets (API keys, tokens).
+- `web_search` description is optimized for coding agents:
+  - Front-loads what the tool does in one sentence.
+  - Explicitly states when to use it (debugging errors, checking API signatures/interfaces, confirming package versions, etc.).
+  - Explicitly states when *not* to use it (when a specific URL is already known; use `get_content`).
+  - Documents required configuration (`SERPER_API_KEY` or `TAVILY_API_KEY`) and common failure modes.
+  - Warns about context size and steers agents to keep `num_results` small.
+  - Documents the output schema in a way that helps agents parse it programmatically.
+- `get_content` description is optimized for coding agents:
+  - Front-loads what the tool does in one sentence.
+  - Explicitly states when to use it (user-provided URL; URL discovered via search; deep dive on a single page).
+  - Documents best-effort limitations (anti-bot/paywalls; some PDFs unsupported) and any deterministic fallbacks.
+  - Documents the output schema clearly.
 
 ## Requirements
-1. Tool contract: `web_search`
-   - Inputs:
-     - `query: str` (required)
-     - `num_results: int` (default `3`)
-   - Outputs:
-     - `results: list` of items with fields:
-       - `title: str`, `link: str`, `snippet: str`, `page_content: str` (**required, never null**)
-   - Behavior:
-     - Always fetch + extract each linked result page into Markdown (best-effort).
-     - If extraction yields “no content” or the URL is unsupported, return a deterministic Markdown note in `page_content`.
-2. Search providers: Serper + Tavily + fallback
-   - Configuration:
-     - Serper key: `SERPER_API_KEY`
-     - Tavily key: `TAVILY_API_KEY`
-   - Provider selection:
-     - If both keys are present: primary Serper, secondary Tavily.
-     - If only one is present: use that provider, no fallback.
-     - If neither is present: tool call fails with an actionable error mentioning both env vars.
-   - Fallback triggers only on transient/provider errors:
-     - HTTP 5xx, HTTP 429
-     - network/timeout errors
-     - invalid/unparseable responses
-   - No fallback on:
-     - missing/invalid API key (auth/config issues; e.g., HTTP 401/403)
-     - HTTP 400
-     - empty result sets
-3. uvx support (Git-run install)
-   - The repo must provide console scripts so that `uvx --from git+<repo> <command> ...` works.
-   - Provide a “Serena-style” wrapper command:
-     - `kindly-web-search-mcp-server start-mcp-server --context <ctx> [-- <forwarded args>]`
-4. Nodriver reliability (first-run flake)
-   - Nodriver startup should retry on known “Failed to connect to browser” cases with exponential backoff.
-   - Retry behavior must be configurable via env vars (attempts/backoff), with safe defaults.
-5. Security
-   - Never include API keys/tokens in tool outputs or error messages.
-6. Documentation
-   - README must document:
-     - Provider selection rules and env vars.
-     - `uvx` install/run examples (including “Serena-style” wrapper).
-     - Platform/client config snippets (Codex, Claude Code, Gemini CLI, Cursor, Claude Desktop, VS Code / Copilot).
+1. `web_search` tool description
+   - Must contain:
+     - “What it does” (web search + content fetch + Markdown extraction).
+     - “When to use” with coding-agent-relevant examples (debugging errors; double-checking APIs; version checks).
+     - “When not to use” guidance (prefer `get_content` if you already have a URL).
+     - Key constraints and prerequisites:
+       - Requires `SERPER_API_KEY` or `TAVILY_API_KEY`.
+        - Best-effort extraction; can be truncated; some URLs may not yield content.
+        - Explicit guidance on keeping `num_results` small to avoid large outputs (include a recommended range).
+        - Error/failure behavior guidance:
+          - What happens if no search provider API key is configured.
+          - What `page_content` looks like when extraction fails (deterministic Markdown note, never `null`).
+     - Output schema description that matches actual return shape.
+2. `get_content` tool description
+   - Must contain:
+     - “What it does” (fetch single URL + Markdown extraction).
+     - “When to use” (URL known; user-provided URL; follow-up after search).
+     - “When not to use” guidance (prefer `web_search` when you need to discover URLs first).
+     - Key constraints:
+        - Best-effort extraction; can be truncated; some PDFs/unsupported types may not yield content.
+        - Error/failure behavior guidance:
+          - What `page_content` looks like when extraction fails (deterministic Markdown note, never `null`).
+     - Output schema description that matches actual return shape.
+3. The updated descriptions must remain truthful and consistent with the actual behavior of the tools.
 
-## Acceptance Criteria (mapped to requirements)
-1. With only `TAVILY_API_KEY` set, `web_search` returns results (with non-null `page_content`) without requiring `SERPER_API_KEY`.
-2. With both keys set, `web_search` uses Serper by default.
-3. With both keys set and Serper returns an error (e.g., HTTP 500), `web_search` returns Tavily results instead.
-4. With neither key set, `web_search` fails with an actionable error mentioning both env vars.
-5. `web_search` responses never contain `"page_content": null` (the key always exists and is always a string).
-6. Errors never include the raw values of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `GITHUB_TOKEN`.
-7. `uvx --from git+<repo> kindly-web-search-mcp-server start-mcp-server --context codex` successfully launches the server in stdio mode.
+## Acceptance Criteria
+1. `web_search.__doc__` includes a “When to use” section with at least 2 coding-agent scenarios (e.g., debugging errors, verifying API signatures, checking package versions).
+2. `web_search.__doc__` includes a “When not to use” section that explicitly references `get_content`.
+3. `web_search.__doc__` mentions both `SERPER_API_KEY` and `TAVILY_API_KEY` in a configuration/prerequisites context (not only as standalone tokens).
+4. `web_search.__doc__` documents `num_results` with its default and a recommended range (context control).
+5. `web_search.__doc__` documents the return shape including `results[*].page_content`, and states that `page_content` is always a string (with a deterministic note on failure).
+6. `get_content.__doc__` includes a “When to use” section and a “When not to use” section that references `web_search`.
+7. `get_content.__doc__` documents the return shape `{url, page_content}` and states that `page_content` is always a string (with a deterministic note on failure).
+8. Existing unit tests continue to pass and a new unit test enforces the above with semantic/pattern-based checks (not exact wording matches).
 
 ## Testing Plan (TDD)
-- Unit tests (no network)
-  - Tavily request + response parsing via `httpx.MockTransport`.
-  - Provider selection + fallback rules (Serper primary, Tavily secondary):
-    - transient Serper failure triggers Tavily; auth failure does not.
-  - `web_search` response shape:
-    - `page_content` is always present and always a string.
-  - Nodriver worker retry policy:
-    - `_is_retryable_browser_connect_error` classifications.
-    - env var parsing for retry attempts/backoff.
-- Smoke tests (local, optional)
-  - Run via stdio in an MCP client (Codex/Cursor/Claude Desktop) with a real provider key and a working Chromium.
+- Unit tests (no network):
+  - Validate `web_search.__doc__` using semantic/pattern checks:
+    - env var names appear near “required/config/prerequisite”
+    - `num_results` appears near “recommended/range/context/token/limit”
+    - `get_content` appears near “when not to use/avoid/prefer”
+  - Validate `get_content.__doc__` using semantic/pattern checks:
+    - `web_search` appears near “when not to use/avoid/prefer”
+    - “PDF/unsupported” limitations are mentioned
+    - return shape `{url, page_content}` is described
+- Regression tests:
+  - Run the existing test suite to ensure no behavior changes were introduced.
 
-## Implementation Plan (smallest safe increments)
-1. Finalize the `web_search` contract (remove `return_full_pages` entirely).
-   - Test: update server tests to assert `page_content` is always present.
-2. Ensure response models match the contract (`page_content: str`, not optional).
-   - Test: pydantic validation and tool response shape tests.
-3. Confirm search routing + fallback matches requirements.
-   - Test: selection/fallback unit tests (no network).
-4. Improve nodriver startup reliability (retry/backoff defaults and doc).
-   - Test: unit tests for retry policy functions; smoke test with Snap Chromium.
-5. Ensure uvx wrapper CLI works and is documented.
-   - Test: `tests/test_uvx_cli.py` and README snippets remain consistent.
+## Implementation Plan (smallest possible changes)
+1. Update the `web_search` docstring in `src/kindly_web_search_mcp_server/server.py`.
+   - Test: new docstring unit test passes; existing tests still pass.
+2. Update the `get_content` docstring in `src/kindly_web_search_mcp_server/server.py`.
+   - Test: new docstring unit test passes; existing tests still pass.
+3. Add `tests/test_tool_descriptions.py` validating the acceptance criteria keywords.
+   - Test: `python -m pytest -q` passes.

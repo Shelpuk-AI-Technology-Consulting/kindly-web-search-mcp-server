@@ -158,22 +158,38 @@ async def web_search(
     query: str,
     num_results: int = 3,
 ) -> dict:
-    """Search the web and return result pages as Markdown.
+    """Search the web and return top results with best-effort Markdown for each result URL.
 
-    This tool is intended to:\n
-    1) query Serper (Google search API)\n
-    2) return top results with `title`, `link`, `snippet`\n
-    3) fetch each `link`, extract main content, and return it as
-       `page_content` Markdown.\n
+    When to use:
+    Especially useful for coding agents like Claude Code / Codex when you need up-to-date information.
+    - Debug an error by searching the exact message/stack trace (often best in quotes).
+    - Double-check API signatures, interfaces, and breaking changes in official docs.
+    - Confirm current package versions, release notes, and migration guides.
+    - Find GitHub issues / StackOverflow threads / authoritative references for a topic.
 
-    Parameters
-    - `query`: the search query string.
-    - `num_results`: number of top search results to return (default: 3).
+    When not to use:
+    - If you already have a specific URL to read → use `get_content(url)` instead.
 
-    Notes
-    - Page content resolution is best-effort:
-      - StackExchange links are fetched via the StackExchange API.
-      - Other links fall back to a universal HTML loader (headless Nodriver) and are converted to Markdown.
+    Args:
+    - query: Search query string. Prefer specific keywords and exact error text when applicable.
+    - num_results: Number of results to return. Default is 3; recommended range is 1–5 to limit
+      context size and keep results targeted.
+
+    Prerequisites:
+    - Requires at least one search provider API key in the server environment:
+      `SERPER_API_KEY` (Serper) or `TAVILY_API_KEY` (Tavily). If neither is set, this tool will fail.
+
+    Returns:
+    - `{"results": [{"title": str, "link": str, "snippet": str, "page_content": str}, ...]}`
+    - `page_content` is always a string. If extraction fails (paywall/anti-bot/unsupported content),
+      it becomes a deterministic Markdown note that includes the source URL.
+
+    Notes:
+    - Content extraction is best-effort and may be truncated to avoid context “bombs”.
+    - Provider routing: if both keys are set, Serper is used first and Tavily is used as a fallback on
+      transient provider/network errors.
+    - If the search provider fails (missing key, quota/rate-limit, network issues), the tool will error.
+    - For a deeper look at one result, call `get_content()` on the chosen `link`.
     """
 
     results = await search_web(query, num_results=num_results)
@@ -195,17 +211,29 @@ async def web_search(
 
 @mcp.tool()
 async def get_content(url: str) -> dict:
-    """Fetch a single URL and return its content as Markdown (best-effort).
+    """Fetch a single URL and return best-effort, LLM-ready Markdown for that page.
 
-    This tool reuses the same content resolution pipeline as `web_search(...)`:
-    - Specialized API loaders when available (e.g., StackExchange, GitHub Issues, Wikipedia, arXiv).
-    - Universal HTML loader fallback for other web pages.
+    When to use:
+    - You already have a URL (user provided it, or you found it via `web_search`).
+    - You want to read/verify one specific source without doing a broader search.
 
-    Parameters
-    - `url`: a URL to a web page (HTML) or an online document (best-effort).
+    When not to use:
+    - If you need to discover relevant URLs first or compare multiple sources → use `web_search(query)`.
 
-    Returns
-    - `{ "url": <url>, "page_content": <markdown> }`
+    Args:
+    - url: A URL to a page/document to fetch.
+
+    Returns:
+    - `{"url": str, "page_content": str}`
+    - `page_content` is always a string. If retrieval/extraction fails, it becomes a deterministic
+      Markdown note that includes the source URL.
+
+    Notes:
+    - Uses the same content-resolution pipeline as `web_search`:
+      - Specialized loaders for StackExchange, GitHub Issues, Wikipedia, and arXiv when applicable.
+      - Otherwise a universal HTML loader (headless Nodriver).
+    - Some content types (including many PDFs) may be unsupported.
+    - Content extraction is best-effort and may be truncated.
     """
     page_md = await resolve_page_content_markdown(url)
     if page_md is None:
