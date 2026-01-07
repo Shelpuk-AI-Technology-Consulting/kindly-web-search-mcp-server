@@ -320,6 +320,40 @@ Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
 }
 ```
 
+### Antigravity (Google IDE)
+Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+
+In Antigravity, open the MCP store, then:
+1. Click **Manage MCP Servers**
+2. Click **View raw config** (this opens `mcp_config.json`)
+3. Add the server config under `mcpServers`, save, then go back and click **Refresh**
+
+Paste this into your `mcpServers` object (don’t overwrite other servers):
+```json
+{
+  "kindly-web-search": {
+    "command": "uvx",
+    "args": [
+      "--from",
+      "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
+      "kindly-web-search-mcp-server",
+      "start-mcp-server"
+    ],
+    "env": {
+      "SERPER_API_KEY": "PASTE_SERPER_KEY_OR_LEAVE_EMPTY",
+      "TAVILY_API_KEY": "PASTE_TAVILY_KEY_OR_LEAVE_EMPTY",
+      "GITHUB_TOKEN": "PASTE_GITHUB_TOKEN_OR_LEAVE_EMPTY",
+      "KINDLY_BROWSER_EXECUTABLE_PATH": "PASTE_IF_NEEDED"
+    }
+  }
+}
+```
+
+If Antigravity can’t find `uvx`, replace `"uvx"` with the absolute path (`which uvx` on macOS/Linux, `where uvx` on Windows).
+Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` is non-empty.
+If the first start is slow, run the `uvx` command from Quickstart once in a terminal to prebuild the environment, then click **Refresh**.
+Don’t commit/share `mcp_config.json` if it contains API keys.
+
 ### Cursor
 Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
 Startup timeout: Cursor does not currently expose a per-server startup timeout setting. If the first run is slow, run the `uvx` command from Quickstart once in a terminal to prebuild the tool environment, then restart Cursor.
