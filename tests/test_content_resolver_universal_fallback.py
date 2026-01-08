@@ -82,9 +82,9 @@ class TestContentResolverUniversalFallback(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(out, "# Page\n\nFallback")
 
-    async def test_resolver_uses_wikipedia_when_applicable(self) -> None:
-        from kindly_web_search_mcp_server.content.stackexchange import StackExchangeError
+    async def test_resolver_uses_github_discussion_when_applicable(self) -> None:
         from kindly_web_search_mcp_server.content.github_issues import GitHubIssueError
+        from kindly_web_search_mcp_server.content.stackexchange import StackExchangeError
         from kindly_web_search_mcp_server.content.resolver import resolve_page_content_markdown
 
         with patch(
@@ -93,6 +93,60 @@ class TestContentResolverUniversalFallback(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "kindly_web_search_mcp_server.content.resolver.parse_github_issue_url",
             side_effect=GitHubIssueError("nope"),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.parse_github_discussion_url",
+            return_value=("owner", "repo", 1),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.fetch_github_discussion_thread_markdown",
+            new_callable=AsyncMock,
+        ) as mock_fetch:
+            mock_fetch.return_value = "# Discussion\n..."
+            out = await resolve_page_content_markdown("https://github.com/owner/repo/discussions/1")
+
+        self.assertEqual(out, "# Discussion\n...")
+
+    async def test_resolver_falls_back_when_github_discussion_fetch_fails(self) -> None:
+        from kindly_web_search_mcp_server.content.github_issues import GitHubIssueError
+        from kindly_web_search_mcp_server.content.stackexchange import StackExchangeError
+        from kindly_web_search_mcp_server.content.resolver import resolve_page_content_markdown
+
+        with patch(
+            "kindly_web_search_mcp_server.content.resolver.parse_stackexchange_url",
+            side_effect=StackExchangeError("nope"),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.parse_github_issue_url",
+            side_effect=GitHubIssueError("nope"),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.parse_github_discussion_url",
+            return_value=("owner", "repo", 1),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.fetch_github_discussion_thread_markdown",
+            new_callable=AsyncMock,
+            side_effect=Exception("boom"),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.load_url_as_markdown",
+            new_callable=AsyncMock,
+        ) as mock_universal:
+            mock_universal.return_value = "# Page\n\nFallback"
+            out = await resolve_page_content_markdown("https://github.com/owner/repo/discussions/1")
+
+        self.assertEqual(out, "# Page\n\nFallback")
+
+    async def test_resolver_uses_wikipedia_when_applicable(self) -> None:
+        from kindly_web_search_mcp_server.content.stackexchange import StackExchangeError
+        from kindly_web_search_mcp_server.content.github_issues import GitHubIssueError
+        from kindly_web_search_mcp_server.content.github_discussions import GitHubDiscussionError
+        from kindly_web_search_mcp_server.content.resolver import resolve_page_content_markdown
+
+        with patch(
+            "kindly_web_search_mcp_server.content.resolver.parse_stackexchange_url",
+            side_effect=StackExchangeError("nope"),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.parse_github_issue_url",
+            side_effect=GitHubIssueError("nope"),
+        ), patch(
+            "kindly_web_search_mcp_server.content.resolver.parse_github_discussion_url",
+            side_effect=GitHubDiscussionError("nope"),
         ), patch(
             "kindly_web_search_mcp_server.content.resolver.parse_wikipedia_url",
             return_value=("api", "canon", "host", "title"),

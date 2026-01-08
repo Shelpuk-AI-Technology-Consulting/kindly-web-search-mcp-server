@@ -24,6 +24,9 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
 
         fake_start = AsyncMock(return_value=_FakeBrowser())
         captured: dict[str, object] = {}
+        fake_launch = AsyncMock()
+        fake_wait_devtools = AsyncMock()
+        fake_terminate = AsyncMock()
 
         class _TempDir:
             def __init__(self, *args, **kwargs):
@@ -41,6 +44,10 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
             patch("shutil.which", return_value="/usr/bin/chromium"),
             patch.object(nodriver_worker.tempfile, "TemporaryDirectory", _TempDir),
             patch.object(nodriver_worker.asyncio, "sleep", AsyncMock()),
+            patch.object(nodriver_worker, "_pick_free_port", return_value=9222),
+            patch.object(nodriver_worker, "_launch_chromium", fake_launch),
+            patch.object(nodriver_worker, "_wait_for_devtools_ready", fake_wait_devtools),
+            patch.object(nodriver_worker, "_terminate_process", fake_terminate),
         ):
             html = await nodriver_worker._fetch_html(
                 "https://example.com",
@@ -75,6 +82,16 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict("sys.modules", {"nodriver": type("X", (), {"start": fake_start})}), patch.dict(
             "os.environ", {}, clear=False
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._pick_free_port", return_value=9222
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._launch_chromium", AsyncMock()
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._wait_for_devtools_ready", AsyncMock()
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._terminate_process", AsyncMock()
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker.asyncio.sleep", AsyncMock()
         ):
             html = await _fetch_html(
                 "https://example.com",
@@ -110,6 +127,16 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict("sys.modules", {"nodriver": type("X", (), {"start": fake_start})}), patch.dict(
             "os.environ", {"KINDLY_NODRIVER_SANDBOX": "1"}, clear=False
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._pick_free_port", return_value=9222
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._launch_chromium", AsyncMock()
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._wait_for_devtools_ready", AsyncMock()
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker._terminate_process", AsyncMock()
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.nodriver_worker.asyncio.sleep", AsyncMock()
         ):
             await _fetch_html(
                 "https://example.com",
@@ -146,6 +173,11 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
             patch.dict("os.environ", {"KINDLY_NODRIVER_SANDBOX": "1"}, clear=False),
             patch("os.geteuid", return_value=0),
             patch("shutil.which", return_value="/usr/bin/chromium"),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._pick_free_port", return_value=9222),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._launch_chromium", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._wait_for_devtools_ready", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._terminate_process", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker.asyncio.sleep", AsyncMock()),
         ):
             await _fetch_html(
                 "https://example.com",
@@ -182,6 +214,11 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
             patch.dict("sys.modules", {"nodriver": type("X", (), {"start": fake_start})}),
             patch.dict("os.environ", {}, clear=False),
             patch("shutil.which", return_value="/usr/bin/chromium"),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._pick_free_port", return_value=9222),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._launch_chromium", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._wait_for_devtools_ready", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._terminate_process", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker.asyncio.sleep", AsyncMock()),
         ):
             await _fetch_html(
                 "https://example.com",
@@ -232,10 +269,16 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
 
         fake_start = AsyncMock(side_effect=[RuntimeError("Failed to connect to browser"), _FakeBrowser()])
 
+        fake_terminate = AsyncMock()
         with (
             patch.dict("sys.modules", {"nodriver": type("X", (), {"start": fake_start})}),
             patch.dict("os.environ", {"KINDLY_NODRIVER_RETRY_ATTEMPTS": "2"}, clear=False),
             patch("shutil.which", return_value="/snap/bin/chromium"),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._pick_free_port", return_value=9222),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._launch_chromium", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._wait_for_devtools_ready", AsyncMock()),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._terminate_process", fake_terminate),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker.asyncio.sleep", AsyncMock()),
         ):
             html = await _fetch_html(
                 "https://example.com",
@@ -247,6 +290,39 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("ok", html)
         self.assertEqual(fake_start.call_count, 2)
+        # One termination for the failed attempt, one for the successful attempt cleanup.
+        self.assertEqual(fake_terminate.call_count, 2)
+
+    async def test_retries_and_terminates_on_devtools_timeout(self) -> None:
+        from kindly_web_search_mcp_server.scrape.nodriver_worker import _fetch_html
+
+        fake_start = AsyncMock()
+        fake_launch = AsyncMock()
+        fake_wait = AsyncMock(side_effect=RuntimeError("DevTools endpoint did not become ready in time"))
+        fake_terminate = AsyncMock()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": type("X", (), {"start": fake_start})}),
+            patch.dict("os.environ", {"KINDLY_NODRIVER_RETRY_ATTEMPTS": "2"}, clear=False),
+            patch("shutil.which", return_value="/snap/bin/chromium"),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._pick_free_port", return_value=9222),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._launch_chromium", fake_launch),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._wait_for_devtools_ready", fake_wait),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker._terminate_process", fake_terminate),
+            patch("kindly_web_search_mcp_server.scrape.nodriver_worker.asyncio.sleep", AsyncMock()),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Failed to connect to browser after 2 attempt"):
+                await _fetch_html(
+                    "https://example.com",
+                    referer=None,
+                    user_agent="ua",
+                    wait_seconds=0.0,
+                    browser_executable_path=None,
+                )
+
+        self.assertEqual(fake_launch.call_count, 2)
+        self.assertEqual(fake_terminate.call_count, 2)
+        self.assertEqual(fake_start.call_count, 0)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,11 @@ from .github_issues import (
     fetch_github_issue_thread_markdown,
     parse_github_issue_url,
 )
+from .github_discussions import (
+    GitHubDiscussionError,
+    fetch_github_discussion_thread_markdown,
+    parse_github_discussion_url,
+)
 from .wikipedia import (
     WikipediaError,
     fetch_wikipedia_article_markdown,
@@ -57,6 +62,19 @@ async def resolve_page_content_markdown(url: str) -> str | None:
             if fallback is not None:
                 return fallback
             return f"_Failed to retrieve GitHub Issue content._\n\nSource: {url}\n"
+
+    try:
+        parse_github_discussion_url(url)
+    except GitHubDiscussionError:
+        pass
+    else:
+        try:
+            return await fetch_github_discussion_thread_markdown(url)
+        except Exception:
+            fallback = await load_url_as_markdown(url)
+            if fallback is not None:
+                return fallback
+            return f"_Failed to retrieve GitHub Discussion content._\n\nSource: {url}\n"
 
     try:
         parse_wikipedia_url(url)

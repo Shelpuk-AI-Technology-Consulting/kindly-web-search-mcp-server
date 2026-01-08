@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import io
 import os
 import shutil
+import signal
+import socket
 import sys
 import tempfile
+import time
 from typing import TextIO
 
 
@@ -121,6 +125,8 @@ def _is_retryable_browser_connect_error(exc: BaseException) -> bool:
         return True
     if "devtoolsactiveport" in message:
         return True
+    if "devtools endpoint did not become ready" in message:
+        return True
     return False
 
 
@@ -150,6 +156,29 @@ def _resolve_retry_backoff_seconds() -> float:
     return max(0.0, min(value, 10.0))
 
 
+def _resolve_devtools_ready_timeout_seconds() -> float:
+    """
+    Maximum time to wait for Chromium's DevTools HTTP endpoint to become reachable.
+
+    Notes:
+    - The universal loader runs this worker in a subprocess with its own overall timeout.
+      Keep defaults conservative and allow env overrides for slow cold starts (e.g., Snap).
+    """
+    raw = (os.environ.get("KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else 6.0
+    except ValueError:
+        value = 6.0
+    return max(0.5, min(value, 120.0))
+
+
+def _pick_free_port(host: str = "127.0.0.1") -> int:
+    # Best-effort selection: inherently racy, so startup must tolerate collisions.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return int(s.getsockname()[1])
+
+
 def _resolve_snap_backoff_multiplier() -> float:
     raw = (os.environ.get("KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER") or "").strip()
     try:
@@ -157,6 +186,123 @@ def _resolve_snap_backoff_multiplier() -> float:
     except ValueError:
         value = 3.0
     return max(1.0, min(value, 20.0))
+
+
+def _build_chromium_launch_args(
+    *,
+    base_browser_args: list[str],
+    user_data_dir: str,
+    user_agent: str,
+    host: str,
+    port: int,
+    sandbox_enabled: bool,
+) -> list[str]:
+    args: list[str] = [
+        # Ensure we only bind DevTools to loopback.
+        f"--remote-debugging-host={host}",
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data_dir}",
+        # Keep consistent with our previous nodriver.start() behavior.
+        "--headless=new",
+        "--window-size=1920,1080",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-logging",
+        "--log-level=3",
+        f"--user-agent={user_agent}",
+        *([] if sandbox_enabled else ["--no-sandbox"]),
+    ]
+
+    # Append the base args last to preserve existing behavior (and allow overrides),
+    # while avoiding duplicates that can confuse Chromium.
+    for item in base_browser_args:
+        if item not in args:
+            args.append(item)
+    return args
+
+
+async def _launch_chromium(
+    executable_path: str,
+    args: list[str],
+) -> asyncio.subprocess.Process:
+    # Discard Chromium stdout/stderr to avoid deadlocks on filled pipes.
+    return await asyncio.create_subprocess_exec(
+        executable_path,
+        *args,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=(os.name == "posix"),
+    )
+
+
+async def _terminate_process(proc: asyncio.subprocess.Process, *, grace_seconds: float = 1.5) -> None:
+    try:
+        if proc.returncode is not None:
+            return
+
+        terminated = False
+        if os.name == "posix" and proc.pid is not None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                terminated = True
+            except Exception:
+                terminated = False
+        if not terminated:
+            with contextlib.suppress(Exception):
+                proc.terminate()
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+            return
+        except Exception:
+            pass
+
+        if os.name == "posix" and proc.pid is not None:
+            with contextlib.suppress(Exception):
+                os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(Exception):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+    except Exception:
+        return
+
+
+async def _wait_for_devtools_ready(
+    *,
+    host: str,
+    port: int,
+    proc: asyncio.subprocess.Process,
+    timeout_seconds: float,
+) -> None:
+    """
+    Wait until the DevTools HTTP endpoint responds.
+
+    Chrome exposes `webSocketDebuggerUrl` via GET `/json/version`. This is a stronger readiness signal
+    than a raw TCP connect because it requires the browser to be responsive, not just listening.
+    """
+    try:
+        import httpx
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("httpx is required for DevTools readiness probing") from exc
+
+    deadline = time.monotonic() + max(0.1, timeout_seconds)
+    url = f"http://{host}:{port}/json/version"
+
+    async with httpx.AsyncClient() as client:
+        while time.monotonic() < deadline:
+            if proc.returncode is not None:
+                raise RuntimeError(f"Chromium exited early (code={proc.returncode})")
+            try:
+                resp = await client.get(url, timeout=0.75)
+                if resp.status_code == 200:
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+    raise RuntimeError("DevTools endpoint did not become ready in time")
 
 
 async def _fetch_html(
@@ -177,6 +323,7 @@ async def _fetch_html(
     browser = None
     page = None
     ref_page = None
+    chrome_proc: asyncio.subprocess.Process | None = None
     sandbox_enabled = _resolve_sandbox_enabled()
     resolved_browser_executable_path = _resolve_browser_executable_path(browser_executable_path)
     if resolved_browser_executable_path is None:
@@ -188,6 +335,17 @@ async def _fetch_html(
     attempts = _resolve_start_retry_attempts()
     base_backoff_seconds = _resolve_retry_backoff_seconds()
     snap_multiplier = _resolve_snap_backoff_multiplier() if is_snap else 1.0
+    devtools_ready_timeout_seconds = _resolve_devtools_ready_timeout_seconds() * snap_multiplier
+
+    base_browser_args = [
+        "--window-size=1920,1080",
+        *([] if sandbox_enabled else ["--no-sandbox"]),
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-logging",
+        "--log-level=3",
+        f"--user-agent={user_agent}",
+    ]
 
     # Chromium may still be flushing profile writes briefly after `browser.stop()`.
     # Never fail the request because a temp profile directory couldn't be deleted.
@@ -196,25 +354,41 @@ async def _fetch_html(
             last_start_error: BaseException | None = None
             for attempt in range(attempts):
                 try:
+                    host = "127.0.0.1"
+                    port = _pick_free_port(host)
+                    chromium_args = _build_chromium_launch_args(
+                        base_browser_args=base_browser_args,
+                        user_data_dir=user_data_dir,
+                        user_agent=user_agent,
+                        host=host,
+                        port=port,
+                        sandbox_enabled=sandbox_enabled,
+                    )
+                    chrome_proc = await _launch_chromium(resolved_browser_executable_path, chromium_args)
+                    await _wait_for_devtools_ready(
+                        host=host,
+                        port=port,
+                        proc=chrome_proc,
+                        timeout_seconds=devtools_ready_timeout_seconds,
+                    )
+
+                    # Connect Nodriver to the already-running browser instance (do not spawn another).
                     browser = await uc.start(
                         headless=True,
                         user_data_dir=user_data_dir,
                         browser_executable_path=resolved_browser_executable_path,
                         sandbox=sandbox_enabled,
-                        browser_args=[
-                            "--window-size=1920,1080",
-                            *([] if sandbox_enabled else ["--no-sandbox"]),
-                            "--disable-dev-shm-usage",
-                            "--disable-blink-features=AutomationControlled",
-                            "--disable-logging",
-                            "--log-level=3",
-                            f"--user-agent={user_agent}",
-                        ],
+                        browser_args=base_browser_args,
+                        host=host,
+                        port=port,
                     )
                     last_start_error = None
                     break
                 except Exception as exc:
                     last_start_error = exc
+                    if chrome_proc is not None:
+                        await _terminate_process(chrome_proc)
+                        chrome_proc = None
                     if attempt >= attempts - 1 or not _is_retryable_browser_connect_error(exc):
                         raise
                     backoff = base_backoff_seconds * (2**attempt) * snap_multiplier
@@ -248,7 +422,7 @@ async def _fetch_html(
             return str(content or "")
         except Exception as exc:
             msg = str(exc).lower()
-            if "failed to connect to browser" in msg:
+            if "failed to connect to browser" in msg or "devtools endpoint did not become ready" in msg:
                 is_root = False
                 try:
                     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
@@ -279,6 +453,10 @@ async def _fetch_html(
                         maybe = stopper()
                         if asyncio.iscoroutine(maybe):
                             await maybe
+
+                if chrome_proc is not None:
+                    await _terminate_process(chrome_proc)
+                    chrome_proc = None
                 # Give Chromium a short moment to flush profile writes before temp cleanup.
                 await asyncio.sleep(0.1)
             except Exception:
