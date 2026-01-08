@@ -18,6 +18,7 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         from kindly_web_search_mcp_server.search import search_web
 
         os.environ.pop("SERPER_API_KEY", None)
+        os.environ.pop("SEARXNG_BASE_URL", None)
         os.environ["TAVILY_API_KEY"] = "tvly_test"
 
         with patch(
@@ -32,15 +33,35 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(out), 1)
         mock_tavily.assert_awaited()
 
+    async def test_uses_searxng_when_only_searxng_config(self) -> None:
+        from kindly_web_search_mcp_server.search import search_web
+
+        os.environ.pop("SERPER_API_KEY", None)
+        os.environ.pop("TAVILY_API_KEY", None)
+        os.environ["SEARXNG_BASE_URL"] = "https://searx.example.org"
+
+        with patch(
+            "kindly_web_search_mcp_server.search.search_searxng", new_callable=AsyncMock
+        ) as mock_searxng:
+            mock_searxng.return_value = [
+                WebSearchResult(title="X", link="https://example.com", snippet="S", page_content="")
+            ]
+            out = await search_web("q", num_results=1)
+
+        self.assertEqual(out[0].title, "X")
+        mock_searxng.assert_awaited()
+
     async def test_defaults_to_serper_when_both_keys(self) -> None:
         from kindly_web_search_mcp_server.search import search_web
 
         os.environ["SERPER_API_KEY"] = "serper_test"
         os.environ["TAVILY_API_KEY"] = "tvly_test"
+        os.environ["SEARXNG_BASE_URL"] = "https://searx.example.org"
 
         with (
             patch("kindly_web_search_mcp_server.search.search_serper", new_callable=AsyncMock) as mock_serper,
             patch("kindly_web_search_mcp_server.search.search_tavily", new_callable=AsyncMock) as mock_tavily,
+            patch("kindly_web_search_mcp_server.search.search_searxng", new_callable=AsyncMock) as mock_searxng,
         ):
             mock_serper.return_value = [
                 WebSearchResult(title="S", link="https://serper.example", snippet="sn", page_content="")
@@ -50,20 +71,19 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out[0].link, "https://serper.example")
         mock_serper.assert_awaited()
         mock_tavily.assert_not_awaited()
+        mock_searxng.assert_not_awaited()
 
-    async def test_falls_back_to_tavily_when_serper_fails(self) -> None:
+    async def test_uses_tavily_when_serper_unset_even_if_searxng_set(self) -> None:
         from kindly_web_search_mcp_server.search import search_web
 
-        os.environ["SERPER_API_KEY"] = "serper_test"
         os.environ["TAVILY_API_KEY"] = "tvly_test"
+        os.environ.pop("SERPER_API_KEY", None)
+        os.environ["SEARXNG_BASE_URL"] = "https://searx.example.org"
 
         with (
-            patch("kindly_web_search_mcp_server.search.search_serper", new_callable=AsyncMock) as mock_serper,
             patch("kindly_web_search_mcp_server.search.search_tavily", new_callable=AsyncMock) as mock_tavily,
+            patch("kindly_web_search_mcp_server.search.search_searxng", new_callable=AsyncMock) as mock_searxng,
         ):
-            mock_serper.side_effect = httpx.HTTPStatusError(
-                "boom", request=httpx.Request("POST", "https://google.serper.dev/search"), response=httpx.Response(500)
-            )
             mock_tavily.return_value = [
                 WebSearchResult(title="T", link="https://tavily.example", snippet="sn", page_content="")
             ]
@@ -71,16 +91,19 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(out[0].link, "https://tavily.example")
         mock_tavily.assert_awaited()
+        mock_searxng.assert_not_awaited()
 
-    async def test_does_not_fallback_on_auth_failure(self) -> None:
+    async def test_does_not_fallback_when_serper_errors(self) -> None:
         from kindly_web_search_mcp_server.search import search_web
 
         os.environ["SERPER_API_KEY"] = "serper_test"
         os.environ["TAVILY_API_KEY"] = "tvly_test"
+        os.environ["SEARXNG_BASE_URL"] = "https://searx.example.org"
 
         with (
             patch("kindly_web_search_mcp_server.search.search_serper", new_callable=AsyncMock) as mock_serper,
             patch("kindly_web_search_mcp_server.search.search_tavily", new_callable=AsyncMock) as mock_tavily,
+            patch("kindly_web_search_mcp_server.search.search_searxng", new_callable=AsyncMock) as mock_searxng,
         ):
             mock_serper.side_effect = httpx.HTTPStatusError(
                 "boom",
@@ -91,50 +114,17 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
                 await search_web("q", num_results=1)
 
         mock_tavily.assert_not_awaited()
+        mock_searxng.assert_not_awaited()
 
-    async def test_fallback_on_rate_limit(self) -> None:
-        from kindly_web_search_mcp_server.search import search_web
+    async def test_raises_when_no_provider_configured(self) -> None:
+        from kindly_web_search_mcp_server.search import WebSearchProviderError, search_web
 
-        os.environ["SERPER_API_KEY"] = "serper_test"
-        os.environ["TAVILY_API_KEY"] = "tvly_test"
+        os.environ.pop("SERPER_API_KEY", None)
+        os.environ.pop("TAVILY_API_KEY", None)
+        os.environ.pop("SEARXNG_BASE_URL", None)
 
-        with (
-            patch("kindly_web_search_mcp_server.search.search_serper", new_callable=AsyncMock) as mock_serper,
-            patch("kindly_web_search_mcp_server.search.search_tavily", new_callable=AsyncMock) as mock_tavily,
-        ):
-            mock_serper.side_effect = httpx.HTTPStatusError(
-                "rate-limited",
-                request=httpx.Request("POST", "https://google.serper.dev/search"),
-                response=httpx.Response(429),
-            )
-            mock_tavily.return_value = [
-                WebSearchResult(title="T", link="https://tavily.example", snippet="sn", page_content="")
-            ]
-            out = await search_web("q", num_results=1)
-
-        self.assertEqual(out[0].link, "https://tavily.example")
-        mock_tavily.assert_awaited()
-
-    async def test_falls_back_on_provider_error(self) -> None:
-        from kindly_web_search_mcp_server.search import search_web
-        from kindly_web_search_mcp_server.search.serper import SerperError
-
-        os.environ["SERPER_API_KEY"] = "serper_test"
-        os.environ["TAVILY_API_KEY"] = "tvly_test"
-
-        with (
-            patch("kindly_web_search_mcp_server.search.search_serper", new_callable=AsyncMock) as mock_serper,
-            patch("kindly_web_search_mcp_server.search.search_tavily", new_callable=AsyncMock) as mock_tavily,
-        ):
-            mock_serper.side_effect = SerperError("bad JSON")
-            mock_tavily.return_value = [
-                WebSearchResult(title="T", link="https://tavily.example", snippet="sn", page_content="")
-            ]
-
-            out = await search_web("q", num_results=1)
-
-        self.assertEqual(out[0].link, "https://tavily.example")
-        mock_tavily.assert_awaited()
+        with self.assertRaises(WebSearchProviderError):
+            await search_web("q", num_results=1)
 
 
 if __name__ == "__main__":

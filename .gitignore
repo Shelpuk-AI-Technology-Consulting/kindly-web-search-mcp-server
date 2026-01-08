@@ -11,3 +11,4 @@ __pycache__/
 /codex_session.txt
 /CLAUDE.md
 /REQUIREMENTS.md
+/.claude/

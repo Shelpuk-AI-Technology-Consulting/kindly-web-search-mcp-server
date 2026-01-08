@@ -19,7 +19,7 @@ LOGGER = logging.getLogger(__name__)
 mcp = FastMCP(
     "kindly-web-search",
     instructions=(
-        "Web search via Serper (default) or Tavily (fallback) with best-effort "
+        "Web search via Serper (default), Tavily, or a self-hosted SearXNG instance with best-effort "
         "scraping/extraction of result pages into Markdown for LLM consumption."
     ),
 )
@@ -130,11 +130,16 @@ def main(argv: list[str] | None = None) -> None:
         )
         raise SystemExit(2)
 
-    if not (os.environ.get("SERPER_API_KEY", "").strip() or os.environ.get("TAVILY_API_KEY", "").strip()):
+    if not (
+        os.environ.get("SERPER_API_KEY", "").strip()
+        or os.environ.get("TAVILY_API_KEY", "").strip()
+        or os.environ.get("SEARXNG_BASE_URL", "").strip()
+    ):
         # Do not hard-fail on startup: many clients set env vars in their MCP config
         # and expect the server to at least come up for tool discovery.
         LOGGER.warning(
-            "Neither SERPER_API_KEY nor TAVILY_API_KEY is set; `web_search` calls will fail until one is provided."
+            "No search provider is configured (SERPER_API_KEY, TAVILY_API_KEY, or SEARXNG_BASE_URL); "
+            "`web_search` calls will fail until one is provided."
         )
 
     if transport in ("sse", "streamable-http"):
@@ -176,8 +181,9 @@ async def web_search(
       context size and keep results targeted.
 
     Prerequisites:
-    - Requires at least one search provider API key in the server environment:
-      `SERPER_API_KEY` (Serper) or `TAVILY_API_KEY` (Tavily). If neither is set, this tool will fail.
+    - Requires at least one configured search provider in the server environment:
+      `SERPER_API_KEY` (Serper), `TAVILY_API_KEY` (Tavily), or `SEARXNG_BASE_URL` (SearXNG).
+      If none is set, this tool will fail.
 
     Returns:
     - `{"results": [{"title": str, "link": str, "snippet": str, "page_content": str}, ...]}`
@@ -186,8 +192,7 @@ async def web_search(
 
     Notes:
     - Content extraction is best-effort and may be truncated to avoid context “bombs”.
-    - Provider routing: if both keys are set, Serper is used first and Tavily is used as a fallback on
-      transient provider/network errors.
+    - Provider routing (strict order): Serper → Tavily → SearXNG. No cross-provider fallback.
     - If the search provider fails (missing key, quota/rate-limit, network issues), the tool will error.
     - For a deeper look at one result, call `get_content()` on the chosen `link`.
     """

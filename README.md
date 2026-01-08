@@ -126,6 +126,8 @@ macOS / Linux:
 export SERPER_API_KEY="..."
 # or:
 export TAVILY_API_KEY="..."
+# or (self-hosted SearXNG):
+export SEARXNG_BASE_URL="https://searx.example.org"
 ```
 
 Windows (PowerShell):
@@ -133,6 +135,14 @@ Windows (PowerShell):
 $env:SERPER_API_KEY="..."
 # or:
 $env:TAVILY_API_KEY="..."
+# or (self-hosted SearXNG):
+$env:SEARXNG_BASE_URL="https://searx.example.org"
+```
+
+Optional (SearXNG): if your instance requires authentication or blocks bots, set:
+```bash
+export SEARXNG_HEADERS_JSON='{"Authorization":"Bearer ..."}'
+export SEARXNG_USER_AGENT="Mozilla/5.0 ..."
 ```
 
 Optional (recommended for better GitHub Issue / PR extraction):
@@ -499,7 +509,7 @@ docker run --rm -p 8000:8000 \
   - `KINDLY_NODRIVER_RETRY_ATTEMPTS=5`
   - `KINDLY_HTML_TOTAL_TIMEOUT_SECONDS=45`
 - `OSError: [Errno 39] Directory not empty: '/tmp/kindly-nodriver-.../Default'`: update to the latest server revision (uv may cache tool envs; `uv cache clean` can help).
-- “web_search fails: no provider key”: set `SERPER_API_KEY` or `TAVILY_API_KEY`.
+- “web_search fails: no provider key”: set `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 ## Security
 - Don’t commit API keys.

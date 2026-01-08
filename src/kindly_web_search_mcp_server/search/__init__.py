@@ -1,4 +1,4 @@
-"""Search providers (Serper first)."""
+"""Search providers (Serper → Tavily → SearXNG)."""
 from __future__ import annotations
 
 import os
@@ -7,8 +7,9 @@ from typing import Awaitable, Callable
 import httpx
 
 from ..models import WebSearchResult
-from .serper import SerperConfigError, SerperError, search_serper
-from .tavily import TavilyConfigError, TavilyError, search_tavily
+from .searxng import search_searxng
+from .serper import search_serper
+from .tavily import search_tavily
 
 
 class WebSearchProviderError(RuntimeError):
@@ -23,23 +24,8 @@ def _has_tavily_key() -> bool:
     return bool(os.environ.get("TAVILY_API_KEY", "").strip())
 
 
-def _should_fallback(exc: BaseException) -> bool:
-    # Explicitly do not fallback on auth/config issues.
-    if isinstance(exc, (SerperConfigError, TavilyConfigError)):
-        return False
-    # Provider-level errors (malformed/unexpected JSON, etc.) are fallback candidates.
-    if isinstance(exc, (SerperError, TavilyError)):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        if status in (401, 403, 400):
-            return False
-        return status >= 500 or status == 429
-    if isinstance(exc, httpx.TimeoutException):
-        return True
-    if isinstance(exc, httpx.RequestError):
-        return True
-    return False
+def _has_searxng_config() -> bool:
+    return bool(os.environ.get("SEARXNG_BASE_URL", "").strip())
 
 
 async def search_web(
@@ -49,47 +35,35 @@ async def search_web(
     http_client: httpx.AsyncClient | None = None,
 ) -> list[WebSearchResult]:
     """
-    Search the web using Serper and/or Tavily.
+    Search the web using Serper, Tavily, or SearXNG.
 
-    Selection:
-    - If both keys are set: use Serper, fallback to Tavily on transient failure.
-    - If only one key is set: use that provider.
+    Selection (strict order, no cross-provider fallback):
+    - If SERPER_API_KEY is set: use Serper.
+    - Else if TAVILY_API_KEY is set: use Tavily.
+    - Else if SEARXNG_BASE_URL is set: use SearXNG.
     """
     has_serper = _has_serper_key()
     has_tavily = _has_tavily_key()
-    if not has_serper and not has_tavily:
-        raise WebSearchProviderError("Neither SERPER_API_KEY nor TAVILY_API_KEY is set.")
+    has_searxng = _has_searxng_config()
+    if not has_serper and not has_tavily and not has_searxng:
+        raise WebSearchProviderError(
+            "No web search provider is configured. Set SERPER_API_KEY, TAVILY_API_KEY, or SEARXNG_BASE_URL."
+        )
 
-    primary: Callable[..., Awaitable[list[WebSearchResult]]]
-    secondary: Callable[..., Awaitable[list[WebSearchResult]]] | None = None
-
+    provider: Callable[..., Awaitable[list[WebSearchResult]]]
     if has_serper:
-        primary = search_serper
-        secondary = search_tavily if has_tavily else None
+        provider = search_serper
+    elif has_tavily:
+        provider = search_tavily
     else:
-        primary = search_tavily
+        provider = search_searxng
 
-    async def _run(provider: Callable[..., Awaitable[list[WebSearchResult]]], client: httpx.AsyncClient):
+    async def _run(client: httpx.AsyncClient) -> list[WebSearchResult]:
         return await provider(query, num_results=num_results, http_client=client)
 
     if http_client is not None:
-        try:
-            return await _run(primary, http_client)
-        except Exception as exc:
-            if secondary is not None and _should_fallback(exc):
-                return await _run(secondary, http_client)
-            raise
+        return await _run(http_client)
 
     async with httpx.AsyncClient(timeout=30) as client:
-        try:
-            return await _run(primary, client)
-        except Exception as exc:
-            if secondary is not None and _should_fallback(exc):
-                try:
-                    return await _run(secondary, client)
-                except Exception as secondary_exc:
-                    raise WebSearchProviderError(
-                        "Primary web search failed "
-                        f"({type(exc).__name__}); fallback also failed ({type(secondary_exc).__name__})."
-                    ) from exc
-            raise
+        return await _run(client)
+
