@@ -1,6 +1,9 @@
 /tests/.env.test
 /.venv/
 /.venv-codex/
+__pycache__/
+*.py[cod]
+/.pytest_cache/
 /.serena/
 /.idea/
 /AGENTS.md

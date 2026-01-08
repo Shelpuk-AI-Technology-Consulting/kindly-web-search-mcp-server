@@ -462,6 +462,36 @@ Windows (PowerShell):
 $env:KINDLY_BROWSER_EXECUTABLE_PATH="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 ```
 
+## Remote / Docker deployment (separate machine)
+
+Whether you can run the MCP server on a different PC depends on your MCP client:
+
+- **Stdio / command-based clients** (config uses `command` + `args` to spawn the server): the server must run on the same machine (or at least somewhere the client can run the command). You can still use Docker, but locally (the client launches `docker run ...`).
+- **Stdio / command-based clients** (config uses `command` + `args` to spawn the server): the server must run on the same machine as the MCP client. You can still use Docker, but locally (the client launches `docker run ...`).
+- **HTTP-capable clients** (can connect to a server URL): you can run Kindly remotely in Docker using **Streamable HTTP**.
+
+### Docker (Streamable HTTP)
+Build the image:
+```bash
+docker build -t kindly-web-search-mcp-server .
+```
+
+Run the server (port `8000`):
+```bash
+docker run --rm -p 8000:8000 \
+  -e SERPER_API_KEY="..." \
+  # or: -e TAVILY_API_KEY="..." \
+  -e GITHUB_TOKEN="..." \
+  kindly-web-search-mcp-server \
+  --http --host 0.0.0.0 --port 8000
+```
+
+- MCP endpoint: `http://<server-host>:8000/mcp`
+- Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` is set.
+- `page_content` extraction runs on the server machine/container (this Docker image includes Chromium).
+- Remote HTTP is typically **unauthenticated** and **unencrypted** by default; don’t expose this port publicly. Use VPN/firewall rules or a reverse proxy with TLS + auth.
+- Don’t bake API keys into the image; pass them via env vars at runtime.
+
 ## Troubleshooting
 
 - “No Chromium-based browser executable found”: install Chrome/Chromium/Edge and set `KINDLY_BROWSER_EXECUTABLE_PATH` if needed.
