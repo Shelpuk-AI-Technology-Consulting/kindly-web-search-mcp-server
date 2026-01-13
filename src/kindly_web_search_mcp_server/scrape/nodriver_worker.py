@@ -166,9 +166,11 @@ def _resolve_devtools_ready_timeout_seconds() -> float:
     """
     raw = (os.environ.get("KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS") or "").strip()
     try:
-        value = float(raw) if raw else 6.0
+        # Windows cold starts (first run + antivirus scans of fresh user-data-dir) can
+        # easily exceed a 6s budget. Keep this bounded, but more forgiving by default.
+        value = float(raw) if raw else 12.0
     except ValueError:
-        value = 6.0
+        value = 12.0
     return max(0.5, min(value, 120.0))
 
 
@@ -290,7 +292,10 @@ async def _wait_for_devtools_ready(
     deadline = time.monotonic() + max(0.1, timeout_seconds)
     url = f"http://{host}:{port}/json/version"
 
-    async with httpx.AsyncClient() as client:
+    # Never allow proxy/VPN env vars to hijack localhost traffic. On Windows in particular,
+    # corporate environments often set HTTP(S)_PROXY/ALL_PROXY globally, and missing NO_PROXY
+    # for 127.0.0.1 can cause the readiness probe to hang or fail.
+    async with httpx.AsyncClient(trust_env=False) as client:
         while time.monotonic() < deadline:
             if proc.returncode is not None:
                 raise RuntimeError(f"Chromium exited early (code={proc.returncode})")

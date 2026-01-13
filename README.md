@@ -507,6 +507,8 @@ docker run --rm -p 8000:8000 \
 - “No Chromium-based browser executable found”: install Chrome/Chromium/Edge and set `KINDLY_BROWSER_EXECUTABLE_PATH` if needed.
 - “Failed to connect to browser”: increase retries/timeouts:
   - `KINDLY_NODRIVER_RETRY_ATTEMPTS=5`
+  - `KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS=20`
+  - Ensure proxy/VPN env vars don’t hijack localhost (set `NO_PROXY=localhost,127.0.0.1` if you use `HTTP_PROXY`/`HTTPS_PROXY`)
   - `KINDLY_HTML_TOTAL_TIMEOUT_SECONDS=45`
 - `OSError: [Errno 39] Directory not empty: '/tmp/kindly-nodriver-.../Default'`: update to the latest server revision (uv may cache tool envs; `uv cache clean` can help).
 - “web_search fails: no provider key”: set `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.

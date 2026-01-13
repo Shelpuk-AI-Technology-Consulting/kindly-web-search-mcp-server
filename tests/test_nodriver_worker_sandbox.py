@@ -5,6 +5,47 @@ from unittest.mock import AsyncMock, patch
 
 
 class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
+    async def test_devtools_probe_ignores_proxy_env(self) -> None:
+        from kindly_web_search_mcp_server.scrape import nodriver_worker
+
+        captured: dict[str, object] = {}
+
+        class _Resp:
+            status_code = 200
+
+        class _AsyncClient:
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, _url: str, timeout: float | None = None):
+                return _Resp()
+
+        fake_httpx = type("httpx", (), {"AsyncClient": _AsyncClient})
+
+        class _Proc:
+            returncode = None
+
+        with patch.dict("sys.modules", {"httpx": fake_httpx}), patch.dict(
+            "os.environ",
+            {"HTTP_PROXY": "http://proxy.invalid:8080", "HTTPS_PROXY": "http://proxy.invalid:8080"},
+            clear=False,
+        ):
+            await nodriver_worker._wait_for_devtools_ready(
+                host="127.0.0.1",
+                port=9222,
+                proc=_Proc(),
+                timeout_seconds=1.0,
+            )
+
+        self.assertIn("trust_env", captured)
+        self.assertFalse(captured["trust_env"])
+
     async def test_uses_ignore_cleanup_errors_for_profile_dir(self) -> None:
         from kindly_web_search_mcp_server.scrape import nodriver_worker
 
