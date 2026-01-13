@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import sys
+import time
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -158,6 +160,42 @@ def main(argv: list[str] | None = None) -> None:
         mcp.run(transport=transport)
 
 
+
+
+def _get_int_env(key: str, default: int) -> int:
+    raw = (os.environ.get(key) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def _get_float_env(key: str, default: float) -> float:
+    raw = (os.environ.get(key) or "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def _resolve_tool_total_timeout_seconds() -> float:
+    # Keep a safety buffer below common 60s tool-call deadlines.
+    value = _get_float_env("KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS", 55.0)
+    return max(1.0, min(value, 55.0))
+
+
+def _resolve_web_search_max_concurrency(num_results: int) -> int:
+    value = _get_int_env("KINDLY_WEB_SEARCH_MAX_CONCURRENCY", 3)
+    value = max(1, min(value, 5))
+    if num_results > 0:
+        value = min(value, num_results)
+    return value
+
+
+def _timeout_markdown_note(url: str, *, scope: str | None = None) -> str:
+    detail = f": {scope}" if scope else ""
+    return f"_Failed to retrieve page content: TimeoutError{detail}_\n\nSource: {url}\n"
+
 @mcp.tool()
 async def web_search(
     query: str,
@@ -195,23 +233,53 @@ async def web_search(
     - Provider routing (strict order): Serper → Tavily → SearXNG. No cross-provider fallback.
     - If the search provider fails (missing key, quota/rate-limit, network issues), the tool will error.
     - For a deeper look at one result, call `get_content()` on the chosen `link`.
+    - This tool is often called under a hard per-call deadline; page_content resolution is bounded by
+      `KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS` (default 55, clamped 1..55) and concurrency is capped by
+      `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` (default 3, clamped 1..5).
     """
 
+    started = time.monotonic()
+    total_budget_seconds = _resolve_tool_total_timeout_seconds()
+
     results = await search_web(query, num_results=num_results)
+    if not results:
+        return WebSearchResponse(results=[]).model_dump()
 
-    enriched = []
-    for r in results:
-        page_md = await resolve_page_content_markdown(r.link)
-        if page_md is None:
-            # The universal loader intentionally skips obvious PDFs; return a deterministic note.
-            page_md = (
-                "_Could not retrieve content for this URL (possibly a PDF or unsupported type)._"
-                f"\n\nSource: {r.link}\n"
-            )
-        enriched.append(r.model_copy(update={"page_content": page_md}))
-    results = enriched
+    semaphore = asyncio.Semaphore(_resolve_web_search_max_concurrency(len(results)))
 
-    return WebSearchResponse(results=results).model_dump()
+    async def enrich_one(r):
+        async with semaphore:
+            remaining = total_budget_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                page_md = _timeout_markdown_note(
+                    r.link, scope="web_search time budget exceeded"
+                )
+            else:
+                try:
+                    page_md = await asyncio.wait_for(
+                        resolve_page_content_markdown(r.link), timeout=remaining
+                    )
+                except asyncio.TimeoutError:
+                    page_md = _timeout_markdown_note(r.link)
+                except Exception as exc:
+                    detail = str(exc).strip()
+                    if len(detail) > 200:
+                        detail = detail[:200].rstrip() + "…"
+                    suffix = f": {type(exc).__name__}: {detail}" if detail else f": {type(exc).__name__}"
+                    page_md = (
+                        f"_Failed to retrieve page content{suffix}_\n\nSource: {r.link}\n"
+                    )
+
+            if page_md is None:
+                # The universal loader intentionally skips obvious PDFs; return a deterministic note.
+                page_md = (
+                    "_Could not retrieve content for this URL (possibly a PDF or unsupported type)._"
+                    f"\n\nSource: {r.link}\n"
+                )
+            return r.model_copy(update={"page_content": page_md})
+
+    enriched = await asyncio.gather(*(enrich_one(r) for r in results))
+    return WebSearchResponse(results=enriched).model_dump()
 
 
 @mcp.tool()
@@ -223,7 +291,7 @@ async def get_content(url: str) -> dict:
     - You want to read/verify one specific source without doing a broader search.
 
     When not to use:
-    - If you need to discover relevant URLs first or compare multiple sources → use `web_search(query)`.
+    - If you need to discover relevant URLs first or compare multiple sources → use `web_search(query)` instead.
 
     Args:
     - url: A URL to a page/document to fetch.
@@ -239,11 +307,31 @@ async def get_content(url: str) -> dict:
       - Otherwise a universal HTML loader (headless Nodriver).
     - Some content types (including many PDFs) may be unsupported.
     - Content extraction is best-effort and may be truncated.
+    - This tool is often called under a hard per-call deadline; resolution is bounded by
+      `KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS` (default 55, clamped 1..55).
     """
-    page_md = await resolve_page_content_markdown(url)
+
+    timeout_seconds = _resolve_tool_total_timeout_seconds()
+
+    try:
+        page_md = await asyncio.wait_for(
+            resolve_page_content_markdown(url), timeout=timeout_seconds
+        )
+    except asyncio.TimeoutError:
+        page_md = _timeout_markdown_note(url, scope="tool time budget exceeded")
+    except Exception as exc:
+        detail = str(exc).strip()
+        if len(detail) > 200:
+            detail = detail[:200].rstrip() + "…"
+        suffix = f": {type(exc).__name__}: {detail}" if detail else f": {type(exc).__name__}"
+        page_md = f"_Failed to retrieve page content{suffix}_\n\nSource: {url}\n"
+
     if page_md is None:
         # The current universal fallback intentionally skips obvious PDFs. Until we add a
         # generic PDF loader, return a deterministic Markdown note.
-        page_md = f"_Could not retrieve content for this URL (possibly a PDF or unsupported type)._\\n\\nSource: {url}\\n"
+        page_md = (
+            "_Could not retrieve content for this URL (possibly a PDF or unsupported type)._"
+            f"\n\nSource: {url}\n"
+        )
 
     return GetContentResponse(url=url, page_content=page_md).model_dump()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 import unittest
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -64,6 +65,44 @@ class TestWebSearchTool(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(out["url"], "https://example.com/file.pdf")
         self.assertIn("Could not retrieve content", out["page_content"])
+
+    async def test_get_content_returns_timeout_note_on_timeout(self) -> None:
+        from kindly_web_search_mcp_server.server import get_content
+
+        with patch(
+            "kindly_web_search_mcp_server.server.resolve_page_content_markdown",
+            new_callable=AsyncMock,
+        ) as mock_resolve:
+            mock_resolve.side_effect = asyncio.TimeoutError()
+            out = await get_content("https://example.com")
+
+        self.assertIn("TimeoutError", out["page_content"])
+        self.assertIn("Source: https://example.com", out["page_content"])
+
+    async def test_web_search_returns_timeout_note_on_timeout(self) -> None:
+        from kindly_web_search_mcp_server.server import web_search
+
+        mocked_results = [
+            WebSearchResult(
+                title="T",
+                link="https://example.com",
+                snippet="S",
+                page_content="",
+            )
+        ]
+
+        with patch(
+            "kindly_web_search_mcp_server.server.search_web", new_callable=AsyncMock
+        ) as mock_search, patch(
+            "kindly_web_search_mcp_server.server.resolve_page_content_markdown",
+            new_callable=AsyncMock,
+        ) as mock_resolve:
+            mock_search.return_value = mocked_results
+            mock_resolve.side_effect = asyncio.TimeoutError()
+            out = await web_search("hello", num_results=1)
+
+        self.assertIn("TimeoutError", out["results"][0]["page_content"])
+        self.assertIn("Source: https://example.com", out["results"][0]["page_content"])
 
 
 if __name__ == "__main__":
