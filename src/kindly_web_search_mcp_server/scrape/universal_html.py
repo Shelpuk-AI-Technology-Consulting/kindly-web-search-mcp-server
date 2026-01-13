@@ -29,7 +29,7 @@ class UniversalHtmlLoaderConfig:
 
     user_agent: str = DEFAULT_USER_AGENT
     wait_seconds: float = 2.0
-    total_timeout_seconds: float = 20.0
+    total_timeout_seconds: float = 60.0
     max_markdown_chars: int = 50_000
 
 

@@ -15,6 +15,14 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         out = await load_url_as_markdown("https://example.com/file.pdf")
         self.assertIsNone(out)
 
+    async def test_default_total_timeout_is_60(self) -> None:
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            UniversalHtmlLoaderConfig,
+        )
+
+        config = UniversalHtmlLoaderConfig()
+        self.assertEqual(config.total_timeout_seconds, 60.0)
+
     async def test_converts_html_to_markdown(self) -> None:
         from kindly_web_search_mcp_server.scrape.universal_html import load_url_as_markdown
 
