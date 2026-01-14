@@ -46,6 +46,60 @@ class _NullTextIO(io.TextIOBase):
         return getattr(self._wrapped, "buffer", None)
 
 
+def _safe_write_text(stream: TextIO, text: str) -> None:
+    """
+    Best-effort write to a text stream without raising encoding errors.
+
+    This worker intentionally suppresses sys.stdout/sys.stderr to keep MCP stdio clean.
+    When a failure occurs, we still want *some* diagnostics to reach the parent process
+    via stderr pipes; never let a UnicodeEncodeError erase the real error.
+    """
+    msg = (text or "").rstrip() + "\n"
+    try:
+        buf = getattr(stream, "buffer", None)
+        if buf is not None:
+            buf.write(msg.encode("utf-8", errors="backslashreplace"))
+            buf.flush()
+            return
+    except Exception:
+        # Fall back to text write below.
+        pass
+
+    try:
+        stream.write(msg)
+        stream.flush()
+    except Exception:
+        # Last resort: try writing to fd=2 (stderr). Ignore failures.
+        try:
+            os.write(2, msg.encode("utf-8", errors="backslashreplace"))
+        except Exception:
+            return
+
+
+def _safe_write_bytes(stream: TextIO, data: bytes) -> None:
+    """
+    Best-effort write raw bytes to a stream.
+
+    On Windows, `sys.stdout` is often configured with a legacy codepage (e.g., cp1252).
+    Writing HTML payloads as text can raise `UnicodeEncodeError`. For our subprocess
+    protocol we want deterministic UTF-8 bytes on stdout regardless of console encoding.
+    """
+    payload = data or b""
+    try:
+        buf = getattr(stream, "buffer", None)
+        if buf is not None:
+            buf.write(payload)
+            buf.flush()
+            return
+    except Exception:
+        pass
+
+    try:
+        os.write(1, payload)
+    except Exception:
+        return
+
+
 def _suppress_unraisable_exceptions() -> None:
     """
     Prevent shutdown-time "Exception ignored in: ..." noise from leaking to stderr.
@@ -486,12 +540,12 @@ async def _main_async(args: argparse.Namespace) -> int:
         )
     except Exception as exc:
         # Keep stderr minimal (no traceback) to avoid bloating the parent error string.
-        original_stderr.write(f"{type(exc).__name__}: {exc}\n")
+        _safe_write_text(original_stderr, f"{type(exc).__name__}: {exc}")
         return 1
 
     # Emit only the HTML payload to stdout. Keep sys.stdout suppressed for the rest of
     # process lifetime so any shutdown/atexit prints from third-party libs are discarded.
-    original_stdout.write(html)
+    _safe_write_bytes(original_stdout, (html or "").encode("utf-8", errors="strict"))
     return 0
 
 
@@ -506,10 +560,16 @@ def main() -> int:
 
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
+    original_stderr = sys.stderr
     try:
         return asyncio.run(_main_async(args))
     except KeyboardInterrupt:  # pragma: no cover
         return 130
+    except Exception as exc:  # pragma: no cover
+        # `_main_async` suppresses sys.stderr; if an unexpected exception escapes, ensure we
+        # still emit *some* error detail to the parent process.
+        _safe_write_text(original_stderr, f"{type(exc).__name__}: {exc}")
+        return 1
 
 
 if __name__ == "__main__":
