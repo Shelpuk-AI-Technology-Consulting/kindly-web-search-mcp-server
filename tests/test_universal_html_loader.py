@@ -83,6 +83,32 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--browser-executable-path", args)
         self.assertIn("/usr/bin/chromium", args)
 
+    async def test_fetch_html_sets_no_proxy_for_loopback(self) -> None:
+        from kindly_web_search_mcp_server.scrape.universal_html import fetch_html_via_nodriver
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"<html><body><p>ok</p></body></html>", b""
+
+        with patch.dict(
+            "os.environ",
+            {"HTTP_PROXY": "http://proxy.invalid:8080"},
+            clear=False,
+        ), patch(
+            "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_spawn:
+            mock_spawn.return_value = _FakeProc()
+            await fetch_html_via_nodriver("https://example.com")
+
+        _args, kwargs = mock_spawn.call_args
+        env = kwargs.get("env") or {}
+        no_proxy = (env.get("NO_PROXY") or env.get("no_proxy") or "").lower()
+        self.assertIn("localhost", no_proxy)
+        self.assertIn("127.0.0.1", no_proxy)
+
 
 if __name__ == "__main__":
     unittest.main()

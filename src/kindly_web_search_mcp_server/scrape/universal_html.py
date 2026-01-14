@@ -83,6 +83,30 @@ def _resolve_browser_executable_path() -> str | None:
     return None
 
 
+def _ensure_no_proxy_localhost_env(env: dict[str, str]) -> None:
+    """
+    Ensure Python subprocesses bypass proxies for loopback.
+
+    The nodriver worker (and nodriver itself) may use urllib for `http://127.0.0.1:<port>/json/version`.
+    If HTTP(S)_PROXY/ALL_PROXY are set without NO_PROXY/no_proxy, urllib can attempt to proxy loopback
+    requests, leading to long hangs (commonly on Windows corporate machines).
+    """
+    raw = (env.get("KINDLY_NODRIVER_ENSURE_NO_PROXY_LOCALHOST") or "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return
+
+    needed = ("localhost", "127.0.0.1", "::1")
+    for key in ("NO_PROXY", "no_proxy"):
+        existing = [x.strip() for x in (env.get(key) or "").split(",") if x.strip()]
+        existing_lower = {x.lower() for x in existing}
+        merged = list(existing)
+        for host in needed:
+            if host.lower() not in existing_lower:
+                merged.append(host)
+        if merged:
+            env[key] = ",".join(merged)
+
+
 async def fetch_html_via_nodriver(
     url: str,
     *,
@@ -120,6 +144,7 @@ async def fetch_html_via_nodriver(
         cmd.extend(["--browser-executable-path", browser_executable_path])
 
     env = _maybe_add_src_to_pythonpath(dict(os.environ))
+    _ensure_no_proxy_localhost_env(env)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

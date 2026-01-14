@@ -228,6 +228,44 @@ def _resolve_devtools_ready_timeout_seconds() -> float:
     return max(0.5, min(value, 120.0))
 
 
+def _split_no_proxy_value(raw: str) -> list[str]:
+    out: list[str] = []
+    for item in (raw or "").split(","):
+        value = item.strip()
+        if value:
+            out.append(value)
+    return out
+
+
+def _ensure_no_proxy_localhost() -> None:
+    """
+    Ensure Python stdlib proxy handling does not hijack localhost traffic.
+
+    Why:
+    - Nodriver's internal DevTools readiness checks use urllib for `/json/version`.
+    - On Windows, corporate environments often set HTTP(S)_PROXY/ALL_PROXY globally.
+    - If NO_PROXY/no_proxy doesn't include loopback hosts, urllib may attempt to proxy
+      `http://127.0.0.1:<port>/json/version`, causing long hangs and timeouts.
+
+    This is safe for our workload because:
+    - External navigation uses Chromium's network stack, not urllib.
+    - We only need to guarantee loopback bypass for the local DevTools endpoint.
+    """
+    raw = (os.environ.get("KINDLY_NODRIVER_ENSURE_NO_PROXY_LOCALHOST") or "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return
+
+    needed = ("localhost", "127.0.0.1", "::1")
+    for key in ("NO_PROXY", "no_proxy"):
+        existing = _split_no_proxy_value((os.environ.get(key) or "").strip())
+        existing_lower = {x.lower() for x in existing}
+        merged = list(existing)
+        for host in needed:
+            if host.lower() not in existing_lower:
+                merged.append(host)
+        os.environ[key] = ",".join(merged)
+
+
 def _pick_free_port(host: str = "127.0.0.1") -> int:
     # Best-effort selection: inherently racy, so startup must tolerate collisions.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -524,6 +562,7 @@ async def _fetch_html(
 
 async def _main_async(args: argparse.Namespace) -> int:
     _suppress_unraisable_exceptions()
+    _ensure_no_proxy_localhost()
 
     original_stdout = sys.stdout
     original_stderr = sys.stderr
