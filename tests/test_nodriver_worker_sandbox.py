@@ -365,6 +365,27 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_terminate.call_count, 2)
         self.assertEqual(fake_start.call_count, 0)
 
+    def test_worker_stdout_write_uses_utf8_bytes(self) -> None:
+        """
+        Regression: on Windows, sys.stdout may be configured with a legacy codepage (e.g., cp1252),
+        so writing HTML as text can raise UnicodeEncodeError. The worker must emit UTF-8 bytes.
+        """
+        import io
+
+        from kindly_web_search_mcp_server.scrape import nodriver_worker
+
+        class _BadTextIO(io.TextIOBase):
+            def __init__(self) -> None:
+                self.buffer = io.BytesIO()
+
+            def write(self, _s: str) -> int:  # pragma: no cover
+                raise UnicodeEncodeError("charmap", "x", 0, 1, "cannot encode")
+
+        stream = _BadTextIO()
+        payload = "Hello — 世界".encode("utf-8", errors="strict")
+        nodriver_worker._safe_write_bytes(stream, payload)
+        self.assertIn(b"Hello", stream.buffer.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
