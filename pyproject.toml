@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindly-web-search-mcp-server"
-version = "0.1.1"
+version = "0.1.2"
 description = "MCP server: Serper web search + robust content retrieval."
 readme = "README.md"
 requires-python = ">=3.13"
