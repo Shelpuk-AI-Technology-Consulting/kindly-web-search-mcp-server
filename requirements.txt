@@ -34,5 +34,3 @@ nodriver==0.48.1
 beautifulsoup4==4.14.3
 markdownify==1.2.2
 PyMuPDF==1.26.6
-pymupdf-layout==1.26.6
-pymupdf4llm==0.2.7

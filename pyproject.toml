@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindly-web-search-mcp-server"
-version = "0.1.3"
+version = "0.1.4"
 description = "MCP server: Serper web search + robust content retrieval."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -16,12 +16,18 @@ dependencies = [
     "markdownify",
     "nodriver",
     "PyMuPDF",
-    "pymupdf_layout",
-    "pymupdf4llm",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+# Optional extras for improved PDF-to-Markdown conversion on supported Python versions.
+# These pull in `onnxruntime` transitively (via `pymupdf-layout`), which may not have wheels
+# for the newest CPython releases (e.g., cp314). Keeping them optional avoids install
+# failures while preserving a simple text-extraction baseline via PyMuPDF.
+pdf-advanced = [
+    "pymupdf-layout>=1.26.6; python_version < '3.14'",
+    "pymupdf4llm>=0.2.7; python_version < '3.14'",
+]
 
 [project.scripts]
 mcp-server = "kindly_web_search_mcp_server.server:main"

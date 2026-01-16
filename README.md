@@ -68,6 +68,7 @@ Search uses **Serper** (primary, if configured) or **Tavily**, and page extracti
 - A search API key: `SERPER_API_KEY` **or** `TAVILY_API_KEY`
 - A Chromium-based browser installed on the same machine running the MCP client (Chrome/Chromium/Edge/Brave)
 - Highly recommended: `GITHUB_TOKEN` (renders GitHub Issues in a much more LLM-friendly format: question + answers/comments + reactions/metadata; fewer rate limits)
+- Python 3.14 is supported; optional “advanced PDF layout” extras are disabled on 3.14 because `onnxruntime` wheels may be unavailable.
 
 `GITHUB_TOKEN` can be read-only and limited to public repositories to avoid security/privacy concerns.
 
