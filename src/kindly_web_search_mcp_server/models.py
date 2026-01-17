@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +12,10 @@ class WebSearchResult(BaseModel):
     page_content: str = Field(
         description="LLM-ready Markdown content fetched from `link` (best-effort). Always a string.",
     )
+    diagnostics: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Optional diagnostics metadata emitted when KINDLY_DIAGNOSTICS is enabled.",
+    )
 
 
 class WebSearchResponse(BaseModel):
@@ -19,3 +25,7 @@ class WebSearchResponse(BaseModel):
 class GetContentResponse(BaseModel):
     url: str = Field(description="The requested URL.")
     page_content: str = Field(description="LLM-ready Markdown extracted from the URL (best-effort).")
+    diagnostics: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Optional diagnostics metadata emitted when KINDLY_DIAGNOSTICS is enabled.",
+    )

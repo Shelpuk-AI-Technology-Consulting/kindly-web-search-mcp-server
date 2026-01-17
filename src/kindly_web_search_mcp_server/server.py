@@ -13,6 +13,14 @@ from mcp.server.fastmcp import FastMCP
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
 from .search import search_web
+from .utils.diagnostics import (
+    Diagnostics,
+    MAX_SAMPLE_CHARS,
+    diagnostics_enabled,
+    mask_env_values,
+    new_request_id,
+    sample_data,
+)
 from .utils.logging import configure_logging
 
 configure_logging()
@@ -258,36 +266,103 @@ async def web_search(
     """
 
     started = time.monotonic()
+    diag_enabled = diagnostics_enabled()
+    parent_request_id = new_request_id() if diag_enabled else ""
+    parent_diag = Diagnostics(parent_request_id, diag_enabled, stream=sys.stderr)
+    if diag_enabled:
+        env_snapshot = {
+            "SERPER_API_KEY": os.environ.get("SERPER_API_KEY", ""),
+            "TAVILY_API_KEY": os.environ.get("TAVILY_API_KEY", ""),
+            "SEARXNG_BASE_URL": os.environ.get("SEARXNG_BASE_URL", ""),
+            "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
+            "KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS": os.environ.get("KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS", ""),
+            "KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS": os.environ.get(
+                "KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS", ""
+            ),
+            "KINDLY_WEB_SEARCH_MAX_CONCURRENCY": os.environ.get("KINDLY_WEB_SEARCH_MAX_CONCURRENCY", ""),
+        }
+        parent_diag.emit(
+            "web_search.start",
+            "Starting web search",
+            {
+                "query": query,
+                "num_results": num_results,
+                "env": mask_env_values(env_snapshot),
+            },
+        )
     total_budget_seconds = _resolve_tool_total_timeout_seconds()
 
-    results = await search_web(query, num_results=num_results)
+    results = await search_web(query, num_results=num_results, diagnostics=parent_diag)
     if not results:
-        return WebSearchResponse(results=[]).model_dump()
+        return WebSearchResponse(results=[]).model_dump(exclude_none=True)
 
-    semaphore = asyncio.Semaphore(_resolve_web_search_max_concurrency(len(results)))
+    concurrency = _resolve_web_search_max_concurrency(len(results))
+    semaphore = asyncio.Semaphore(concurrency)
+    if diag_enabled:
+        parent_diag.emit(
+            "web_search.concurrency",
+            "Resolved concurrency",
+            {"concurrency": concurrency, "total_budget_seconds": total_budget_seconds},
+        )
 
     async def enrich_one(r):
+        result_diag = None
+        if diag_enabled:
+            result_request_id = new_request_id()
+            result_diag = Diagnostics(
+                result_request_id,
+                True,
+                stream=sys.stderr,
+                context={"parent_request_id": parent_request_id, "url": r.link},
+            )
+            result_diag.emit("content.start", "Starting content fetch", {"url": r.link})
         async with semaphore:
             remaining = total_budget_seconds - (time.monotonic() - started)
             if remaining <= 0:
                 page_md = _timeout_markdown_note(
                     r.link, scope="web_search time budget exceeded"
                 )
+                if result_diag:
+                    result_diag.emit(
+                        "content.timeout",
+                        "Time budget exceeded before fetch",
+                        {"remaining_seconds": remaining},
+                    )
             else:
                 try:
                     page_md = await asyncio.wait_for(
-                        resolve_page_content_markdown(r.link), timeout=remaining
+                        resolve_page_content_markdown(
+                            r.link, diagnostics=result_diag
+                        ),
+                        timeout=remaining,
                     )
                 except asyncio.TimeoutError:
                     page_md = _timeout_markdown_note(r.link)
+                    if result_diag:
+                        result_diag.emit(
+                            "content.timeout",
+                            "Content fetch timed out",
+                            {"remaining_seconds": remaining},
+                        )
                 except Exception as exc:
-                    detail = str(exc).strip()
+                    full_detail = str(exc).strip()
+                    detail = full_detail
                     if len(detail) > 200:
                         detail = detail[:200].rstrip() + "…"
                     suffix = f": {type(exc).__name__}: {detail}" if detail else f": {type(exc).__name__}"
                     page_md = (
                         f"_Failed to retrieve page content{suffix}_\n\nSource: {r.link}\n"
                     )
+                    if result_diag:
+                        result_diag.emit(
+                            "content.error",
+                            "Content fetch failed",
+                            {
+                                "error": type(exc).__name__,
+                                "detail": full_detail,
+                                "detail_len": len(full_detail),
+                            },
+                        )
 
             if page_md is None:
                 # The universal loader intentionally skips obvious PDFs; return a deterministic note.
@@ -295,10 +370,31 @@ async def web_search(
                     "_Could not retrieve content for this URL (possibly a PDF or unsupported type)._"
                     f"\n\nSource: {r.link}\n"
                 )
-            return r.model_copy(update={"page_content": page_md})
+                if result_diag:
+                    result_diag.emit(
+                        "content.skip",
+                        "Content fetch skipped",
+                        {"reason": "probable PDF or unsupported type"},
+                    )
+
+            if result_diag:
+                result_diag.emit(
+                    "content.result",
+                    "Resolved content",
+                    {
+                        "content_len": len(page_md),
+                        **sample_data(page_md, MAX_SAMPLE_CHARS),
+                    },
+                )
+            return r.model_copy(
+                update={
+                    "page_content": page_md,
+                    "diagnostics": result_diag.entries if result_diag else None,
+                }
+            )
 
     enriched = await asyncio.gather(*(enrich_one(r) for r in results))
-    return WebSearchResponse(results=enriched).model_dump()
+    return WebSearchResponse(results=enriched).model_dump(exclude_none=True)
 
 
 @mcp.tool()
@@ -331,19 +427,48 @@ async def get_content(url: str) -> dict:
     """
 
     timeout_seconds = _resolve_tool_total_timeout_seconds()
+    diag_enabled = diagnostics_enabled()
+    request_id = new_request_id() if diag_enabled else ""
+    diag = Diagnostics(request_id, diag_enabled, stream=sys.stderr)
+    if diag_enabled:
+        env_snapshot = {
+            "KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS": os.environ.get("KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS", ""),
+            "KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS": os.environ.get(
+                "KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS", ""
+            ),
+            "KINDLY_BROWSER_EXECUTABLE_PATH": os.environ.get("KINDLY_BROWSER_EXECUTABLE_PATH", ""),
+        }
+        diag.emit(
+            "get_content.start",
+            "Starting content fetch",
+            {"url": url, "env": mask_env_values(env_snapshot)},
+        )
 
     try:
         page_md = await asyncio.wait_for(
-            resolve_page_content_markdown(url), timeout=timeout_seconds
+            resolve_page_content_markdown(url, diagnostics=diag), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
         page_md = _timeout_markdown_note(url, scope="tool time budget exceeded")
+        if diag_enabled:
+            diag.emit(
+                "content.timeout",
+                "Content fetch timed out",
+                {"timeout_seconds": timeout_seconds},
+            )
     except Exception as exc:
-        detail = str(exc).strip()
+        full_detail = str(exc).strip()
+        detail = full_detail
         if len(detail) > 200:
             detail = detail[:200].rstrip() + "…"
         suffix = f": {type(exc).__name__}: {detail}" if detail else f": {type(exc).__name__}"
         page_md = f"_Failed to retrieve page content{suffix}_\n\nSource: {url}\n"
+        if diag_enabled:
+            diag.emit(
+                "content.error",
+                "Content fetch failed",
+                {"error": type(exc).__name__, "detail": full_detail, "detail_len": len(full_detail)},
+            )
 
     if page_md is None:
         # The current universal fallback intentionally skips obvious PDFs. Until we add a
@@ -352,5 +477,18 @@ async def get_content(url: str) -> dict:
             "_Could not retrieve content for this URL (possibly a PDF or unsupported type)._"
             f"\n\nSource: {url}\n"
         )
+        if diag_enabled:
+            diag.emit("content.skip", "Content fetch skipped", {"reason": "probable PDF"})
 
-    return GetContentResponse(url=url, page_content=page_md).model_dump()
+    if diag_enabled:
+        diag.emit(
+            "content.result",
+            "Resolved content",
+            {"content_len": len(page_md), **sample_data(page_md, MAX_SAMPLE_CHARS)},
+        )
+
+    return GetContentResponse(
+        url=url,
+        page_content=page_md,
+        diagnostics=diag.entries if diag_enabled else None,
+    ).model_dump(exclude_none=True)

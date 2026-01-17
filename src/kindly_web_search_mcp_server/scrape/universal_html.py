@@ -10,6 +10,14 @@ from urllib.parse import urlparse
 
 from .extract import extract_content_as_markdown
 from .sanitize import sanitize_markdown
+from ..utils.diagnostics import (
+    Diagnostics,
+    MAX_SAMPLE_CHARS,
+    MAX_STDERR_CHARS,
+    mask_env_values,
+    sample_data,
+    truncate_text,
+)
 
 
 DEFAULT_USER_AGENT = (
@@ -146,6 +154,7 @@ async def fetch_html_via_nodriver(
     *,
     referer: str | None = None,
     config: UniversalHtmlLoaderConfig = UniversalHtmlLoaderConfig(),
+    diagnostics: Diagnostics | None = None,
 ) -> str:
     """
     Fetch a rendered HTML snapshot via headless Nodriver.
@@ -178,7 +187,43 @@ async def fetch_html_via_nodriver(
         cmd.extend(["--browser-executable-path", browser_executable_path])
 
     env = _maybe_add_src_to_pythonpath(dict(os.environ))
+    if diagnostics and diagnostics.enabled:
+        env["KINDLY_DIAGNOSTICS"] = "1"
+        env["KINDLY_REQUEST_ID"] = diagnostics.request_id
     _ensure_no_proxy_localhost_env(env)
+
+    if diagnostics:
+        env_snapshot = {
+            "KINDLY_BROWSER_EXECUTABLE_PATH": env.get("KINDLY_BROWSER_EXECUTABLE_PATH", ""),
+            "KINDLY_HTML_TOTAL_TIMEOUT_SECONDS": env.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS", ""),
+            "KINDLY_NODRIVER_RETRY_ATTEMPTS": env.get("KINDLY_NODRIVER_RETRY_ATTEMPTS", ""),
+            "KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS": env.get("KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS", ""),
+            "KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS": env.get(
+                "KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS", ""
+            ),
+            "KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER": env.get(
+                "KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER", ""
+            ),
+            "KINDLY_NODRIVER_ENSURE_NO_PROXY_LOCALHOST": env.get(
+                "KINDLY_NODRIVER_ENSURE_NO_PROXY_LOCALHOST", ""
+            ),
+            "NO_PROXY": env.get("NO_PROXY", ""),
+            "no_proxy": env.get("no_proxy", ""),
+            "HTTP_PROXY": env.get("HTTP_PROXY", ""),
+            "HTTPS_PROXY": env.get("HTTPS_PROXY", ""),
+        }
+        diagnostics.emit(
+            "worker.spawn",
+            "Launching nodriver worker",
+            {
+                "url": url,
+                "referer": referer or "",
+                "user_agent": config.user_agent,
+                "wait_seconds": config.wait_seconds,
+                "cmd": cmd,
+                "env": mask_env_values(env_snapshot),
+            },
+        )
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -199,16 +244,54 @@ async def fetch_html_via_nodriver(
         )
     except asyncio.TimeoutError:
         await _terminate_process_tree(proc)
+        if diagnostics:
+            diagnostics.emit(
+                "worker.timeout",
+                "Nodriver worker timed out",
+                {"timeout_seconds": timeout_seconds},
+            )
         raise
     except asyncio.CancelledError:
         await _terminate_process_tree(proc)
+        if diagnostics:
+            diagnostics.emit("worker.cancelled", "Nodriver worker cancelled", {})
         raise
 
     if proc.returncode != 0:
         detail = (stderr or b"").decode("utf-8", errors="ignore").strip()
+        if diagnostics:
+            stderr_sample, stderr_truncated, stderr_len = truncate_text(
+                detail, MAX_STDERR_CHARS
+            )
+            diagnostics.emit(
+                "worker.exit",
+                "Nodriver worker failed",
+                {
+                    "exit_code": proc.returncode,
+                    "stderr_len": stderr_len,
+                    "stderr_sample": stderr_sample,
+                    "stderr_truncated": stderr_truncated,
+                },
+            )
         raise RuntimeError(
             f"nodriver worker failed (exit={proc.returncode}): {detail or 'unknown error'}"
         )
+
+    if diagnostics:
+        stderr_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
+        if stderr_text:
+            stderr_sample, stderr_truncated, stderr_len = truncate_text(
+                stderr_text, MAX_STDERR_CHARS
+            )
+            diagnostics.emit(
+                "worker.stderr",
+                "Nodriver worker stderr output",
+                {
+                    "stderr_len": stderr_len,
+                    "stderr_sample": stderr_sample,
+                    "stderr_truncated": stderr_truncated,
+                },
+            )
 
     return (stdout or b"").decode("utf-8", errors="ignore")
 
@@ -236,6 +319,7 @@ async def load_url_as_markdown(
     *,
     referer: str | None = None,
     config: UniversalHtmlLoaderConfig = UniversalHtmlLoaderConfig(),
+    diagnostics: Diagnostics | None = None,
 ) -> str | None:
     """
     Universal fallback: fetch HTML via headless Nodriver and return Markdown.
@@ -243,20 +327,39 @@ async def load_url_as_markdown(
     Returns `None` for obvious non-HTML targets (e.g., PDFs).
     """
     if _is_probably_pdf_url(url):
+        if diagnostics:
+            diagnostics.emit("content.skip", "Skipping probable PDF", {"url": url})
         return None
 
     try:
-        html = await fetch_html_via_nodriver(url, referer=referer, config=config)
+        html = await fetch_html_via_nodriver(
+            url, referer=referer, config=config, diagnostics=diagnostics
+        )
     except Exception as exc:
         detail = str(exc).strip()
         if len(detail) > 400:
             detail = detail[:400].rstrip() + "…"
         suffix = f": {detail}" if detail else ""
+        if diagnostics:
+            diagnostics.emit(
+                "content.error",
+                "Universal HTML loader failed",
+                {"error": type(exc).__name__, "detail": detail},
+            )
         return f"_Failed to retrieve page content: {type(exc).__name__}{suffix}_\n\nSource: {url}\n"
 
     # If we somehow got a PDF/binary marker, refuse to parse it as HTML.
     if html.lstrip().startswith("%PDF-"):
+        if diagnostics:
+            diagnostics.emit("content.skip", "HTML looked like PDF", {"url": url})
         return None
+
+    if diagnostics:
+        diagnostics.emit(
+            "content.html_sample",
+            "Captured HTML sample",
+            sample_data(html, MAX_SAMPLE_CHARS),
+        )
 
     markdown = html_to_markdown(html, source_url=url, config=config)
     # Release the HTML buffer promptly (best-effort).

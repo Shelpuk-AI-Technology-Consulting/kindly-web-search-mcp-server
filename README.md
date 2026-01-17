@@ -522,6 +522,9 @@ docker run --rm -p 8000:8000 \
     - `$env:KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS="180"`
     - `$env:KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS="600"`
     - Optional (reduces parallel browser work): `$env:KINDLY_WEB_SEARCH_MAX_CONCURRENCY="1"`
+- Need deeper debugging? Enable diagnostics:
+  - Set `KINDLY_DIAGNOSTICS=1` to emit JSON-line diagnostics to stderr and include `diagnostics` in tool responses.
+  - `get_content` returns top-level `diagnostics`; `web_search` attaches `diagnostics` per result.
 - `OSError: [Errno 39] Directory not empty: '/tmp/kindly-nodriver-.../Default'`: update to the latest server revision (uv may cache tool envs; `uv cache clean` can help).
 - “web_search fails: no provider key”: set `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 

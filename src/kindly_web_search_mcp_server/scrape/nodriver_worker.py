@@ -6,6 +6,7 @@ import contextlib
 import importlib
 import importlib.util
 import io
+import json
 import os
 import re
 import shutil
@@ -99,6 +100,47 @@ def _safe_write_bytes(stream: TextIO, data: bytes) -> None:
 
     try:
         os.write(1, payload)
+    except Exception:
+        return
+
+
+_DIAG_ENABLED = False
+_DIAG_REQUEST_ID = "unknown"
+_DIAG_STREAM: TextIO | None = None
+_DIAG_STARTED = 0.0
+_DIAG_LINE_LIMIT = 8000  # Keep in sync with utils.diagnostics.MAX_LINE_CHARS
+
+
+def _diagnostics_enabled() -> bool:
+    raw = (os.environ.get("KINDLY_DIAGNOSTICS") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _emit_diag(stage: str, msg: str, data: dict[str, object] | None = None) -> None:
+    if not _DIAG_ENABLED:
+        return
+    try:
+        stream = _DIAG_STREAM or sys.stderr
+        elapsed_ms = int((time.monotonic() - _DIAG_STARTED) * 1000)
+        entry = {
+            "request_id": _DIAG_REQUEST_ID,
+            "stage": stage,
+            "msg": msg,
+            "elapsed_ms": elapsed_ms,
+            "data": data or {},
+        }
+        payload = json.dumps(entry, ensure_ascii=True, separators=(",", ":"))
+        if len(payload) > _DIAG_LINE_LIMIT:
+            entry = {
+                "request_id": _DIAG_REQUEST_ID,
+                "stage": stage,
+                "msg": msg,
+                "elapsed_ms": elapsed_ms,
+                "line_truncated": True,
+                "data": {"note": "diagnostic payload truncated", "original_len": len(payload)},
+            }
+            payload = json.dumps(entry, ensure_ascii=True, separators=(",", ":"))
+        _safe_write_text(stream, f"KINDLY_DIAG {payload}")
     except Exception:
         return
 
@@ -580,6 +622,19 @@ async def _fetch_html(
     base_backoff_seconds = _resolve_retry_backoff_seconds()
     snap_multiplier = _resolve_snap_backoff_multiplier() if is_snap else 1.0
     devtools_ready_timeout_seconds = _resolve_devtools_ready_timeout_seconds() * snap_multiplier
+    _emit_diag(
+        "worker.config",
+        "Resolved browser configuration",
+        {
+            "browser_executable_path": resolved_browser_executable_path,
+            "sandbox_enabled": sandbox_enabled,
+            "is_snap": is_snap,
+            "attempts": attempts,
+            "backoff_seconds": base_backoff_seconds,
+            "devtools_ready_timeout_seconds": devtools_ready_timeout_seconds,
+            "overall_timeout_seconds": overall_timeout_seconds,
+        },
+    )
 
     base_browser_args = [
         "--window-size=1920,1080",
@@ -602,6 +657,11 @@ async def _fetch_html(
                 try:
                     host = "127.0.0.1"
                     port = _pick_free_port(host)
+                    _emit_diag(
+                        "worker.launch_attempt",
+                        "Launching Chromium",
+                        {"attempt": attempt + 1, "host": host, "port": port},
+                    )
                     chromium_args = _build_chromium_launch_args(
                         base_browser_args=base_browser_args,
                         user_data_dir=user_data_dir,
@@ -617,6 +677,11 @@ async def _fetch_html(
                         proc=chrome_proc,
                         timeout_seconds=devtools_ready_timeout_seconds,
                     )
+                    _emit_diag(
+                        "worker.devtools_ready",
+                        "DevTools endpoint ready",
+                        {"host": host, "port": port},
+                    )
 
                     # Connect Nodriver to the already-running browser instance (do not spawn another).
                     browser = await uc.start(
@@ -628,10 +693,20 @@ async def _fetch_html(
                         host=host,
                         port=port,
                     )
+                    _emit_diag(
+                        "worker.browser_started",
+                        "Nodriver connected to browser",
+                        {"host": host, "port": port},
+                    )
                     last_start_error = None
                     break
                 except Exception as exc:
                     last_start_error = exc
+                    _emit_diag(
+                        "worker.launch_error",
+                        "Browser launch attempt failed",
+                        {"attempt": attempt + 1, "error": type(exc).__name__},
+                    )
                     if chrome_proc is not None:
                         await _terminate_process(chrome_proc)
                         chrome_proc = None
@@ -675,6 +750,11 @@ async def _fetch_html(
                 raise TimeoutError(
                     f"Navigation timed out after {overall_timeout_seconds:.1f}s"
                 ) from exc
+            _emit_diag(
+                "worker.navigate_complete",
+                "Navigation complete",
+                {"content_len": len(content) if isinstance(content, str) else 0},
+            )
 
             if isinstance(content, (bytes, bytearray)):
                 return bytes(content).decode("utf-8", errors="ignore")
@@ -693,6 +773,11 @@ async def _fetch_html(
                     "If running as root (e.g., in Docker), ensure sandbox is disabled (KINDLY_NODRIVER_SANDBOX=0). "
                     "If the browser cannot be found/started, set KINDLY_BROWSER_EXECUTABLE_PATH."
                 ) from exc
+            _emit_diag(
+                "worker.error",
+                "Worker failed during navigation",
+                {"error": type(exc).__name__},
+            )
             raise
         finally:
             # Best-effort cleanup. Errors here should not mask the page retrieval.
@@ -728,6 +813,23 @@ async def _main_async(args: argparse.Namespace) -> int:
 
     original_stdout = sys.stdout
     original_stderr = sys.stderr
+    global _DIAG_ENABLED, _DIAG_REQUEST_ID, _DIAG_STREAM, _DIAG_STARTED
+    _DIAG_ENABLED = _diagnostics_enabled()
+    _DIAG_REQUEST_ID = (os.environ.get("KINDLY_REQUEST_ID") or "unknown").strip() or "unknown"
+    _DIAG_STREAM = original_stderr
+    _DIAG_STARTED = time.monotonic()
+    if _DIAG_ENABLED:
+        _emit_diag(
+            "worker.start",
+            "Worker starting",
+            {
+                "url": args.url,
+                "referer": args.referer or "",
+                "user_agent": args.user_agent,
+                "wait_seconds": args.wait_seconds,
+                "browser_executable_path": args.browser_executable_path or "",
+            },
+        )
     sys.stdout = _NullTextIO(original_stdout)
     sys.stderr = _NullTextIO(original_stderr)
 
@@ -743,6 +845,11 @@ async def _main_async(args: argparse.Namespace) -> int:
         )
     except Exception as exc:
         # Keep stderr minimal (no traceback) to avoid bloating the parent error string.
+        _emit_diag(
+            "worker.error",
+            "Worker failed",
+            {"error": type(exc).__name__, "detail": str(exc)},
+        )
         _safe_write_text(original_stderr, f"{type(exc).__name__}: {exc}")
         return 1
 

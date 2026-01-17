@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from ..models import WebSearchResult
+from ..utils.diagnostics import Diagnostics
 from .searxng import search_searxng
 from .serper import search_serper
 from .tavily import search_tavily
@@ -33,6 +34,7 @@ async def search_web(
     *,
     num_results: int,
     http_client: httpx.AsyncClient | None = None,
+    diagnostics: Diagnostics | None = None,
 ) -> list[WebSearchResult]:
     """
     Search the web using Serper, Tavily, or SearXNG.
@@ -53,10 +55,27 @@ async def search_web(
     provider: Callable[..., Awaitable[list[WebSearchResult]]]
     if has_serper:
         provider = search_serper
+        provider_name = "serper"
     elif has_tavily:
         provider = search_tavily
+        provider_name = "tavily"
     else:
         provider = search_searxng
+        provider_name = "searxng"
+
+    if diagnostics:
+        diagnostics.emit(
+            "search.provider_select",
+            "Selected provider for search",
+            {
+                "query": query,
+                "num_results": num_results,
+                "provider": provider_name,
+                "has_serper_key": has_serper,
+                "has_tavily_key": has_tavily,
+                "has_searxng_config": has_searxng,
+            },
+        )
 
     async def _run(client: httpx.AsyncClient) -> list[WebSearchResult]:
         return await provider(query, num_results=num_results, http_client=client)
@@ -66,4 +85,3 @@ async def search_web(
 
     async with httpx.AsyncClient(timeout=30) as client:
         return await _run(client)
-
