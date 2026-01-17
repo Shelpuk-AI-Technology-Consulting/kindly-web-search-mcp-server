@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -146,6 +146,157 @@ def _split_worker_diagnostics(
     return entries, cleaned_text, error_samples
 
 
+@dataclass
+class _StdoutAccumulator:
+    buffer: bytearray = field(default_factory=bytearray)
+    bytes_read: int = 0
+    last_emit_time: float = 0.0
+    last_emit_bytes: int = 0
+
+
+@dataclass
+class _StderrAccumulator:
+    buffer: str = ""
+    tail: str = ""
+    bytes_read: int = 0
+    last_emit_time: float = 0.0
+    last_emit_bytes: int = 0
+    worker_entries: list[dict[str, Any]] = field(default_factory=list)
+    parse_errors: list[str] = field(default_factory=list)
+
+
+STREAM_READ_CHUNK = 16_384
+STREAM_PROGRESS_INTERVAL_SECONDS = 2.0
+STREAM_PROGRESS_MIN_BYTES = 64 * 1024
+
+
+def _append_tail_text(existing: str, addition: str, *, limit: int) -> str:
+    if not addition:
+        return existing
+    combined = existing + addition
+    if len(combined) <= limit:
+        return combined
+    return combined[-limit:]
+
+
+def _consume_stderr_line(state: _StderrAccumulator, line: str, *, tail_limit: int) -> None:
+    if line == "":
+        return
+    if line.startswith("KINDLY_DIAG "):
+        payload = line[len("KINDLY_DIAG ") :].strip()
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            if len(state.parse_errors) < 3:
+                sample, _, _ = truncate_text(payload, 200)
+                state.parse_errors.append(sample)
+            return
+        if isinstance(parsed, dict):
+            state.worker_entries.append(parsed)
+        else:
+            if len(state.parse_errors) < 3:
+                sample, _, _ = truncate_text(payload, 200)
+                state.parse_errors.append(sample)
+        return
+    state.tail = _append_tail_text(state.tail, line + "\n", limit=tail_limit)
+
+
+def _finalize_stderr_state(state: _StderrAccumulator, *, tail_limit: int) -> None:
+    if not state.buffer:
+        return
+    line = state.buffer.rstrip("\r")
+    state.buffer = ""
+    _consume_stderr_line(state, line, tail_limit=tail_limit)
+
+
+def _maybe_emit_stream_progress(
+    diagnostics: Diagnostics | None,
+    *,
+    stream: str,
+    bytes_read: int,
+    started: float,
+    last_emit_time: float,
+    last_emit_bytes: int,
+) -> tuple[float, int]:
+    if diagnostics is None:
+        return last_emit_time, last_emit_bytes
+    now = time.monotonic()
+    if last_emit_time == 0.0:
+        last_emit_time = now
+    if (now - last_emit_time) < STREAM_PROGRESS_INTERVAL_SECONDS and (
+        bytes_read - last_emit_bytes
+    ) < STREAM_PROGRESS_MIN_BYTES:
+        return last_emit_time, last_emit_bytes
+    diagnostics.emit(
+        "worker.stream",
+        "Streaming worker output",
+        {
+            "stream": stream,
+            "bytes_read": bytes_read,
+            "elapsed_ms": int((now - started) * 1000),
+        },
+    )
+    return now, bytes_read
+
+
+async def _read_stdout_stream(
+    stream: asyncio.StreamReader | None,
+    state: _StdoutAccumulator,
+    *,
+    diagnostics: Diagnostics | None,
+    started: float,
+) -> None:
+    if stream is None:
+        return
+    while True:
+        chunk = await stream.read(STREAM_READ_CHUNK)
+        if not chunk:
+            break
+        state.buffer.extend(chunk)
+        state.bytes_read += len(chunk)
+        state.last_emit_time, state.last_emit_bytes = _maybe_emit_stream_progress(
+            diagnostics,
+            stream="stdout",
+            bytes_read=state.bytes_read,
+            started=started,
+            last_emit_time=state.last_emit_time,
+            last_emit_bytes=state.last_emit_bytes,
+        )
+
+
+async def _read_stderr_stream(
+    stream: asyncio.StreamReader | None,
+    state: _StderrAccumulator,
+    *,
+    diagnostics: Diagnostics | None,
+    started: float,
+    tail_limit: int,
+) -> None:
+    if stream is None:
+        return
+    while True:
+        chunk = await stream.read(STREAM_READ_CHUNK)
+        if not chunk:
+            break
+        state.bytes_read += len(chunk)
+        text = chunk.decode("utf-8", errors="replace")
+        state.buffer += text
+        while True:
+            newline_index = state.buffer.find("\n")
+            if newline_index < 0:
+                break
+            line = state.buffer[:newline_index].rstrip("\r")
+            state.buffer = state.buffer[newline_index + 1 :]
+            _consume_stderr_line(state, line, tail_limit=tail_limit)
+        state.last_emit_time, state.last_emit_bytes = _maybe_emit_stream_progress(
+            diagnostics,
+            stream="stderr",
+            bytes_read=state.bytes_read,
+            started=started,
+            last_emit_time=state.last_emit_time,
+            last_emit_bytes=state.last_emit_bytes,
+        )
+
 async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is not None:
         return
@@ -263,6 +414,23 @@ async def fetch_html_via_nodriver(
         stderr=asyncio.subprocess.PIPE,
         env=env,
     )
+    stdout_state: _StdoutAccumulator | None = None
+    stderr_state: _StderrAccumulator | None = None
+    stdout_task: asyncio.Task[None] | None = None
+    stderr_task: asyncio.Task[None] | None = None
+    wait_task: asyncio.Task[int] | None = None
+    if diagnostics:
+        loop = asyncio.get_running_loop()
+        policy = asyncio.get_event_loop_policy()
+        diagnostics.emit(
+            "worker.process_started",
+            "Worker process started",
+            {
+                "pid": proc.pid,
+                "event_loop": loop.__class__.__name__,
+                "event_loop_policy": policy.__class__.__name__,
+            },
+        )
 
     try:
         raw_timeout = (os.environ.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS") or "").strip()
@@ -298,29 +466,49 @@ async def fetch_html_via_nodriver(
                     "default_seconds": config.total_timeout_seconds,
                 },
             )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_seconds
+        stdout_state = _StdoutAccumulator()
+        stderr_state = _StderrAccumulator()
+        stdout_task = asyncio.create_task(
+            _read_stdout_stream(proc.stdout, stdout_state, diagnostics=diagnostics, started=started)
+        )
+        stderr_task = asyncio.create_task(
+            _read_stderr_stream(
+                proc.stderr,
+                stderr_state,
+                diagnostics=diagnostics,
+                started=started,
+                tail_limit=MAX_STDERR_CHARS,
+            )
+        )
+        wait_task = asyncio.create_task(proc.wait())
+        await asyncio.wait_for(
+            asyncio.gather(stdout_task, stderr_task, wait_task), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
+        for task in (stdout_task, stderr_task, wait_task):
+            if task is not None:
+                task.cancel()
+        for task in (stdout_task, stderr_task, wait_task):
+            if task is None:
+                continue
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await _terminate_process_tree(proc)
-        stderr_text = ""
-        try:
-            _, stderr_tail = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-            stderr_text = (stderr_tail or b"").decode("utf-8", errors="ignore").strip()
-        except Exception:
-            stderr_text = ""
-        worker_entries, stderr_text, error_samples = _split_worker_diagnostics(stderr_text)
-        if diagnostics and worker_entries:
-            diagnostics.entries.extend(worker_entries)
-        if diagnostics and error_samples:
-            diagnostics.emit(
-                "worker.diag_parse_error",
-                "Failed to parse worker diagnostics",
-                {"samples": error_samples},
-            )
+        if stderr_state is not None:
+            _finalize_stderr_state(stderr_state, tail_limit=MAX_STDERR_CHARS)
+            if diagnostics and stderr_state.worker_entries:
+                diagnostics.entries.extend(stderr_state.worker_entries)
+            if diagnostics and stderr_state.parse_errors:
+                diagnostics.emit(
+                    "worker.diag_parse_error",
+                    "Failed to parse worker diagnostics",
+                    {"samples": stderr_state.parse_errors},
+                )
         if diagnostics:
+            stderr_tail = stderr_state.tail if stderr_state is not None else ""
+            stdout_len = stdout_state.bytes_read if stdout_state is not None else 0
             stderr_sample, stderr_truncated, stderr_len = truncate_text(
-                stderr_text, MAX_STDERR_CHARS
+                stderr_tail, MAX_STDERR_CHARS
             )
             diagnostics.emit(
                 "worker.timeout",
@@ -331,28 +519,39 @@ async def fetch_html_via_nodriver(
                     "stderr_len": stderr_len,
                     "stderr_sample": stderr_sample,
                     "stderr_truncated": stderr_truncated,
+                    "stdout_len": stdout_len,
                 },
             )
         raise
     except asyncio.CancelledError:
+        for task in (stdout_task, stderr_task, wait_task):
+            if task is not None:
+                task.cancel()
+        for task in (stdout_task, stderr_task, wait_task):
+            if task is None:
+                continue
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await _terminate_process_tree(proc)
         if diagnostics:
             diagnostics.emit("worker.cancelled", "Nodriver worker cancelled", {})
         raise
 
-    stderr_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
-    worker_entries, stderr_text, error_samples = _split_worker_diagnostics(stderr_text)
-    if diagnostics and worker_entries:
-        diagnostics.entries.extend(worker_entries)
-    if diagnostics and error_samples:
+    if stderr_state is None or stdout_state is None:
+        raise RuntimeError("nodriver worker streams unavailable")
+
+    _finalize_stderr_state(stderr_state, tail_limit=MAX_STDERR_CHARS)
+    if diagnostics and stderr_state.worker_entries:
+        diagnostics.entries.extend(stderr_state.worker_entries)
+    if diagnostics and stderr_state.parse_errors:
         diagnostics.emit(
             "worker.diag_parse_error",
             "Failed to parse worker diagnostics",
-            {"samples": error_samples},
+            {"samples": stderr_state.parse_errors},
         )
 
     if proc.returncode != 0:
-        detail = stderr_text
+        detail = stderr_state.tail
         if diagnostics:
             stderr_sample, stderr_truncated, stderr_len = truncate_text(
                 detail, MAX_STDERR_CHARS
@@ -373,9 +572,9 @@ async def fetch_html_via_nodriver(
         )
 
     if diagnostics:
-        if stderr_text:
+        if stderr_state.tail:
             stderr_sample, stderr_truncated, stderr_len = truncate_text(
-                stderr_text, MAX_STDERR_CHARS
+                stderr_state.tail, MAX_STDERR_CHARS
             )
             diagnostics.emit(
                 "worker.stderr",
@@ -391,12 +590,12 @@ async def fetch_html_via_nodriver(
             "worker.stdout",
             "Nodriver worker completed",
             {
-                "stdout_len": len(stdout or b""),
+                "stdout_len": stdout_state.bytes_read,
                 "runtime_ms": int((time.monotonic() - started) * 1000),
             },
         )
 
-    return (stdout or b"").decode("utf-8", errors="ignore")
+    return bytes(stdout_state.buffer).decode("utf-8", errors="ignore")
 
 
 def html_to_markdown(
