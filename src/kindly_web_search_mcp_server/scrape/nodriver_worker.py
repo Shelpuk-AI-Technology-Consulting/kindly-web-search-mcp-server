@@ -608,6 +608,7 @@ async def _fetch_html(
 ) -> str:
     try:
         import nodriver as uc  # type: ignore
+        cdp = uc.cdp
     except SyntaxError as exc:  # pragma: no cover
         should_retry = _patch_nodriver_network_encoding(exc)
         if should_retry:
@@ -707,6 +708,82 @@ async def _fetch_html(
             },
         )
 
+    async def _ensure_reuse_page():
+        await browser.update_targets()
+        page_targets = [
+            target
+            for target in browser.targets
+            if getattr(target, "type_", None) == "page"
+        ]
+        target_details = []
+        for target in page_targets[:5]:
+            info = getattr(target, "target", None)
+            target_details.append(
+                {
+                    "id": getattr(target, "target_id", None),
+                    "url": getattr(info, "url", None) if info is not None else None,
+                }
+            )
+        _emit_diag(
+            "worker.reuse_targets",
+            "Resolved pooled targets",
+            {"page_targets": len(page_targets), "targets": target_details},
+        )
+        if page_targets:
+            return page_targets[0]
+
+        target_id = await browser.connection.send(
+            cdp.target.create_target(
+                "about:blank", new_window=False, enable_begin_frame_control=True
+            )
+        )
+        _emit_diag(
+            "worker.reuse_target_created",
+            "Created pooled target",
+            {"target_id": target_id},
+        )
+
+        for attempt in range(3):
+            await browser.update_targets()
+            for target in browser.targets:
+                if (
+                    getattr(target, "type_", None) == "page"
+                    and getattr(target, "target_id", None) == target_id
+                ):
+                    return target
+            if attempt < 2:
+                await asyncio.sleep(0.1 * (2**attempt))
+
+        raise RuntimeError(
+            f"Created target {target_id} but no page targets were discovered."
+        )
+
+    async def _navigate_tab(tab, target_url: str) -> None:
+        target_id = getattr(tab, "target_id", None)
+        tab._browser = browser
+        _emit_diag(
+            "worker.navigate_cdp_start",
+            "Starting CDP navigation",
+            {"target_id": target_id, "url": target_url},
+        )
+        try:
+            frame_id, *_ = await tab.send(cdp.page.navigate(target_url))
+        except Exception as exc:
+            _emit_diag(
+                "worker.navigate_cdp_failed",
+                "CDP navigation failed",
+                {"target_id": target_id, "url": target_url, "error": type(exc).__name__},
+            )
+            raise
+        if frame_id:
+            tab.frame_id = frame_id
+        else:
+            _emit_diag(
+                "worker.navigate_cdp_no_frame",
+                "CDP navigation returned no frame_id",
+                {"target_id": target_id, "url": target_url},
+            )
+
     async def _navigate_and_extract() -> str:
         nonlocal page, ref_page
         _emit_diag(
@@ -714,11 +791,20 @@ async def _fetch_html(
             "Starting navigation",
             {"url": url, "referer": referer or "", "wait_seconds": wait_seconds},
         )
-        if referer:
-            ref_page = await browser.get(referer)
-            await asyncio.sleep(0.25)
+        if reuse_requested:
+            reuse_page = await _ensure_reuse_page()
+            if referer:
+                ref_page = reuse_page
+                await _navigate_tab(reuse_page, referer)
+                await asyncio.sleep(0.25)
+            page = reuse_page
+            await _navigate_tab(reuse_page, url)
+        else:
+            if referer:
+                ref_page = await browser.get(referer)
+                await asyncio.sleep(0.25)
 
-        page = await browser.get(url)
+            page = await browser.get(url)
         await asyncio.sleep(wait_seconds)
 
         getter = getattr(page, "get_content", None)
