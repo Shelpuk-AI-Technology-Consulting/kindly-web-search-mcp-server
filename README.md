@@ -517,11 +517,17 @@ docker run --rm -p 8000:8000 \
   - Env vars:
     - `KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS`: total time budget per `web_search` / `get_content` call (search + extraction). Default: `120`.
     - `KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS`: caps the above value (safety). Default: `600`.
-    - `KINDLY_WEB_SEARCH_MAX_CONCURRENCY`: max parallel content fetches. Defaults: `1` on Windows, `3` elsewhere (when unset or invalid).
+    - `KINDLY_WEB_SEARCH_MAX_CONCURRENCY`: max parallel content fetches. Default: `3` (when unset or invalid).
   - Recommended starting point (PowerShell):
     - `$env:KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS="180"`
     - `$env:KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS="600"`
     - Optional (reduces parallel browser work): `$env:KINDLY_WEB_SEARCH_MAX_CONCURRENCY="1"`
+- Browser reuse is on by default for universal HTML loading. Note: pooled Chromium shares state across requests (cookies, local storage, cache, and user-agent from the first request handled by each slot).
+  - `KINDLY_NODRIVER_REUSE_BROWSER=0` disables reuse (fresh Chromium per request).
+  - `KINDLY_NODRIVER_BROWSER_POOL_SIZE=2` controls how many Chromium instances are kept warm.
+  - `KINDLY_NODRIVER_ACQUIRE_TIMEOUT_SECONDS=30` controls how long to wait for a pooled slot before falling back to per-request Chromium.
+  - Optional: `KINDLY_NODRIVER_PORT_RANGE=45000-45100` restricts remote debugging ports.
+  - If pool acquisition times out or fails, the server falls back to per-request Chromium and emits a `pool.acquire_timeout`/`pool.slot_error` diagnostic when diagnostics are enabled.
 - Need deeper debugging? Enable diagnostics:
   - Set `KINDLY_DIAGNOSTICS=1` to emit JSON-line diagnostics to stderr and include `diagnostics` in tool responses.
   - `get_content` returns top-level `diagnostics`; `web_search` attaches `diagnostics` per result.

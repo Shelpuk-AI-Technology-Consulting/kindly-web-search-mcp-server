@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .chromium_pool import get_chromium_pool, reuse_enabled
 from .extract import extract_content_as_markdown
 from .sanitize import sanitize_markdown
 from ..utils.diagnostics import (
@@ -553,6 +554,36 @@ async def fetch_html_via_nodriver(
     if referer:
         cmd.extend(["--referer", referer])
 
+    pool = None
+    slot = None
+    use_pool = reuse_enabled()
+    if use_pool:
+        try:
+            pool = await get_chromium_pool(diagnostics=diagnostics)
+            slot = await pool.acquire(user_agent=config.user_agent, diagnostics=diagnostics)
+        except Exception as exc:
+            if diagnostics:
+                diagnostics.emit(
+                    "pool.error",
+                    "Failed to acquire pooled Chromium",
+                    {"error": type(exc).__name__},
+                )
+            slot = None
+    if slot is None:
+        use_pool = False
+    if slot is not None:
+        cmd.extend(
+            [
+                "--remote-host",
+                slot.host,
+                "--remote-port",
+                str(slot.port or 0),
+                "--reuse-browser",
+            ]
+        )
+        if slot.user_data_dir is not None:
+            cmd.extend(["--user-data-dir", slot.user_data_dir.name])
+
     browser_executable_path = _resolve_browser_executable_path()
     if browser_executable_path:
         cmd.extend(["--browser-executable-path", browser_executable_path])
@@ -613,208 +644,217 @@ async def fetch_html_via_nodriver(
             },
         )
 
-    started = time.monotonic()
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-        **_subprocess_launch_options(),
-    )
-    stdout_state: _StdoutAccumulator | None = None
-    stderr_state: _StderrAccumulator | None = None
-    stdout_task: asyncio.Task[None] | None = None
-    stderr_task: asyncio.Task[None] | None = None
-    wait_task: asyncio.Task[int] | None = None
-    heartbeat_task: asyncio.Task[None] | None = None
-    if diagnostics:
-        loop = asyncio.get_running_loop()
-        policy = asyncio.get_event_loop_policy()
-        diagnostics.emit(
-            "worker.process_started",
-            "Worker process started",
-            {
-                "pid": proc.pid,
-                "event_loop": loop.__class__.__name__,
-                "event_loop_policy": policy.__class__.__name__,
-            },
+    async def _run_worker() -> str:
+        started = time.monotonic()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            **_subprocess_launch_options(),
         )
+        stdout_state: _StdoutAccumulator | None = None
+        stderr_state: _StderrAccumulator | None = None
+        stdout_task: asyncio.Task[None] | None = None
+        stderr_task: asyncio.Task[None] | None = None
+        wait_task: asyncio.Task[int] | None = None
+        heartbeat_task: asyncio.Task[None] | None = None
+        if diagnostics:
+            loop = asyncio.get_running_loop()
+            policy = asyncio.get_event_loop_policy()
+            diagnostics.emit(
+                "worker.process_started",
+                "Worker process started",
+                {
+                    "pid": proc.pid,
+                    "event_loop": loop.__class__.__name__,
+                    "event_loop_policy": policy.__class__.__name__,
+                },
+            )
+
+        try:
+            raw_timeout = (os.environ.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS") or "").strip()
+            used_default = False
+            invalid = False
+            parsed_value = config.total_timeout_seconds
+            try:
+                if raw_timeout:
+                    parsed_value = float(raw_timeout)
+                else:
+                    used_default = True
+            except ValueError:
+                used_default = True
+                invalid = True
+            if parsed_value <= 0:
+                used_default = True
+                invalid = True
+                parsed_value = config.total_timeout_seconds
+            clamped = False
+            timeout_seconds = max(1.0, min(parsed_value, 600.0))
+            clamped = timeout_seconds != parsed_value
+            if diagnostics:
+                diagnostics.emit(
+                    "worker.timeout_budget_parent",
+                    "Resolved worker timeout budget",
+                    {
+                        "raw_value": raw_timeout,
+                        "clamped_value": timeout_seconds,
+                        "effective_timeout_seconds": timeout_seconds,
+                        "clamped": clamped,
+                        "used_default": used_default,
+                        "invalid": invalid,
+                        "default_seconds": config.total_timeout_seconds,
+                    },
+                )
+            stdout_state = _StdoutAccumulator()
+            stderr_state = _StderrAccumulator()
+            stdout_task = asyncio.create_task(
+                _read_stdout_stream(
+                    proc.stdout, stdout_state, diagnostics=diagnostics, started=started
+                )
+            )
+            stderr_task = asyncio.create_task(
+                _read_stderr_stream(
+                    proc.stderr,
+                    stderr_state,
+                    diagnostics=diagnostics,
+                    started=started,
+                    tail_limit=MAX_STDERR_CHARS,
+                )
+            )
+            heartbeat_task = asyncio.create_task(
+                _emit_worker_heartbeat(
+                    proc,
+                    stdout_state,
+                    stderr_state,
+                    diagnostics=diagnostics,
+                    started=started,
+                )
+            )
+            wait_task = asyncio.create_task(proc.wait())
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task, heartbeat_task, wait_task),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
+                if task is not None:
+                    task.cancel()
+            for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
+                if task is None:
+                    continue
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            await _terminate_process_tree(proc)
+            if stderr_state is not None:
+                _finalize_stderr_state(stderr_state, tail_limit=MAX_STDERR_CHARS)
+                if diagnostics and stderr_state.worker_entries:
+                    diagnostics.entries.extend(stderr_state.worker_entries)
+                if diagnostics and stderr_state.parse_errors:
+                    diagnostics.emit(
+                        "worker.diag_parse_error",
+                        "Failed to parse worker diagnostics",
+                        {"samples": stderr_state.parse_errors},
+                    )
+            if diagnostics:
+                stderr_tail = stderr_state.tail if stderr_state is not None else ""
+                stdout_len = stdout_state.bytes_read if stdout_state is not None else 0
+                stderr_sample, stderr_truncated, stderr_len = truncate_text(
+                    stderr_tail, MAX_STDERR_CHARS
+                )
+                diagnostics.emit(
+                    "worker.timeout",
+                    "Nodriver worker timed out",
+                    {
+                        "timeout_seconds": timeout_seconds,
+                        "runtime_ms": int((time.monotonic() - started) * 1000),
+                        "stderr_len": stderr_len,
+                        "stderr_sample": stderr_sample,
+                        "stderr_truncated": stderr_truncated,
+                        "stdout_len": stdout_len,
+                    },
+                )
+            raise
+        except asyncio.CancelledError:
+            for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
+                if task is not None:
+                    task.cancel()
+            for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
+                if task is None:
+                    continue
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            await _terminate_process_tree(proc)
+            if diagnostics:
+                diagnostics.emit("worker.cancelled", "Nodriver worker cancelled", {})
+            raise
+
+        if stderr_state is None or stdout_state is None:
+            raise RuntimeError("nodriver worker streams unavailable")
+
+        _finalize_stderr_state(stderr_state, tail_limit=MAX_STDERR_CHARS)
+        if diagnostics and stderr_state.worker_entries:
+            diagnostics.entries.extend(stderr_state.worker_entries)
+        if diagnostics and stderr_state.parse_errors:
+            diagnostics.emit(
+                "worker.diag_parse_error",
+                "Failed to parse worker diagnostics",
+                {"samples": stderr_state.parse_errors},
+            )
+
+        if proc.returncode != 0:
+            detail = stderr_state.tail
+            if diagnostics:
+                stderr_sample, stderr_truncated, stderr_len = truncate_text(
+                    detail, MAX_STDERR_CHARS
+                )
+                diagnostics.emit(
+                    "worker.exit",
+                    "Nodriver worker failed",
+                    {
+                        "exit_code": proc.returncode,
+                        "stderr_len": stderr_len,
+                        "stderr_sample": stderr_sample,
+                        "stderr_truncated": stderr_truncated,
+                        "runtime_ms": int((time.monotonic() - started) * 1000),
+                    },
+                )
+            raise RuntimeError(
+                f"nodriver worker failed (exit={proc.returncode}): {detail or 'unknown error'}"
+            )
+
+        if diagnostics:
+            if stderr_state.tail:
+                stderr_sample, stderr_truncated, stderr_len = truncate_text(
+                    stderr_state.tail, MAX_STDERR_CHARS
+                )
+                diagnostics.emit(
+                    "worker.stderr",
+                    "Nodriver worker stderr output",
+                    {
+                        "stderr_len": stderr_len,
+                        "stderr_sample": stderr_sample,
+                        "stderr_truncated": stderr_truncated,
+                        "runtime_ms": int((time.monotonic() - started) * 1000),
+                    },
+                )
+            diagnostics.emit(
+                "worker.stdout",
+                "Nodriver worker completed",
+                {
+                    "stdout_len": stdout_state.bytes_read,
+                    "runtime_ms": int((time.monotonic() - started) * 1000),
+                },
+            )
+
+        return bytes(stdout_state.buffer).decode("utf-8", errors="ignore")
 
     try:
-        raw_timeout = (os.environ.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS") or "").strip()
-        used_default = False
-        invalid = False
-        parsed_value = config.total_timeout_seconds
-        try:
-            if raw_timeout:
-                parsed_value = float(raw_timeout)
-            else:
-                used_default = True
-        except ValueError:
-            used_default = True
-            invalid = True
-        if parsed_value <= 0:
-            used_default = True
-            invalid = True
-            parsed_value = config.total_timeout_seconds
-        clamped = False
-        timeout_seconds = max(1.0, min(parsed_value, 600.0))
-        clamped = timeout_seconds != parsed_value
-        if diagnostics:
-            diagnostics.emit(
-                "worker.timeout_budget_parent",
-                "Resolved worker timeout budget",
-                {
-                    "raw_value": raw_timeout,
-                    "clamped_value": timeout_seconds,
-                    "effective_timeout_seconds": timeout_seconds,
-                    "clamped": clamped,
-                    "used_default": used_default,
-                    "invalid": invalid,
-                    "default_seconds": config.total_timeout_seconds,
-                },
-            )
-        stdout_state = _StdoutAccumulator()
-        stderr_state = _StderrAccumulator()
-        stdout_task = asyncio.create_task(
-            _read_stdout_stream(proc.stdout, stdout_state, diagnostics=diagnostics, started=started)
-        )
-        stderr_task = asyncio.create_task(
-            _read_stderr_stream(
-                proc.stderr,
-                stderr_state,
-                diagnostics=diagnostics,
-                started=started,
-                tail_limit=MAX_STDERR_CHARS,
-            )
-        )
-        heartbeat_task = asyncio.create_task(
-            _emit_worker_heartbeat(
-                proc,
-                stdout_state,
-                stderr_state,
-                diagnostics=diagnostics,
-                started=started,
-            )
-        )
-        wait_task = asyncio.create_task(proc.wait())
-        await asyncio.wait_for(
-            asyncio.gather(stdout_task, stderr_task, heartbeat_task, wait_task),
-            timeout=timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
-            if task is not None:
-                task.cancel()
-        for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
-            if task is None:
-                continue
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        await _terminate_process_tree(proc)
-        if stderr_state is not None:
-            _finalize_stderr_state(stderr_state, tail_limit=MAX_STDERR_CHARS)
-            if diagnostics and stderr_state.worker_entries:
-                diagnostics.entries.extend(stderr_state.worker_entries)
-            if diagnostics and stderr_state.parse_errors:
-                diagnostics.emit(
-                    "worker.diag_parse_error",
-                    "Failed to parse worker diagnostics",
-                    {"samples": stderr_state.parse_errors},
-                )
-        if diagnostics:
-            stderr_tail = stderr_state.tail if stderr_state is not None else ""
-            stdout_len = stdout_state.bytes_read if stdout_state is not None else 0
-            stderr_sample, stderr_truncated, stderr_len = truncate_text(
-                stderr_tail, MAX_STDERR_CHARS
-            )
-            diagnostics.emit(
-                "worker.timeout",
-                "Nodriver worker timed out",
-                {
-                    "timeout_seconds": timeout_seconds,
-                    "runtime_ms": int((time.monotonic() - started) * 1000),
-                    "stderr_len": stderr_len,
-                    "stderr_sample": stderr_sample,
-                    "stderr_truncated": stderr_truncated,
-                    "stdout_len": stdout_len,
-                },
-            )
-        raise
-    except asyncio.CancelledError:
-        for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
-            if task is not None:
-                task.cancel()
-        for task in (stdout_task, stderr_task, heartbeat_task, wait_task):
-            if task is None:
-                continue
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        await _terminate_process_tree(proc)
-        if diagnostics:
-            diagnostics.emit("worker.cancelled", "Nodriver worker cancelled", {})
-        raise
-
-    if stderr_state is None or stdout_state is None:
-        raise RuntimeError("nodriver worker streams unavailable")
-
-    _finalize_stderr_state(stderr_state, tail_limit=MAX_STDERR_CHARS)
-    if diagnostics and stderr_state.worker_entries:
-        diagnostics.entries.extend(stderr_state.worker_entries)
-    if diagnostics and stderr_state.parse_errors:
-        diagnostics.emit(
-            "worker.diag_parse_error",
-            "Failed to parse worker diagnostics",
-            {"samples": stderr_state.parse_errors},
-        )
-
-    if proc.returncode != 0:
-        detail = stderr_state.tail
-        if diagnostics:
-            stderr_sample, stderr_truncated, stderr_len = truncate_text(
-                detail, MAX_STDERR_CHARS
-            )
-            diagnostics.emit(
-                "worker.exit",
-                "Nodriver worker failed",
-                {
-                    "exit_code": proc.returncode,
-                    "stderr_len": stderr_len,
-                    "stderr_sample": stderr_sample,
-                    "stderr_truncated": stderr_truncated,
-                    "runtime_ms": int((time.monotonic() - started) * 1000),
-                },
-            )
-        raise RuntimeError(
-            f"nodriver worker failed (exit={proc.returncode}): {detail or 'unknown error'}"
-        )
-
-    if diagnostics:
-        if stderr_state.tail:
-            stderr_sample, stderr_truncated, stderr_len = truncate_text(
-                stderr_state.tail, MAX_STDERR_CHARS
-            )
-            diagnostics.emit(
-                "worker.stderr",
-                "Nodriver worker stderr output",
-                {
-                    "stderr_len": stderr_len,
-                    "stderr_sample": stderr_sample,
-                    "stderr_truncated": stderr_truncated,
-                    "runtime_ms": int((time.monotonic() - started) * 1000),
-                },
-            )
-        diagnostics.emit(
-            "worker.stdout",
-            "Nodriver worker completed",
-            {
-                "stdout_len": stdout_state.bytes_read,
-                "runtime_ms": int((time.monotonic() - started) * 1000),
-            },
-        )
-
-    return bytes(stdout_state.buffer).decode("utf-8", errors="ignore")
+        return await _run_worker()
+    finally:
+        if slot is not None and pool is not None:
+            await pool.release(slot, diagnostics=diagnostics)
 
 
 def html_to_markdown(

@@ -600,6 +600,10 @@ async def _fetch_html(
     user_agent: str,
     wait_seconds: float,
     browser_executable_path: str | None,
+    reuse_browser: bool,
+    remote_host: str | None,
+    remote_port: int | None,
+    user_data_dir: str | None,
     overall_timeout_seconds: float,
 ) -> str:
     try:
@@ -630,52 +634,220 @@ async def _fetch_html(
     page = None
     ref_page = None
     chrome_proc: asyncio.subprocess.Process | None = None
-    sandbox_enabled = _resolve_sandbox_enabled()
-    resolved_browser_executable_path = _resolve_browser_executable_path(browser_executable_path)
-    if resolved_browser_executable_path is None:
-        raise RuntimeError(
-            "No Chromium-based browser executable found. "
-            "Install Chromium/Chrome or set KINDLY_BROWSER_EXECUTABLE_PATH to the browser binary path."
-        )
-    is_snap = _is_snap_browser(resolved_browser_executable_path)
-    attempts = _resolve_start_retry_attempts()
-    base_backoff_seconds = _resolve_retry_backoff_seconds()
-    snap_multiplier = _resolve_snap_backoff_multiplier() if is_snap else 1.0
-    devtools_ready_timeout_seconds = _resolve_devtools_ready_timeout_seconds() * snap_multiplier
-    _emit_diag(
-        "worker.config",
-        "Resolved browser configuration",
-        {
-            "browser_executable_path": resolved_browser_executable_path,
-            "sandbox_enabled": sandbox_enabled,
-            "is_snap": is_snap,
-            "attempts": attempts,
-            "backoff_seconds": base_backoff_seconds,
-            "devtools_ready_timeout_seconds": devtools_ready_timeout_seconds,
-            "overall_timeout_seconds": overall_timeout_seconds,
-        },
-    )
+    reuse_requested = reuse_browser
+    if reuse_requested and (not remote_host or not remote_port):
+        raise RuntimeError("reuse_browser requested but remote host/port was not provided.")
 
-    base_browser_args = [
-        "--window-size=1920,1080",
-        *([] if sandbox_enabled else ["--no-sandbox"]),
-        "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-logging",
-        "--log-level=3",
-        "--disable-background-timer-throttling",
-        "--disable-renderer-backgrounding",
-        f"--user-agent={user_agent}",
-    ]
-    _emit_diag(
-        "worker.browser_args",
-        "Resolved Chromium args",
-        {"args": base_browser_args},
-    )
+    sandbox_enabled = _resolve_sandbox_enabled()
+    resolved_browser_executable_path: str | None = None
+    is_snap = False
+    attempts = 1
+    base_backoff_seconds = 0.0
+    snap_multiplier = 1.0
+    devtools_ready_timeout_seconds = _resolve_devtools_ready_timeout_seconds()
+    base_browser_args: list[str] = []
+
+    if not reuse_requested:
+        resolved_browser_executable_path = _resolve_browser_executable_path(browser_executable_path)
+        if resolved_browser_executable_path is None:
+            raise RuntimeError(
+                "No Chromium-based browser executable found. "
+                "Install Chromium/Chrome or set KINDLY_BROWSER_EXECUTABLE_PATH to the browser binary path."
+            )
+        is_snap = _is_snap_browser(resolved_browser_executable_path)
+        attempts = _resolve_start_retry_attempts()
+        base_backoff_seconds = _resolve_retry_backoff_seconds()
+        snap_multiplier = _resolve_snap_backoff_multiplier() if is_snap else 1.0
+        devtools_ready_timeout_seconds = _resolve_devtools_ready_timeout_seconds() * snap_multiplier
+        _emit_diag(
+            "worker.config",
+            "Resolved browser configuration",
+            {
+                "browser_executable_path": resolved_browser_executable_path,
+                "sandbox_enabled": sandbox_enabled,
+                "is_snap": is_snap,
+                "attempts": attempts,
+                "backoff_seconds": base_backoff_seconds,
+                "devtools_ready_timeout_seconds": devtools_ready_timeout_seconds,
+                "overall_timeout_seconds": overall_timeout_seconds,
+                "reuse_browser": False,
+            },
+        )
+        base_browser_args = [
+            "--window-size=1920,1080",
+            *([] if sandbox_enabled else ["--no-sandbox"]),
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-logging",
+            "--log-level=3",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            f"--user-agent={user_agent}",
+        ]
+        _emit_diag(
+            "worker.browser_args",
+            "Resolved Chromium args",
+            {"args": base_browser_args},
+        )
+    else:
+        _emit_diag(
+            "worker.config",
+            "Resolved browser configuration",
+            {
+                "browser_executable_path": resolved_browser_executable_path or "",
+                "sandbox_enabled": sandbox_enabled,
+                "is_snap": False,
+                "attempts": attempts,
+                "backoff_seconds": base_backoff_seconds,
+                "devtools_ready_timeout_seconds": devtools_ready_timeout_seconds,
+                "overall_timeout_seconds": overall_timeout_seconds,
+                "reuse_browser": True,
+                "remote_host": remote_host,
+                "remote_port": remote_port,
+            },
+        )
+
+    async def _navigate_and_extract() -> str:
+        nonlocal page, ref_page
+        _emit_diag(
+            "worker.navigate_start",
+            "Starting navigation",
+            {"url": url, "referer": referer or "", "wait_seconds": wait_seconds},
+        )
+        if referer:
+            ref_page = await browser.get(referer)
+            await asyncio.sleep(0.25)
+
+        page = await browser.get(url)
+        await asyncio.sleep(wait_seconds)
+
+        getter = getattr(page, "get_content", None)
+        if callable(getter):
+            _emit_diag(
+                "worker.content_method",
+                "Using get_content()",
+                {"method": "get_content"},
+            )
+            content = getter()
+            if asyncio.iscoroutine(content):
+                content = await content
+        else:
+            getter = getattr(page, "content", None)
+            _emit_diag(
+                "worker.content_method",
+                "Using content()",
+                {"method": "content"},
+            )
+            content = getter()
+            if asyncio.iscoroutine(content):
+                content = await content
+        return str(content or "")
+
+    async def _run_navigation() -> str:
+        remaining = overall_timeout_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            raise TimeoutError("Navigation timed out before start")
+        _emit_diag(
+            "worker.timeout_remaining",
+            "Remaining navigation budget",
+            {
+                "remaining_seconds": remaining,
+                "overall_timeout_seconds": overall_timeout_seconds,
+            },
+        )
+        try:
+            content = await asyncio.wait_for(_navigate_and_extract(), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            _emit_diag(
+                "worker.navigate_timeout",
+                "Navigation timed out",
+                {
+                    "overall_timeout_seconds": overall_timeout_seconds,
+                    "elapsed_seconds": time.monotonic() - started,
+                },
+            )
+            raise TimeoutError(
+                f"Navigation timed out after {overall_timeout_seconds:.1f}s"
+            ) from exc
+        _emit_diag(
+            "worker.navigate_complete",
+            "Navigation complete",
+            {
+                "content_len": len(content) if isinstance(content, str) else 0,
+                "elapsed_seconds": time.monotonic() - started,
+            },
+        )
+        if isinstance(content, (bytes, bytearray)):
+            return bytes(content).decode("utf-8", errors="ignore")
+        return content
+
+    async def _cleanup(stop_browser: bool) -> None:
+        nonlocal chrome_proc, browser
+        try:
+            for maybe_page in (page, ref_page):
+                if maybe_page is None:
+                    continue
+                closer = getattr(maybe_page, "close", None)
+                if callable(closer):
+                    maybe = closer()
+                    if asyncio.iscoroutine(maybe):
+                        await maybe
+
+            if browser is not None and stop_browser:
+                stopper = getattr(browser, "stop", None)
+                if callable(stopper):
+                    maybe = stopper()
+                    if asyncio.iscoroutine(maybe):
+                        await maybe
+
+            if chrome_proc is not None:
+                await _terminate_process(chrome_proc)
+                chrome_proc = None
+            if stop_browser:
+                # Give Chromium a short moment to flush profile writes before temp cleanup.
+                await asyncio.sleep(0.1)
+        except Exception:
+            pass
+
+    if reuse_requested:
+        try:
+            _emit_diag(
+                "worker.reuse_connect",
+                "Connecting to pooled Chromium",
+                {"host": remote_host, "port": remote_port},
+            )
+            browser = await uc.start(host=remote_host, port=remote_port)
+            _emit_diag(
+                "worker.browser_started",
+                "Nodriver connected to pooled browser",
+                {"host": remote_host, "port": remote_port, "reuse": True},
+            )
+            return await _run_navigation()
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "failed to connect to browser" in msg or "devtools endpoint did not become ready" in msg:
+                raise RuntimeError(
+                    f"Failed to connect to pooled browser at {remote_host}:{remote_port}."
+                ) from exc
+            _emit_diag(
+                "worker.error",
+                "Worker failed during navigation",
+                {"error": type(exc).__name__},
+            )
+            raise
+        finally:
+            await _cleanup(stop_browser=False)
 
     # Chromium may still be flushing profile writes briefly after `browser.stop()`.
     # Never fail the request because a temp profile directory couldn't be deleted.
-    with tempfile.TemporaryDirectory(prefix="kindly-nodriver-", ignore_cleanup_errors=True) as user_data_dir:
+    user_data_dir_cm: contextlib.AbstractContextManager[str]
+    if user_data_dir:
+        user_data_dir_cm = contextlib.nullcontext(user_data_dir)
+    else:
+        user_data_dir_cm = tempfile.TemporaryDirectory(
+            prefix="kindly-nodriver-", ignore_cleanup_errors=True
+        )
+    with user_data_dir_cm as resolved_user_data_dir:
         try:
             last_start_error: BaseException | None = None
             for attempt in range(attempts):
@@ -689,7 +861,7 @@ async def _fetch_html(
                     )
                     chromium_args = _build_chromium_launch_args(
                         base_browser_args=base_browser_args,
-                        user_data_dir=user_data_dir,
+                        user_data_dir=resolved_user_data_dir,
                         user_agent=user_agent,
                         host=host,
                         port=port,
@@ -700,7 +872,7 @@ async def _fetch_html(
                         "Chromium launch args",
                         {
                             "attempt": attempt + 1,
-                            "user_data_dir": user_data_dir,
+                            "user_data_dir": resolved_user_data_dir,
                             "args": chromium_args,
                         },
                     )
@@ -732,15 +904,7 @@ async def _fetch_html(
                     )
 
                     # Connect Nodriver to the already-running browser instance (do not spawn another).
-                    browser = await uc.start(
-                        headless=True,
-                        user_data_dir=user_data_dir,
-                        browser_executable_path=resolved_browser_executable_path,
-                        sandbox=sandbox_enabled,
-                        browser_args=base_browser_args,
-                        host=host,
-                        port=port,
-                    )
+                    browser = await uc.start(host=host, port=port)
                     _emit_diag(
                         "worker.browser_started",
                         "Nodriver connected to browser",
@@ -768,79 +932,7 @@ async def _fetch_html(
                     f"nodriver failed to start browser after {attempts} attempt(s)"
                 ) from last_start_error
 
-            async def _navigate_and_extract() -> str:
-                nonlocal page, ref_page
-                _emit_diag(
-                    "worker.navigate_start",
-                    "Starting navigation",
-                    {"url": url, "referer": referer or "", "wait_seconds": wait_seconds},
-                )
-                if referer:
-                    ref_page = await browser.get(referer)
-                    await asyncio.sleep(0.25)
-
-                page = await browser.get(url)
-                await asyncio.sleep(wait_seconds)
-
-                getter = getattr(page, "get_content", None)
-                if callable(getter):
-                    _emit_diag(
-                        "worker.content_method",
-                        "Using get_content()",
-                        {"method": "get_content"},
-                    )
-                    content = getter()
-                    if asyncio.iscoroutine(content):
-                        content = await content
-                else:
-                    getter = getattr(page, "content", None)
-                    _emit_diag(
-                        "worker.content_method",
-                        "Using content()",
-                        {"method": "content"},
-                    )
-                    content = getter()
-                    if asyncio.iscoroutine(content):
-                        content = await content
-                return str(content or "")
-
-            remaining = overall_timeout_seconds - (time.monotonic() - started)
-            if remaining <= 0:
-                raise TimeoutError("Navigation timed out before start")
-            _emit_diag(
-                "worker.timeout_remaining",
-                "Remaining navigation budget",
-                {
-                    "remaining_seconds": remaining,
-                    "overall_timeout_seconds": overall_timeout_seconds,
-                },
-            )
-            try:
-                content = await asyncio.wait_for(_navigate_and_extract(), timeout=remaining)
-            except asyncio.TimeoutError as exc:
-                _emit_diag(
-                    "worker.navigate_timeout",
-                    "Navigation timed out",
-                    {
-                        "overall_timeout_seconds": overall_timeout_seconds,
-                        "elapsed_seconds": time.monotonic() - started,
-                    },
-                )
-                raise TimeoutError(
-                    f"Navigation timed out after {overall_timeout_seconds:.1f}s"
-                ) from exc
-            _emit_diag(
-                "worker.navigate_complete",
-                "Navigation complete",
-                {
-                    "content_len": len(content) if isinstance(content, str) else 0,
-                    "elapsed_seconds": time.monotonic() - started,
-                },
-            )
-
-            if isinstance(content, (bytes, bytearray)):
-                return bytes(content).decode("utf-8", errors="ignore")
-            return content
+            return await _run_navigation()
         except Exception as exc:
             msg = str(exc).lower()
             if "failed to connect to browser" in msg or "devtools endpoint did not become ready" in msg:
@@ -862,31 +954,7 @@ async def _fetch_html(
             )
             raise
         finally:
-            # Best-effort cleanup. Errors here should not mask the page retrieval.
-            try:
-                for maybe_page in (page, ref_page):
-                    if maybe_page is None:
-                        continue
-                    closer = getattr(maybe_page, "close", None)
-                    if callable(closer):
-                        maybe = closer()
-                        if asyncio.iscoroutine(maybe):
-                            await maybe
-
-                if browser is not None:
-                    stopper = getattr(browser, "stop", None)
-                    if callable(stopper):
-                        maybe = stopper()
-                        if asyncio.iscoroutine(maybe):
-                            await maybe
-
-                if chrome_proc is not None:
-                    await _terminate_process(chrome_proc)
-                    chrome_proc = None
-                # Give Chromium a short moment to flush profile writes before temp cleanup.
-                await asyncio.sleep(0.1)
-            except Exception:
-                pass
+            await _cleanup(stop_browser=True)
 
 
 async def _main_async(args: argparse.Namespace) -> int:
@@ -910,6 +978,10 @@ async def _main_async(args: argparse.Namespace) -> int:
                 "user_agent": args.user_agent,
                 "wait_seconds": args.wait_seconds,
                 "browser_executable_path": args.browser_executable_path or "",
+                "reuse_browser": bool(args.reuse_browser),
+                "remote_host": args.remote_host or "",
+                "remote_port": args.remote_port or 0,
+                "user_data_dir": args.user_data_dir or "",
                 "pid": os.getpid(),
                 "ppid": os.getppid(),
                 "cwd": os.getcwd(),
@@ -973,6 +1045,10 @@ async def _main_async(args: argparse.Namespace) -> int:
             user_agent=args.user_agent,
             wait_seconds=args.wait_seconds,
             browser_executable_path=args.browser_executable_path,
+            reuse_browser=args.reuse_browser,
+            remote_host=args.remote_host,
+            remote_port=args.remote_port,
+            user_data_dir=args.user_data_dir,
             overall_timeout_seconds=worker_timeout_seconds,
         )
         _emit_diag(
@@ -1003,6 +1079,10 @@ def main() -> int:
     parser.add_argument("--user-agent", required=True)
     parser.add_argument("--wait-seconds", type=float, default=2.0)
     parser.add_argument("--browser-executable-path", required=False, default=None)
+    parser.add_argument("--remote-host", required=False, default=None)
+    parser.add_argument("--remote-port", type=int, required=False, default=None)
+    parser.add_argument("--reuse-browser", action="store_true")
+    parser.add_argument("--user-data-dir", required=False, default=None)
     args = parser.parse_args()
 
     os.environ.setdefault("PYTHONUNBUFFERED", "1")

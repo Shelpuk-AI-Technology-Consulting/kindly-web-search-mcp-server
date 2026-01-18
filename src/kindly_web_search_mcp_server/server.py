@@ -212,7 +212,7 @@ def _resolve_web_search_max_concurrency(num_results: int) -> int:
             value = parsed
 
     if value is None:
-        value = 1 if os.name == "nt" else 3
+        value = 3
     value = max(1, min(value, 5))
     if num_results > 0:
         value = min(value, num_results)
@@ -262,7 +262,7 @@ async def web_search(
     - For a deeper look at one result, call `get_content()` on the chosen `link`.
     - This tool is often called under a hard per-call deadline; page_content resolution is bounded by
       `KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS` (default 120, clamped 1..KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS) and concurrency is capped by
-      `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` (default 3, or 1 on Windows when unset; clamped 1..5).
+    `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` (default 3 when unset; clamped 1..5).
     """
 
     started = time.monotonic()
