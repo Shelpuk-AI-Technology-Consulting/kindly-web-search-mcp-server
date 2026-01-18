@@ -44,6 +44,8 @@ We built Kindly Web Search because we needed our AI assistants to work the way *
 
 Now, when Claude Code or Codex searches for that GPU batch error, it gets the question *and* the answers. The code snippets. The "this fixed it for me" comments. Everything it needs to help you solve the problem - **in one call**.
 
+If you give Kindly a try or like the idea, please drop us a star on GitHub - it’s always huge motivation for us to keep improving it! ⭐️
+
 ## One MCP Server to Rule Them All
 
 Kindly eliminates the need for:
