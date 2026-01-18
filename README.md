@@ -67,10 +67,11 @@ Kindly has been our daily companion in production work for months, saving us cou
 Search uses **Serper** (primary, if configured) or **Tavily**, and page extraction uses a local Chromium-based browser via `nodriver`.
 
 ## Requirements
-- A search API key: `SERPER_API_KEY` **or** `TAVILY_API_KEY`
+- A search provider (priority order): `SERPER_API_KEY` (recommended) → `TAVILY_API_KEY` → `SEARXNG_BASE_URL` (self-hosted SearXNG)
 - A Chromium-based browser installed on the same machine running the MCP client (Chrome/Chromium/Edge/Brave)
+  - Without a browser: specialized sources (StackExchange, GitHub Issues/Discussions, Wikipedia, arXiv) still work well, but universal HTML `page_content` extraction may fail for other sites.
 - Highly recommended: `GITHUB_TOKEN` (renders GitHub Issues in a much more LLM-friendly format: question + answers/comments + reactions/metadata; fewer rate limits)
-- Python 3.14 is supported; optional “advanced PDF layout” extras are disabled on 3.14 because `onnxruntime` wheels may be unavailable.
+- Python 3.13+ is supported (Python 3.14 supported; optional “advanced PDF layout” extras are disabled on 3.14 because `onnxruntime` wheels may be unavailable).
 
 `GITHUB_TOKEN` can be read-only and limited to public repositories to avoid security/privacy concerns.
 
@@ -94,6 +95,8 @@ uvx --version
 
 ### 2) Install a Chromium-based browser (required for `page_content`)
 You need **Chrome / Chromium / Edge / Brave** installed on the same machine running your MCP client.
+
+Note: If you skip this, specialized sources (StackOverflow/StackExchange, GitHub Issues/Discussions, Wikipedia, arXiv) will still work well. Only universal `page_content` extraction for arbitrary sites requires the browser.
 
 macOS:
 - Install Chrome, or:
@@ -122,7 +125,7 @@ which chromium
 Other Linux distros: install `chromium` (or `chromium-browser`) via your package manager.
 
 ### 3) Set your search API key (required)
-Set **one** of these:
+Set **one** of these. Provider selection order is: Serper → Tavily → SearXNG.
 
 macOS / Linux:
 ```bash
@@ -148,6 +151,12 @@ export SEARXNG_HEADERS_JSON='{"Authorization":"Bearer ..."}'
 export SEARXNG_USER_AGENT="Mozilla/5.0 ..."
 ```
 
+Windows (PowerShell):
+```powershell
+$env:SEARXNG_HEADERS_JSON='{"Authorization":"Bearer ..."}'
+$env:SEARXNG_USER_AGENT="Mozilla/5.0 ..."
+```
+
 Optional (recommended for better GitHub Issue / PR extraction):
 ```bash
 export GITHUB_TOKEN="..."
@@ -160,13 +169,15 @@ uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-se
   kindly-web-search-mcp-server start-mcp-server
 ```
 
+First-run note: the first `uvx` invocation may take 30–60 seconds while it builds the tool environment. If your MCP client times out on first start, run the command once in a terminal to “prewarm” it, then retry in your client.
+
 Now configure your MCP client to run that command.
 Make sure your API keys are set in the same shell/OS environment that launches the MCP client (unless you paste them directly into the client config).
 
 ## Client setup
 
 ### Codex
-Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 CLI (no file editing) — add a local stdio MCP server:
 
@@ -188,6 +199,11 @@ codex mcp add kindly-web-search \
   --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
   kindly-web-search-mcp-server start-mcp-server
+```
+
+If you use SearXNG, replace the provider env var above with:
+```bash
+--env SEARXNG_BASE_URL="$SEARXNG_BASE_URL"
 ```
 
 Windows (PowerShell):
@@ -222,51 +238,60 @@ args = [
   "start-mcp-server",
 ]
 # Forward variables from your shell/OS environment:
-env_vars = ["SERPER_API_KEY", "TAVILY_API_KEY", "GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH"]
+env_vars = ["SERPER_API_KEY", "TAVILY_API_KEY", "SEARXNG_BASE_URL", "GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH"]
 startup_timeout_sec = 120.0
 ```
 
 ### Claude Code
-Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 CLI (no file editing) — add a local stdio MCP server:
 
 macOS / Linux (Serper):
 ```bash
-claude mcp add --transport stdio kindly-web-search \
+claude mcp add --transport stdio \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
   --env GITHUB_TOKEN="$GITHUB_TOKEN" \
   --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
+  kindly-web-search \
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
   kindly-web-search-mcp-server start-mcp-server
 ```
 
 macOS / Linux (Tavily):
 ```bash
-claude mcp add --transport stdio kindly-web-search \
+claude mcp add --transport stdio \
   --env TAVILY_API_KEY="$TAVILY_API_KEY" \
   --env GITHUB_TOKEN="$GITHUB_TOKEN" \
   --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
+  kindly-web-search \
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
   kindly-web-search-mcp-server start-mcp-server
 ```
 
+If you use SearXNG, replace the provider env var above with:
+```bash
+--env SEARXNG_BASE_URL="$SEARXNG_BASE_URL"
+```
+
 Windows (PowerShell):
 ```powershell
-claude mcp add --transport stdio kindly-web-search `
+claude mcp add --transport stdio `
   --env SERPER_API_KEY="$env:SERPER_API_KEY" `
   --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
   --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
+  kindly-web-search `
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
   kindly-web-search-mcp-server start-mcp-server
 ```
 
 Windows (PowerShell, Tavily):
 ```powershell
-claude mcp add --transport stdio kindly-web-search `
+claude mcp add --transport stdio `
   --env TAVILY_API_KEY="$env:TAVILY_API_KEY" `
   --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
   --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
+  kindly-web-search `
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
   kindly-web-search-mcp-server start-mcp-server
 ```
@@ -284,7 +309,7 @@ $env:MCP_TIMEOUT="120000"
 ```
 
 Alternative (file-based):
-Create/edit `.mcp.json` (project scope) or `~/.config/claude-code/.mcp.json` (user scope):
+Create/edit `.mcp.json` (project scope; recommended for teams):
 ```json
 {
   "mcpServers": {
@@ -299,6 +324,7 @@ Create/edit `.mcp.json` (project scope) or `~/.config/claude-code/.mcp.json` (us
       "env": {
         "SERPER_API_KEY": "${SERPER_API_KEY}",
         "TAVILY_API_KEY": "${TAVILY_API_KEY}",
+        "SEARXNG_BASE_URL": "${SEARXNG_BASE_URL}",
         "GITHUB_TOKEN": "${GITHUB_TOKEN}",
         "KINDLY_BROWSER_EXECUTABLE_PATH": "${KINDLY_BROWSER_EXECUTABLE_PATH}"
       }
@@ -308,7 +334,7 @@ Create/edit `.mcp.json` (project scope) or `~/.config/claude-code/.mcp.json` (us
 ```
 
 ### Gemini CLI
-Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
 ```json
 {
@@ -324,6 +350,7 @@ Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
       "env": {
         "SERPER_API_KEY": "$SERPER_API_KEY",
         "TAVILY_API_KEY": "$TAVILY_API_KEY",
+        "SEARXNG_BASE_URL": "$SEARXNG_BASE_URL",
         "GITHUB_TOKEN": "$GITHUB_TOKEN",
         "KINDLY_BROWSER_EXECUTABLE_PATH": "$KINDLY_BROWSER_EXECUTABLE_PATH"
       },
@@ -334,7 +361,7 @@ Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
 ```
 
 ### Antigravity (Google IDE)
-Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 In Antigravity, open the MCP store, then:
 1. Click **Manage MCP Servers**
@@ -355,6 +382,7 @@ Paste this into your `mcpServers` object (don’t overwrite other servers):
     "env": {
       "SERPER_API_KEY": "PASTE_SERPER_KEY_OR_LEAVE_EMPTY",
       "TAVILY_API_KEY": "PASTE_TAVILY_KEY_OR_LEAVE_EMPTY",
+      "SEARXNG_BASE_URL": "PASTE_SEARXNG_URL_OR_LEAVE_EMPTY",
       "GITHUB_TOKEN": "PASTE_GITHUB_TOKEN_OR_LEAVE_EMPTY",
       "KINDLY_BROWSER_EXECUTABLE_PATH": "PASTE_IF_NEEDED"
     }
@@ -363,12 +391,12 @@ Paste this into your `mcpServers` object (don’t overwrite other servers):
 ```
 
 If Antigravity can’t find `uvx`, replace `"uvx"` with the absolute path (`which uvx` on macOS/Linux, `where uvx` on Windows).
-Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` is non-empty.
+Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` / `SEARXNG_BASE_URL` is non-empty.
 If the first start is slow, run the `uvx` command from Quickstart once in a terminal to prebuild the environment, then click **Refresh**.
 Don’t commit/share `mcp_config.json` if it contains API keys.
 
 ### Cursor
-Set either `SERPER_API_KEY` or `TAVILY_API_KEY` (you can omit the other).
+Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 Startup timeout: Cursor does not currently expose a per-server startup timeout setting. If the first run is slow, run the `uvx` command from Quickstart once in a terminal to prebuild the tool environment, then restart Cursor.
 Create `.cursor/mcp.json`:
 ```json
@@ -386,6 +414,7 @@ Create `.cursor/mcp.json`:
       "env": {
         "SERPER_API_KEY": "${env:SERPER_API_KEY}",
         "TAVILY_API_KEY": "${env:TAVILY_API_KEY}",
+        "SEARXNG_BASE_URL": "${env:SEARXNG_BASE_URL}",
         "GITHUB_TOKEN": "${env:GITHUB_TOKEN}",
         "KINDLY_BROWSER_EXECUTABLE_PATH": "${env:KINDLY_BROWSER_EXECUTABLE_PATH}"
       }
@@ -416,6 +445,7 @@ Startup timeout: Claude Desktop does not expose a per-server startup timeout set
       "env": {
         "SERPER_API_KEY": "PASTE_SERPER_KEY_OR_LEAVE_EMPTY",
         "TAVILY_API_KEY": "PASTE_TAVILY_KEY_OR_LEAVE_EMPTY",
+        "SEARXNG_BASE_URL": "PASTE_SEARXNG_URL_OR_LEAVE_EMPTY",
         "GITHUB_TOKEN": "PASTE_GITHUB_TOKEN_OR_LEAVE_EMPTY",
         "KINDLY_BROWSER_EXECUTABLE_PATH": "PASTE_IF_NEEDED"
       }
@@ -443,14 +473,16 @@ Create `.vscode/mcp.json`:
       "env": {
         "SERPER_API_KEY": "${input:serper-api-key}",
         "TAVILY_API_KEY": "${input:tavily-api-key}",
+        "SEARXNG_BASE_URL": "${input:searxng-base-url}",
         "GITHUB_TOKEN": "${input:github-token}",
         "KINDLY_BROWSER_EXECUTABLE_PATH": "${input:browser-path}"
       }
     }
   },
   "inputs": [
-    { "id": "serper-api-key", "type": "promptString", "description": "Serper API key (optional if using Tavily)" },
-    { "id": "tavily-api-key", "type": "promptString", "description": "Tavily API key (optional if using Serper)" },
+    { "id": "serper-api-key", "type": "promptString", "description": "Serper API key (optional if using Tavily or SearXNG)" },
+    { "id": "tavily-api-key", "type": "promptString", "description": "Tavily API key (optional if using Serper or SearXNG)" },
+    { "id": "searxng-base-url", "type": "promptString", "description": "SearXNG base URL (optional if using Serper or Tavily)" },
     { "id": "github-token", "type": "promptString", "description": "GitHub token (recommended)" },
     { "id": "browser-path", "type": "promptString", "description": "Browser binary path (only if needed)" }
   ]
@@ -480,7 +512,6 @@ $env:KINDLY_BROWSER_EXECUTABLE_PATH="C:\\Program Files\\Google\\Chrome\\Applicat
 Whether you can run the MCP server on a different PC depends on your MCP client:
 
 - **Stdio / command-based clients** (config uses `command` + `args` to spawn the server): the server must run on the same machine (or at least somewhere the client can run the command). You can still use Docker, but locally (the client launches `docker run ...`).
-- **Stdio / command-based clients** (config uses `command` + `args` to spawn the server): the server must run on the same machine as the MCP client. You can still use Docker, but locally (the client launches `docker run ...`).
 - **HTTP-capable clients** (can connect to a server URL): you can run Kindly remotely in Docker using **Streamable HTTP**.
 
 ### Docker (Streamable HTTP)
@@ -493,14 +524,22 @@ Run the server (port `8000`):
 ```bash
 docker run --rm -p 8000:8000 \
   -e SERPER_API_KEY="..." \
-  # or: -e TAVILY_API_KEY="..." \
+  -e GITHUB_TOKEN="..." \
+  kindly-web-search-mcp-server \
+  --http --host 0.0.0.0 --port 8000
+```
+
+- Or (Tavily):
+```bash
+docker run --rm -p 8000:8000 \
+  -e TAVILY_API_KEY="..." \
   -e GITHUB_TOKEN="..." \
   kindly-web-search-mcp-server \
   --http --host 0.0.0.0 --port 8000
 ```
 
 - MCP endpoint: `http://<server-host>:8000/mcp`
-- Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` is set.
+- Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` / `SEARXNG_BASE_URL` is set.
 - `page_content` extraction runs on the server machine/container (this Docker image includes Chromium).
 - Remote HTTP is typically **unauthenticated** and **unencrypted** by default; don’t expose this port publicly. Use VPN/firewall rules or a reverse proxy with TLS + auth.
 - Don’t bake API keys into the image; pass them via env vars at runtime.
@@ -513,7 +552,7 @@ docker run --rm -p 8000:8000 \
   - `KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS=20`
   - Ensure proxy/VPN env vars don’t hijack localhost (set `NO_PROXY=localhost,127.0.0.1` if you use `HTTP_PROXY`/`HTTPS_PROXY`)
   - `KINDLY_HTML_TOTAL_TIMEOUT_SECONDS=45`
-- `page_content` shows `_Failed to retrieve page content: TimeoutError_` (can happen on **Windows**): the MCP tool time budget was exceeded (often due to slower headless browser cold starts on Windows).
+- `page_content` shows `_Failed to retrieve page content: TimeoutError_` (can happen on any OS, especially **Windows**): the MCP tool time budget was exceeded (often due to slower headless browser cold starts).
   - How to spot it: one or more results include `_Failed to retrieve page content: TimeoutError_` in `page_content` (or `get_content(url)` returns that message).
   - Fix: increase `KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS` (and, if needed, raise the cap `KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS`).
   - Env vars:
