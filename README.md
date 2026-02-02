@@ -46,6 +46,8 @@ Now, when Claude Code or Codex searches for that GPU batch error, it gets the qu
 
 If you give Kindly a try or like the idea, please drop us a star on GitHub - it’s always huge motivation for us to keep improving it! ⭐️
 
+P.S. Check out our [Lad MCP server](https://github.com/Shelpuk-AI-Technology-Consulting/lad_mcp_server) – perhaps the only AI code review MCP for coding agents that actually works. It pairs perfectly with Kindly for a complete research-and-review workflow.
+
 ## One MCP Server to Rule Them All
 
 Kindly eliminates the need for:
