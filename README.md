@@ -362,6 +362,50 @@ Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
 }
 ```
 
+### OpenClaw
+Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
+If `mcporter` is not installed yet: `npm i -g mcporter`.
+
+Option 1 (`mcporter` CLI, recommended):
+```bash
+mcporter config add kindly-search \
+  --command "uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server kindly-web-search-mcp-server start-mcp-server" \
+  --env SERPER_API_KEY="$SERPER_API_KEY" \
+  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
+  --env SEARXNG_BASE_URL="$SEARXNG_BASE_URL" \
+  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
+  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH"
+```
+You can replace `kindly-search` with any server name you prefer.
+
+Option 2 (manual config):
+If your OpenClaw setup manages MCP servers in `~/.openclaw/openclaw.json` (or your active OpenClaw config file), add this under `mcpServers`:
+```json
+{
+  "kindly-search": {
+    "command": "uvx",
+    "args": [
+      "--from",
+      "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
+      "kindly-web-search-mcp-server",
+      "start-mcp-server"
+    ],
+    "env": {
+      "SERPER_API_KEY": "PASTE_SERPER_KEY_OR_LEAVE_EMPTY",
+      "TAVILY_API_KEY": "PASTE_TAVILY_KEY_OR_LEAVE_EMPTY",
+      "SEARXNG_BASE_URL": "PASTE_SEARXNG_URL_OR_LEAVE_EMPTY",
+      "GITHUB_TOKEN": "PASTE_GITHUB_TOKEN_OR_LEAVE_EMPTY",
+      "KINDLY_BROWSER_EXECUTABLE_PATH": "PASTE_IF_NEEDED"
+    }
+  }
+}
+```
+
+After adding the server, restart/reload the gateway:
+```bash
+openclaw gateway restart
+```
+
 ### Antigravity (Google IDE)
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
