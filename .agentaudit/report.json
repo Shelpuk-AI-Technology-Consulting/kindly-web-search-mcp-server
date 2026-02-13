@@ -1,0 +1,12 @@
+{
+  "skill_slug": "kindly-web-search-mcp-server",
+  "source_url": "https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
+  "package_type": "mcp-server",
+  "commit_sha": "5c7f7a8568bd5d4b067de420d5abba56fb703194",
+  "package_version": "0.1.8",
+  "content_hash": "d89a772146a591f22e484c909dc8ae2cdee16a208bf7b0f8ede262b209ae550c",
+  "risk_score": 0,
+  "result": "safe",
+  "findings_count": 0,
+  "findings": []
+}
