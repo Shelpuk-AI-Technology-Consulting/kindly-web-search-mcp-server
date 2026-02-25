@@ -365,10 +365,13 @@ Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
 ### OpenClaw
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 If `mcporter` is not installed yet: `npm i -g mcporter`.
+mcporter docs: https://github.com/steipete/mcporter/blob/main/docs/config.md
 
-Option 1 (`mcporter` CLI, recommended):
+CLI (no file editing) — `mcporter` (recommended):
 ```bash
+# Replace `$...` vars with real values, or export them in your shell first.
 mcporter config add kindly-search \
+  --scope home \
   --command "uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server kindly-web-search-mcp-server start-mcp-server" \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
   --env TAVILY_API_KEY="$TAVILY_API_KEY" \
@@ -376,32 +379,41 @@ mcporter config add kindly-search \
   --env GITHUB_TOKEN="$GITHUB_TOKEN" \
   --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH"
 ```
+This writes to `~/.mcporter/mcporter.json` (`--scope home`).
 You can replace `kindly-search` with any server name you prefer.
+Verify:
+```bash
+mcporter config get kindly-search
+```
 
-Option 2 (manual config):
-If your OpenClaw setup manages MCP servers in `~/.openclaw/openclaw.json` (or your active OpenClaw config file), add this under `mcpServers`:
+Alternative (file-based):
+Edit mcporter config (`~/.mcporter/mcporter.json`, or `config/mcporter.json` if you use project scope) and add this under `mcpServers`:
 ```json
 {
-  "kindly-search": {
-    "command": "uvx",
-    "args": [
-      "--from",
-      "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
-      "kindly-web-search-mcp-server",
-      "start-mcp-server"
-    ],
-    "env": {
-      "SERPER_API_KEY": "PASTE_SERPER_KEY_OR_LEAVE_EMPTY",
-      "TAVILY_API_KEY": "PASTE_TAVILY_KEY_OR_LEAVE_EMPTY",
-      "SEARXNG_BASE_URL": "PASTE_SEARXNG_URL_OR_LEAVE_EMPTY",
-      "GITHUB_TOKEN": "PASTE_GITHUB_TOKEN_OR_LEAVE_EMPTY",
-      "KINDLY_BROWSER_EXECUTABLE_PATH": "PASTE_IF_NEEDED"
+  "mcpServers": {
+    "kindly-search": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
+        "kindly-web-search-mcp-server",
+        "start-mcp-server"
+      ],
+      "env": {
+        "SERPER_API_KEY": "PASTE_SERPER_KEY_OR_LEAVE_EMPTY",
+        "TAVILY_API_KEY": "PASTE_TAVILY_KEY_OR_LEAVE_EMPTY",
+        "SEARXNG_BASE_URL": "PASTE_SEARXNG_URL_OR_LEAVE_EMPTY",
+        "GITHUB_TOKEN": "PASTE_GITHUB_TOKEN_OR_LEAVE_EMPTY",
+        "KINDLY_BROWSER_EXECUTABLE_PATH": "PASTE_IF_NEEDED"
+      }
     }
   }
 }
 ```
 
-After adding the server, restart/reload the gateway:
+Do **not** add root-level `mcpServers` to `~/.openclaw/openclaw.json` (OpenClaw config uses strict schema validation and unknown keys are rejected).
+
+If OpenClaw is already running and doesn’t pick up the new server, restart/reload the gateway:
 ```bash
 openclaw gateway restart
 ```
