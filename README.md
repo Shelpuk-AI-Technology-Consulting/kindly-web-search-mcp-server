@@ -251,52 +251,50 @@ CLI (no file editing) — add a local stdio MCP server:
 
 macOS / Linux (Serper):
 ```bash
-claude mcp add --transport stdio \
-  --env SERPER_API_KEY="$SERPER_API_KEY" \
-  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
-  kindly-web-search \
+claude mcp add --transport stdio kindly-web-search \
+  -e SERPER_API_KEY="$SERPER_API_KEY" \
+  -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+  -e KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
   kindly-web-search-mcp-server start-mcp-server
 ```
 
 macOS / Linux (Tavily):
 ```bash
-claude mcp add --transport stdio \
-  --env TAVILY_API_KEY="$TAVILY_API_KEY" \
-  --env GITHUB_TOKEN="$GITHUB_TOKEN" \
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
-  kindly-web-search \
+claude mcp add --transport stdio kindly-web-search \
+  -e TAVILY_API_KEY="$TAVILY_API_KEY" \
+  -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+  -e KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH" \
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
   kindly-web-search-mcp-server start-mcp-server
 ```
 
 If you use SearXNG, replace the provider env var above with:
 ```bash
---env SEARXNG_BASE_URL="$SEARXNG_BASE_URL"
+-e SEARXNG_BASE_URL="$SEARXNG_BASE_URL"
 ```
 
 Windows (PowerShell):
 ```powershell
-claude mcp add --transport stdio `
-  --env SERPER_API_KEY="$env:SERPER_API_KEY" `
-  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
-  kindly-web-search `
+claude mcp add --transport stdio kindly-web-search `
+  -e SERPER_API_KEY="$env:SERPER_API_KEY" `
+  -e GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  -e KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
   kindly-web-search-mcp-server start-mcp-server
 ```
 
 Windows (PowerShell, Tavily):
 ```powershell
-claude mcp add --transport stdio `
-  --env TAVILY_API_KEY="$env:TAVILY_API_KEY" `
-  --env GITHUB_TOKEN="$env:GITHUB_TOKEN" `
-  --env KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
-  kindly-web-search `
+claude mcp add --transport stdio kindly-web-search `
+  -e TAVILY_API_KEY="$env:TAVILY_API_KEY" `
+  -e GITHUB_TOKEN="$env:GITHUB_TOKEN" `
+  -e KINDLY_BROWSER_EXECUTABLE_PATH="$env:KINDLY_BROWSER_EXECUTABLE_PATH" `
   -- uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server `
   kindly-web-search-mcp-server start-mcp-server
 ```
+
+Note: On current Claude Code versions, keep the server name immediately after `--transport stdio` and before `-e/--env` flags. Tested with Claude Code `2.0.76`.
 
 If Claude Code times out while starting the server, set a 120s startup timeout (milliseconds):
 
