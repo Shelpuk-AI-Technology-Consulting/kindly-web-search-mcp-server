@@ -17,7 +17,7 @@ class TestStackExchangeMarkdown(unittest.TestCase):
             "score": 10,
             "creation_date": 1700000000,
             "owner": {"link": "https://stackoverflow.com/users/1/u", "display_name": "asker"},
-            "body_markdown": "Question body &lt;b&gt;bold&lt;/b&gt;\n\n```py\nprint('hi')\n```",
+            "body_markdown": "Question body &lt;b&gt;bold&lt;/b&gt;\n\n```py\nlogging.info('hi')\n```",
         }
 
         answers = [
