@@ -2,6 +2,19 @@
 
 **Web search + robust content retrieval for AI coding tools.**
 
+Part of the **[Shelpuk AI Technology Consulting](https://shelpuk.com) agentic suite** – a set of tools that together improve the code quality produced by AI coding agents by **15–20%**.
+
+Works with **Claude Code**, **Codex**, **Antigravity**, **Cursor**, **Windsurf**, and any agent that supports skills or MCP servers.
+
+| Component                                                                            | Role |
+|--------------------------------------------------------------------------------------|---|
+| [tdd](https://github.com/Shelpuk-AI-Technology-Consulting/agent-skill-tdd)           | Enforces TDD, requirements discipline, and peer review for every coding task |
+| [Serena](https://github.com/oraios/serena)                                           | Semantic code navigation + persistent project memory |
+| **Kindly Web Search** ← you are here                                                 | Up-to-date API and package documentation via web search |
+| [Lad MCP Server](https://github.com/Shelpuk-AI-Technology-Consulting/lad_mcp_server) | Project-aware AI design and code review |
+
+If you like what we're building, please ⭐ **star this repo** – it's a huge motivation for us to keep going!
+
 ![Kindly Web Search](assets/kindly_header.png)
 
 ## Why do we need another web search MCP server?
