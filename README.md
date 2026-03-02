@@ -15,6 +15,21 @@ Works with **Claude Code**, **Codex**, **Antigravity**, **Cursor**, **Windsurf**
 
 If you like what we're building, please ⭐ **star this repo** – it's a huge motivation for us to keep going!
 
+## How to use the suite
+
+**1. Install three MCP servers and one skill:**
+
+- [Serena](https://github.com/oraios/serena)
+- [Kindly Web Search](https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server)
+- [Lad MCP Server](https://github.com/Shelpuk-AI-Technology-Consulting/lad_mcp_server)
+- [tdd](https://github.com/Shelpuk-AI-Technology-Consulting/agent-skill-tdd)
+
+**2. Use the skill when requesting a feature:**
+
+```
+> [Your feature description]. Follow $tdd.
+```
+
 # Kindly Web Search MCP Server
 
 ![Kindly Web Search](assets/kindly_header.png)
