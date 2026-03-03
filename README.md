@@ -26,8 +26,10 @@ If you like what we're building, please ⭐ **star this repo** – it's a huge m
 
 **2. Use the skill when requesting a feature:**
 
+Prompt your favorite AI coding agent (Claude Code, Codex, Cursor, etc.) as usual. Then just add `Follow $tdd` in the end.
+
 ```
-> [Your feature description]. Follow $tdd.
+> Build [your feature description]. Follow $tdd.
 ```
 
 # Kindly Web Search MCP Server
