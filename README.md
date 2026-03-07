@@ -15,7 +15,7 @@ Works with **Claude Code**, **Codex**, **Antigravity**, **Cursor**, **Windsurf**
 
 If you like what we're building, please ⭐ **star this repo** – it's a huge motivation for us to keep going!
 
-<iframe style="width:100%;height:auto;min-width:600px;min-height:400px;" src="https://www.star-history.com/?repos=Shelpuk-AI-Technology-Consulting%2Fkindly-web-search-mcp-server&type=date&legend=top-left" frameBorder="0"></iframe>
+[![Star History Chart](https://api.star-history.com/svg?repos=Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server&type=Date)](https://star-history.com/#Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server&Date)
 
 ## How to use the suite
 
