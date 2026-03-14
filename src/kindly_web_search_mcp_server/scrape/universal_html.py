@@ -593,6 +593,14 @@ async def fetch_html_via_nodriver(
     cmd = _compose_cmd(slot)
 
     env = _maybe_add_src_to_pythonpath(dict(os.environ))
+    
+    # Ensure nodriver can find the browser: if we have a resolved browser path,
+    # propagate it via environment variables that nodriver recognizes.
+    if browser_executable_path:
+        env["KINDLY_BROWSER_EXECUTABLE_PATH"] = browser_executable_path
+        env["BROWSER_EXECUTABLE_PATH"] = browser_executable_path
+        env["CHROME_BIN"] = browser_executable_path
+    
     if diagnostics and diagnostics.enabled:
         env["KINDLY_DIAGNOSTICS"] = "1"
         env["KINDLY_REQUEST_ID"] = diagnostics.request_id

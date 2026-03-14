@@ -640,7 +640,8 @@ async def _fetch_html(
         raise RuntimeError("reuse_browser requested but remote host/port was not provided.")
 
     sandbox_enabled = _resolve_sandbox_enabled()
-    resolved_browser_executable_path: str | None = None
+    # Always resolve the browser executable path so we can pass it to uc.start()
+    resolved_browser_executable_path = _resolve_browser_executable_path(browser_executable_path)
     is_snap = False
     attempts = 1
     base_backoff_seconds = 0.0
@@ -649,7 +650,6 @@ async def _fetch_html(
     base_browser_args: list[str] = []
 
     if not reuse_requested:
-        resolved_browser_executable_path = _resolve_browser_executable_path(browser_executable_path)
         if resolved_browser_executable_path is None:
             raise RuntimeError(
                 "No Chromium-based browser executable found. "
@@ -915,7 +915,12 @@ async def _fetch_html(
                 "Connecting to pooled Chromium",
                 {"host": remote_host, "port": remote_port},
             )
-            browser = await uc.start(host=remote_host, port=remote_port)
+            # Pass browser_executable_path to prevent nodriver from trying to auto-discover
+            browser = await uc.start(
+                host=remote_host,
+                port=remote_port,
+                browser_executable_path=browser_executable_path,
+            )
             _emit_diag(
                 "worker.browser_started",
                 "Nodriver connected to pooled browser",
@@ -1003,7 +1008,11 @@ async def _fetch_html(
                     )
 
                     # Connect Nodriver to the already-running browser instance (do not spawn another).
-                    browser = await uc.start(host=host, port=port)
+                    browser = await uc.start(
+                        host=host,
+                        port=port,
+                        browser_executable_path=resolved_browser_executable_path,
+                    )
                     _emit_diag(
                         "worker.browser_started",
                         "Nodriver connected to browser",
