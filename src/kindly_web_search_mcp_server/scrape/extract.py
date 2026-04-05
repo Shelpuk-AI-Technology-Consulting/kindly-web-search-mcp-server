@@ -5,6 +5,11 @@ import re
 from typing import Callable
 
 try:
+    import trafilatura  # type: ignore
+except Exception:  # pragma: no cover
+    trafilatura = None  # type: ignore
+
+try:
     from bs4 import BeautifulSoup  # type: ignore
 except Exception:  # pragma: no cover
     BeautifulSoup = None  # type: ignore
@@ -53,27 +58,32 @@ def _simple_html_to_markdown(raw_html: str) -> str:
     out = _strip_tags_keep_text(h)
     return out
 
+
+def _bs4_markdownify_fallback(html: str) -> str:
+    if BeautifulSoup is not None and md is not None:
+        soup = BeautifulSoup(html, "html.parser")
+        for element in soup(["script", "style", "header", "footer", "nav", "aside"]):
+            element.decompose()
+        main_content = soup.find("main") or soup.find("article") or soup.find("body")
+        if main_content:
+            return md(str(main_content), heading_style="ATX", strip=["a", "assets"])
+        return "Could not extract main content."
+    return _simple_html_to_markdown(html)
+
+
 def extract_content_as_markdown(html: str) -> str:
     """
     Extracts the main content from HTML, cleans it, and converts it to Markdown.
     """
-    # Preferred path: BeautifulSoup + markdownify for higher-fidelity conversion.
-    if BeautifulSoup is not None and md is not None:
-        soup = BeautifulSoup(html, "html.parser")
+    if trafilatura is not None:
+        result = trafilatura.extract(
+            html,
+            output_format="markdown",
+            include_links=False,
+            include_images=False,
+            include_tables=True,
+        )
+        if result:
+            return result
 
-        # Remove script, style, header, footer, and nav elements
-        for element in soup(["script", "style", "header", "footer", "nav", "aside"]):
-            element.decompose()
-
-        # Try to find the main content, falling back to the body
-        main_content = soup.find("main") or soup.find("article") or soup.find("body")
-
-        if main_content:
-            # Convert the cleaned HTML to Markdown
-            # Strip out unwanted tags and configure markdownify
-            markdown_text = md(str(main_content), heading_style="ATX", strip=["a", "assets"])
-            return markdown_text
-        return "Could not extract main content."
-
-    # Fallback path: best-effort extraction without optional deps.
-    return _simple_html_to_markdown(html)
+    return _bs4_markdownify_fallback(html)
