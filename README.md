@@ -2,7 +2,7 @@
 
 **Web search + robust content retrieval for AI coding tools.**
 
-Kindly Web Search is a part of the **[Shelpuk AI Technology Consulting](https://shelpuk.com) agentic suite** – a set of tools that together improve the code quality produced by AI coding agents by **15–20%**.
+Kindly Web Search is a part of the **[Shelpuk AI Technology Consulting](https://shelpuk.com) agentic suite** – a set of tools that together improve the code quality produced by AI coding agents by **15–20%** ([Read More on Claude Code generation quality improvement](https://shelpuk.com/en/blog/how-to-increase-claude-code-generation-quality-by-20-percent/)).
 
 Works with **Claude Code**, **Codex**, **Antigravity**, **Cursor**, **Windsurf**, and any agent that supports skills or MCP servers.
 
