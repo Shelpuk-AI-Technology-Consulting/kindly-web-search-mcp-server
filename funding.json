@@ -1,0 +1,82 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "organisation",
+    "role": "maintainer",
+    "name": "Shelpuk AI Technology Consulting",
+    "email": "sergii@shelpuk.com",
+    "phone": "",
+    "description": "Shelpuk AI Technology Consulting is an AI consulting and software engineering company founded by Sergii Shelpuk. We build practical AI systems and open-source developer tools for agentic software development. We maintain Kindly Web Search, an MIT-licensed MCP server that helps AI coding agents retrieve complete, structured technical context instead of shallow search snippets. Our work focuses on making AI-assisted software development more reliable, transparent, and useful for developers, teams, and open-source maintainers.",
+    "webpageUrl": {
+      "url": "https://github.com/Shelpuk-AI-Technology-Consulting",
+      "wellKnown": ""
+    }
+  },
+  "projects": [
+    {
+      "guid": "kindly-web-search",
+      "name": "Kindly Web Search",
+      "description": "Kindly Web Search is an MIT-licensed MCP server for AI coding agents such as Claude Code, Codex, Cursor, GitHub Copilot, Gemini, Windsurf, and OpenClaw. It combines web search with robust content retrieval from StackOverflow and StackExchange, GitHub Issues and Discussions, arXiv, Wikipedia, documentation sites, and rendered web pages. The goal is to give agents useful, auditable, LLM-ready technical evidence in one call, reducing hallucinated APIs, incomplete debugging context, and noisy HTML scraping. Funding will support reliability improvements, self-hosted search support, security and privacy hardening, cross-platform browser stability, reproducible benchmarks, documentation, and ongoing maintenance.",
+      "webpageUrl": {
+        "url": "https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
+        "wellKnown": ""
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
+        "wellKnown": ""
+      },
+      "licenses": [
+        "spdx:MIT"
+      ],
+      "tags": [
+        "developer-tools",
+        "software-engineering",
+        "ai",
+        "ai-agents",
+        "mcp",
+        "web-search",
+        "python",
+        "devops",
+        "security",
+        "privacy"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "bank-transfer",
+        "type": "bank",
+        "address": "",
+        "description": "Bank transfer details are available on request. Please contact sergii@shelpuk.com."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "kindly-roadmap",
+        "status": "active",
+        "name": "Kindly reliability and security roadmap",
+        "description": "One-time funding to improve retrieval quality and freshness, SearXNG/self-hosted search support, security and privacy hardening, cross-platform browser reliability, regression tests, benchmarks, documentation, and maintainer workflows.",
+        "amount": 35000,
+        "currency": "EUR",
+        "frequency": "one-time",
+        "channels": [
+          "bank-transfer"
+        ]
+      },
+      {
+        "guid": "ongoing-maintenance",
+        "status": "active",
+        "name": "Ongoing maintenance",
+        "description": "Monthly support for issue triage, compatibility testing with AI coding tools and MCP clients, dependency updates, documentation, releases, and community support.",
+        "amount": 3000,
+        "currency": "EUR",
+        "frequency": "monthly",
+        "channels": [
+          "bank-transfer"
+        ]
+      }
+    ]
+  }
+}
