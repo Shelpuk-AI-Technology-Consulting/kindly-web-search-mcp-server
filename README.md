@@ -659,6 +659,12 @@ Create `.vscode/mcp.json`:
 
 Set `KINDLY_BROWSER_EXECUTABLE_PATH` to your browser binary.
 
+macOS (Google Chrome):
+
+```bash
+export KINDLY_BROWSER_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+```
+
 macOS (Homebrew Chromium):
 
 ```bash
