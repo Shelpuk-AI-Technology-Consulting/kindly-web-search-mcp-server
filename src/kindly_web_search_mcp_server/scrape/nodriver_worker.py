@@ -478,6 +478,10 @@ def _resolve_chrome_proxy() -> str:
     return raw
 
 
+def _resolve_chrome_proxy_bypass() -> str:
+    return (os.environ.get("KINDLY_CHROME_PROXY_BYPASS") or "").strip()
+
+
 def _build_chromium_launch_args(
     *,
     base_browser_args: list[str],
@@ -506,6 +510,9 @@ def _build_chromium_launch_args(
     proxy = _resolve_chrome_proxy()
     if proxy:
         args.append(f"--proxy-server={proxy}")
+    bypass = _resolve_chrome_proxy_bypass()
+    if bypass:
+        args.append(f"--proxy-bypass-list={bypass}")
 
     # Append the base args last to preserve existing behavior (and allow overrides),
     # while avoiding duplicates that can confuse Chromium.

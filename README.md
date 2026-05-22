@@ -614,6 +614,20 @@ This only affects Chromium-based `page_content` extraction. Search API calls (Se
 
 Note: Chromium's `--proxy-server` does not support embedded credentials (e.g. `socks5://user:pass@host:port` will not work). If your proxy requires authentication, set up a local credential-less proxy forwarder (e.g. SSH tunnel, `gost`, `socat`) and point `KINDLY_CHROME_PROXY` to the local endpoint.
 
+### Proxy bypass list
+
+Set `KINDLY_CHROME_PROXY_BYPASS` to exclude specific hosts from the proxy. The value is passed directly as Chromium's `--proxy-bypass-list` flag (comma-separated). Syntax:
+
+- Exact host: `localhost`, `127.0.0.1`
+- Wildcard suffix: `*.example.com`, `.local`
+- IPv6: `[::1]`
+
+```bash
+export KINDLY_CHROME_PROXY_BYPASS="localhost,127.0.0.1,*.internal"
+```
+
+When unset, Chromium uses its default bypass list (which includes `localhost` and `127.0.0.1`).
+
 ## Remote / Docker deployment (separate machine)
 
 Whether you can run the MCP server on a different PC depends on your MCP client:
