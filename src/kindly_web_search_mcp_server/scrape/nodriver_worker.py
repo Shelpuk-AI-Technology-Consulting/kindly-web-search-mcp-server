@@ -473,6 +473,15 @@ def _resolve_snap_backoff_multiplier() -> float:
     return max(1.0, min(value, 20.0))
 
 
+def _resolve_chrome_proxy() -> str:
+    raw = (os.environ.get("KINDLY_CHROME_PROXY") or "").strip()
+    return raw
+
+
+def _resolve_chrome_proxy_bypass() -> str:
+    return (os.environ.get("KINDLY_CHROME_PROXY_BYPASS") or "").strip()
+
+
 def _build_chromium_launch_args(
     *,
     base_browser_args: list[str],
@@ -497,6 +506,13 @@ def _build_chromium_launch_args(
         f"--user-agent={user_agent}",
         *([] if sandbox_enabled else ["--no-sandbox"]),
     ]
+
+    proxy = _resolve_chrome_proxy()
+    if proxy:
+        args.append(f"--proxy-server={proxy}")
+    bypass = _resolve_chrome_proxy_bypass()
+    if bypass:
+        args.append(f"--proxy-bypass-list={bypass}")
 
     # Append the base args last to preserve existing behavior (and allow overrides),
     # while avoiding duplicates that can confuse Chromium.

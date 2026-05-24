@@ -595,6 +595,39 @@ Windows (PowerShell):
 $env:KINDLY_BROWSER_EXECUTABLE_PATH="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 ```
 
+## Chromium proxy (optional)
+
+Set `KINDLY_CHROME_PROXY` to route all headless Chromium traffic (used for `page_content` extraction) through a proxy server. The value is passed directly as Chromium's `--proxy-server` flag.
+
+Supported schemes: `http://`, `https://`, `socks5://`, `socks4://`.
+
+```bash
+export KINDLY_CHROME_PROXY="socks5://127.0.0.1:1080"
+```
+
+When running in Docker, use `host.docker.internal` instead of `127.0.0.1` to reach the host:
+```bash
+docker run ... -e KINDLY_CHROME_PROXY="socks5://host.docker.internal:1080" ...
+```
+
+This only affects Chromium-based `page_content` extraction. Search API calls (Serper, Tavily, SearXNG) use `httpx` and respect standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` environment variables instead.
+
+Note: Chromium's `--proxy-server` does not support embedded credentials (e.g. `socks5://user:pass@host:port` will not work). If your proxy requires authentication, set up a local credential-less proxy forwarder (e.g. SSH tunnel, `gost`, `socat`) and point `KINDLY_CHROME_PROXY` to the local endpoint.
+
+### Proxy bypass list
+
+Set `KINDLY_CHROME_PROXY_BYPASS` to exclude specific hosts from the proxy. The value is passed directly as Chromium's `--proxy-bypass-list` flag (comma-separated). Syntax:
+
+- Exact host: `localhost`, `127.0.0.1`
+- Wildcard suffix: `*.example.com`, `.local`
+- IPv6: `[::1]`
+
+```bash
+export KINDLY_CHROME_PROXY_BYPASS="localhost,127.0.0.1,*.internal"
+```
+
+When unset, Chromium uses its default bypass list (which includes `localhost` and `127.0.0.1`).
+
 ## Remote / Docker deployment (separate machine)
 
 Whether you can run the MCP server on a different PC depends on your MCP client:
@@ -613,6 +646,7 @@ Run the server (port `8000`):
 docker run --rm -p 8000:8000 \
   -e SERPER_API_KEY="..." \
   -e GITHUB_TOKEN="..." \
+  -e KINDLY_CHROME_PROXY="socks5://host.docker.internal:1080" \
   kindly-web-search-mcp-server \
   --http --host 0.0.0.0 --port 8000
 ```
@@ -622,6 +656,7 @@ docker run --rm -p 8000:8000 \
 docker run --rm -p 8000:8000 \
   -e TAVILY_API_KEY="..." \
   -e GITHUB_TOKEN="..." \
+  -e KINDLY_CHROME_PROXY="socks5://host.docker.internal:1080" \
   kindly-web-search-mcp-server \
   --http --host 0.0.0.0 --port 8000
 ```
