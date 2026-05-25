@@ -95,12 +95,29 @@ It also significantly reduces reliance on GitHub MCP servers by providing struct
 Kindly has been our daily companion in production work for months, saving us countless hours and improving the effectiveness of our AI coding assistants. We're excited to share it with the community!
 
 **Tools**
+
 - `web_search(query, num_results=3)` → top results with `title`, `link`, `snippet`, and `page_content` (Markdown, best-effort).
 - `get_content(url)` → `page_content` (Markdown, best-effort).
+
+### Content resolver
+
+When extracting page content (`get_content` or `web_search` results), Kindly routes each URL through a priority chain of specialized handlers before falling back to the universal HTML loader:
+
+| Priority | Target | Handler | HTTP client | Proxy support |
+|----------|--------|---------|-------------|---------------|
+| 1 | StackExchange (StackOverflow, etc.) | StackExchange API | `httpx[socks]` | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (HTTP, SOCKS5) |
+| 2 | GitHub Issues | GitHub GraphQL API | `httpx[socks]` | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (HTTP, SOCKS5) |
+| 3 | GitHub Discussions | GitHub GraphQL API | `httpx[socks]` | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (HTTP, SOCKS5) |
+| 4 | Wikipedia | MediaWiki Action API | `httpx[socks]` | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (HTTP, SOCKS5) |
+| 5 | arXiv | Atom API + PDF → Markdown | `httpx[socks]` | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (HTTP, SOCKS5) |
+| 6 | All other URLs | Universal HTML loader | headless Chromium (`nodriver`) | `KINDLY_CHROME_PROXY` (HTTP, SOCKS5, etc.) |
+
+All `httpx`-based handlers read standard proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) and support both HTTP and SOCKS proxy URLs via the `socksio` dependency. The universal HTML loader uses Chromium's `--proxy-server` flag via `KINDLY_CHROME_PROXY`, which supports SOCKS5 and other schemes natively.
 
 Search uses **Serper** (primary, if configured) or **Tavily**, and page extraction uses a local Chromium-based browser via `nodriver`.
 
 ## Requirements
+
 - A search provider (priority order): `SERPER_API_KEY` (recommended) → `TAVILY_API_KEY` → `SEARXNG_BASE_URL` (self-hosted SearXNG)
 - A Chromium-based browser installed on the same machine running the MCP client (Chrome/Chromium/Edge/Brave)
   - Without a browser: specialized sources (StackExchange, GitHub Issues/Discussions, Wikipedia, arXiv) still work well, but universal HTML `page_content` extraction may fail for other sites.
@@ -112,35 +129,44 @@ Search uses **Serper** (primary, if configured) or **Tavily**, and page extracti
 ## Quickstart
 
 ### 1) Install `uvx`
+
 macOS / Linux:
+
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Windows (PowerShell):
+
 ```powershell
 irm https://astral.sh/uv/install.ps1 | iex
 ```
 
 Re-open your terminal and verify:
+
 ```bash
 uvx --version
 ```
 
 ### 2) Install a Chromium-based browser (required for `page_content`)
+
 You need **Chrome / Chromium / Edge / Brave** installed on the same machine running your MCP client.
 
 Note: If you skip this, specialized sources (StackOverflow/StackExchange, GitHub Issues/Discussions, Wikipedia, arXiv) will still work well. Only universal `page_content` extraction for arbitrary sites requires the browser.
 
 macOS:
+
 - Install Chrome, or:
+
 ```bash
 brew install --cask chromium
 ```
 
 Windows:
+
 - Install Chrome or Edge.
 - If browser auto-detection fails later, you’ll need the path:
+
 ```powershell
 Get-Command chrome | Select-Object -ExpandProperty Source
 # Common path:
@@ -151,17 +177,21 @@ Get-Command chrome | Select-Object -ExpandProperty Source
 ```
 
 Linux (Ubuntu/Debian):
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y chromium
 which chromium
 ```
+
 Other Linux distros: install `chromium` (or `chromium-browser`) via your package manager.
 
 ### 3) Set your search API key (required)
+
 Set **one** of these. Provider selection order is: Serper → Tavily → SearXNG.
 
 macOS / Linux:
+
 ```bash
 export SERPER_API_KEY="..."
 # or:
@@ -171,6 +201,7 @@ export SEARXNG_BASE_URL="https://searx.example.org"
 ```
 
 Windows (PowerShell):
+
 ```powershell
 $env:SERPER_API_KEY="..."
 # or:
@@ -180,24 +211,29 @@ $env:SEARXNG_BASE_URL="https://searx.example.org"
 ```
 
 Optional (SearXNG): if your instance requires authentication or blocks bots, set:
+
 ```bash
 export SEARXNG_HEADERS_JSON='{"Authorization":"Bearer ..."}'
 export SEARXNG_USER_AGENT="Mozilla/5.0 ..."
 ```
 
 Windows (PowerShell):
+
 ```powershell
 $env:SEARXNG_HEADERS_JSON='{"Authorization":"Bearer ..."}'
 $env:SEARXNG_USER_AGENT="Mozilla/5.0 ..."
 ```
 
 Optional (recommended for better GitHub Issue / PR extraction):
+
 ```bash
 export GITHUB_TOKEN="..."
 ```
+
 For public repos, a read-only token is enough (classic tokens often use `public_repo`; fine-grained tokens need repo read access).
 
 ### 4) Run command used by all MCP clients
+
 ```bash
 uvx --from git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server \
   kindly-web-search-mcp-server start-mcp-server
@@ -211,11 +247,13 @@ Make sure your API keys are set in the same shell/OS environment that launches t
 ## Client setup
 
 ### Codex
+
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 CLI (no file editing) — add a local stdio MCP server:
 
 macOS / Linux (Serper):
+
 ```bash
 codex mcp add kindly-web-search \
   --env SERPER_API_KEY="$SERPER_API_KEY" \
@@ -226,6 +264,7 @@ codex mcp add kindly-web-search \
 ```
 
 macOS / Linux (Tavily):
+
 ```bash
 codex mcp add kindly-web-search \
   --env TAVILY_API_KEY="$TAVILY_API_KEY" \
@@ -236,11 +275,13 @@ codex mcp add kindly-web-search \
 ```
 
 If you use SearXNG, replace the provider env var above with:
+
 ```bash
 --env SEARXNG_BASE_URL="$SEARXNG_BASE_URL"
 ```
 
 Windows (PowerShell):
+
 ```powershell
 codex mcp add kindly-web-search `
   --env SERPER_API_KEY="$env:SERPER_API_KEY" `
@@ -251,6 +292,7 @@ codex mcp add kindly-web-search `
 ```
 
 Windows (PowerShell, Tavily):
+
 ```powershell
 codex mcp add kindly-web-search `
   --env TAVILY_API_KEY="$env:TAVILY_API_KEY" `
@@ -262,6 +304,7 @@ codex mcp add kindly-web-search `
 
 Alternative (file-based):
 Edit `~/.codex/config.toml`:
+
 ```toml
 [mcp_servers.kindly-web-search]
 command = "uvx"
@@ -277,11 +320,13 @@ startup_timeout_sec = 120.0
 ```
 
 ### Claude Code
+
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 CLI (no file editing) — add a local stdio MCP server:
 
 macOS / Linux (Serper):
+
 ```bash
 claude mcp add --transport stdio kindly-web-search \
   -e SERPER_API_KEY="$SERPER_API_KEY" \
@@ -292,6 +337,7 @@ claude mcp add --transport stdio kindly-web-search \
 ```
 
 macOS / Linux (Tavily):
+
 ```bash
 claude mcp add --transport stdio kindly-web-search \
   -e TAVILY_API_KEY="$TAVILY_API_KEY" \
@@ -302,11 +348,13 @@ claude mcp add --transport stdio kindly-web-search \
 ```
 
 If you use SearXNG, replace the provider env var above with:
+
 ```bash
 -e SEARXNG_BASE_URL="$SEARXNG_BASE_URL"
 ```
 
 Windows (PowerShell):
+
 ```powershell
 claude mcp add --transport stdio kindly-web-search `
   -e SERPER_API_KEY="$env:SERPER_API_KEY" `
@@ -317,6 +365,7 @@ claude mcp add --transport stdio kindly-web-search `
 ```
 
 Windows (PowerShell, Tavily):
+
 ```powershell
 claude mcp add --transport stdio kindly-web-search `
   -e TAVILY_API_KEY="$env:TAVILY_API_KEY" `
@@ -331,17 +380,20 @@ Note: On current Claude Code versions, keep the server name immediately after `-
 If Claude Code times out while starting the server, set a 120s startup timeout (milliseconds):
 
 macOS / Linux:
+
 ```bash
 export MCP_TIMEOUT=120000
 ```
 
 Windows (PowerShell):
+
 ```powershell
 $env:MCP_TIMEOUT="120000"
 ```
 
 Alternative (file-based):
 Create/edit `.mcp.json` (project scope; recommended for teams):
+
 ```json
 {
   "mcpServers": {
@@ -366,8 +418,10 @@ Create/edit `.mcp.json` (project scope; recommended for teams):
 ```
 
 ### Gemini CLI
+
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
+
 ```json
 {
   "mcpServers": {
@@ -393,11 +447,13 @@ Edit `~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
 ```
 
 ### OpenClaw
+
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 If `mcporter` is not installed yet: `npm i -g mcporter`.
-mcporter docs: https://github.com/steipete/mcporter/blob/main/docs/config.md
+mcporter docs: <https://github.com/steipete/mcporter/blob/main/docs/config.md>
 
 CLI (no file editing) — `mcporter` (recommended):
+
 ```bash
 # Replace `$...` vars with real values, or export them in your shell first.
 mcporter config add kindly-search \
@@ -409,15 +465,18 @@ mcporter config add kindly-search \
   --env GITHUB_TOKEN="$GITHUB_TOKEN" \
   --env KINDLY_BROWSER_EXECUTABLE_PATH="$KINDLY_BROWSER_EXECUTABLE_PATH"
 ```
+
 This writes to `~/.mcporter/mcporter.json` (`--scope home`).
 You can replace `kindly-search` with any server name you prefer.
 Verify:
+
 ```bash
 mcporter config get kindly-search
 ```
 
 Alternative (file-based):
 Edit mcporter config (`~/.mcporter/mcporter.json`, or `config/mcporter.json` if you use project scope) and add this under `mcpServers`:
+
 ```json
 {
   "mcpServers": {
@@ -444,19 +503,23 @@ Edit mcporter config (`~/.mcporter/mcporter.json`, or `config/mcporter.json` if 
 Do **not** add root-level `mcpServers` to `~/.openclaw/openclaw.json` (OpenClaw config uses strict schema validation and unknown keys are rejected).
 
 If OpenClaw is already running and doesn’t pick up the new server, restart/reload the gateway:
+
 ```bash
 openclaw gateway restart
 ```
 
 ### Antigravity (Google IDE)
+
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 In Antigravity, open the MCP store, then:
+
 1. Click **Manage MCP Servers**
 2. Click **View raw config** (this opens `mcp_config.json`)
 3. Add the server config under `mcpServers`, save, then go back and click **Refresh**
 
 Paste this into your `mcpServers` object (don’t overwrite other servers):
+
 ```json
 {
   "kindly-web-search": {
@@ -484,9 +547,11 @@ If the first start is slow, run the `uvx` command from Quickstart once in a term
 Don’t commit/share `mcp_config.json` if it contains API keys.
 
 ### Cursor
+
 Set one of `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 Startup timeout: Cursor does not currently expose a per-server startup timeout setting. If the first run is slow, run the `uvx` command from Quickstart once in a terminal to prebuild the tool environment, then restart Cursor.
 Create `.cursor/mcp.json`:
+
 ```json
 {
   "mcpServers": {
@@ -512,7 +577,9 @@ Create `.cursor/mcp.json`:
 ```
 
 ### Claude Desktop
+
 Edit `claude_desktop_config.json`:
+
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\\Claude\\claude_desktop_config.json`
 
@@ -543,9 +610,11 @@ Startup timeout: Claude Desktop does not expose a per-server startup timeout set
 ```
 
 ### GitHub Copilot / Microsoft Copilot (VS Code)
+
 Most secure option: uses interactive prompts, so secrets don’t need to be stored in the file.
 Startup timeout: VS Code currently does not expose a per-server startup timeout setting for MCP servers. If the first run is slow, run the `uvx` command from Quickstart once in a terminal to prebuild the tool environment, then restart VS Code.
 Create `.vscode/mcp.json`:
+
 ```json
 {
   "servers": {
@@ -578,19 +647,23 @@ Create `.vscode/mcp.json`:
 ```
 
 ## Browser path (only if auto-detection fails)
+
 Set `KINDLY_BROWSER_EXECUTABLE_PATH` to your browser binary.
 
 macOS (Homebrew Chromium):
+
 ```bash
 export KINDLY_BROWSER_EXECUTABLE_PATH="/Applications/Chromium.app/Contents/MacOS/Chromium"
 ```
 
 Linux:
+
 ```bash
 export KINDLY_BROWSER_EXECUTABLE_PATH="$(command -v chromium || command -v chromium-browser)"
 ```
 
 Windows (PowerShell):
+
 ```powershell
 $env:KINDLY_BROWSER_EXECUTABLE_PATH="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 ```
@@ -606,6 +679,7 @@ export KINDLY_CHROME_PROXY="socks5://127.0.0.1:1080"
 ```
 
 When running in Docker, use `host.docker.internal` instead of `127.0.0.1` to reach the host:
+
 ```bash
 docker run ... -e KINDLY_CHROME_PROXY="socks5://host.docker.internal:1080" ...
 ```
@@ -636,12 +710,15 @@ Whether you can run the MCP server on a different PC depends on your MCP client:
 - **HTTP-capable clients** (can connect to a server URL): you can run Kindly remotely in Docker using **Streamable HTTP**.
 
 ### Docker (Streamable HTTP)
+
 Build the image:
+
 ```bash
 docker build -t kindly-web-search-mcp-server .
 ```
 
 Run the server (port `8000`):
+
 ```bash
 docker run --rm -p 8000:8000 \
   -e SERPER_API_KEY="..." \
@@ -652,6 +729,7 @@ docker run --rm -p 8000:8000 \
 ```
 
 - Or (Tavily):
+
 ```bash
 docker run --rm -p 8000:8000 \
   -e TAVILY_API_KEY="..." \
@@ -700,5 +778,6 @@ docker run --rm -p 8000:8000 \
 - “web_search fails: no provider key”: set `SERPER_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_BASE_URL`.
 
 ## Security
+
 - Don’t commit API keys.
 - Prefer env-var expansion (Codex `env_vars`, Cursor `${env:...}`, Gemini `$VAR`, Claude Code `${VAR}`) instead of hardcoding secrets.
