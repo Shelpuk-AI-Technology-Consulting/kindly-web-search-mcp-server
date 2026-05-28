@@ -99,7 +99,7 @@ def _resolve_browser_executable_path() -> str | None:
 
 
 def _default_user_agent() -> str:
-    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    return worker._resolve_user_agent(_resolve_browser_executable_path())
 
 
 def _base_browser_args(user_agent: str, sandbox_enabled: bool) -> list[str]:
@@ -108,6 +108,7 @@ def _base_browser_args(user_agent: str, sandbox_enabled: bool) -> list[str]:
         *([] if sandbox_enabled else ["--no-sandbox"]),
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
+        "--disable-features=AutomationControlled",
         "--disable-logging",
         "--log-level=3",
         "--disable-background-timer-throttling",
