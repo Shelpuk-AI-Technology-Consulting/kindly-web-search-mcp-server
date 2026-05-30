@@ -28,18 +28,28 @@ DEFAULT_SEARXNG_USER_AGENT = (
 )
 
 
-def _get_searxng_base_url() -> str:
-    base_url = os.environ.get("SEARXNG_BASE_URL", "").strip()
-    if not base_url:
+def _get_searxng_base_urls() -> list[str]:
+    raw = os.environ.get("SEARXNG_BASE_URL", "").strip()
+    if not raw:
         raise SearxngConfigError(
             "SEARXNG_BASE_URL is not set. Configure it as an environment variable in your IDE/run configuration."
         )
 
-    parsed = urlparse(base_url)
-    if not parsed.scheme or not parsed.netloc:
-        raise SearxngConfigError(f"SEARXNG_BASE_URL is not a valid URL: {base_url!r}")
+    urls: list[str] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        parsed = urlparse(part)
+        if not parsed.scheme or not parsed.netloc:
+            LOGGER.warning("Ignoring invalid SearXNG URL in list: %r", part)
+            continue
+        urls.append(part.rstrip("/"))
 
-    return base_url.rstrip("/")
+    if not urls:
+        raise SearxngConfigError(f"No valid URLs found in SEARXNG_BASE_URL: {raw!r}")
+
+    return urls
 
 
 def _build_headers() -> dict[str, str]:
@@ -104,8 +114,7 @@ async def search_searxng(
     if num_results < 1:
         return []
 
-    base_url = _get_searxng_base_url()
-    url = f"{base_url}/search"
+    base_urls = _get_searxng_base_urls()
 
     params: dict[str, Any] = {"q": query, "format": "json"}
     for env_key, param_key in (
@@ -122,7 +131,8 @@ async def search_searxng(
     headers = _build_headers()
     timeout_seconds = _get_request_timeout_seconds()
 
-    async def _do_request(client: httpx.AsyncClient) -> dict[str, Any]:
+    async def _do_request_for_url(client: httpx.AsyncClient, base_url: str) -> dict[str, Any]:
+        url = f"{base_url}/search"
         resp = await client.get(url, params=params, headers=headers, timeout=timeout_seconds)
         try:
             resp.raise_for_status()
@@ -147,11 +157,25 @@ async def search_searxng(
             raise SearxngError("SearXNG response was not a JSON object.")
         return data
 
-    if http_client is None:
-        async with httpx.AsyncClient(timeout=30) as client:
-            data = await _do_request(client)
-    else:
-        data = await _do_request(http_client)
+    last_error = None
+    data = None
+
+    for base_url in base_urls:
+        LOGGER.info("Attempting SearXNG query on instance: %s", base_url)
+        try:
+            if http_client is None:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    data = await _do_request_for_url(client, base_url)
+            else:
+                data = await _do_request_for_url(http_client, base_url)
+            break
+        except Exception as exc:
+            LOGGER.warning("SearXNG query failed on %s: %s", base_url, exc)
+            last_error = exc
+            continue
+
+    if data is None:
+        raise SearxngError(f"All configured SearXNG instances failed. Last error: {last_error}")
 
     raw_results = data.get("results", [])
     if not isinstance(raw_results, list):
