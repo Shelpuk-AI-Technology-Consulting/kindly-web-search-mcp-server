@@ -116,6 +116,17 @@ All `httpx`-based handlers read standard proxy environment variables (`HTTP_PROX
 
 Search uses **Serper** (primary, if configured) or **Tavily**, and page extraction uses a local Chromium-based browser via `nodriver`.
 
+#### Markdown fast paths (skip the browser for doc sites)
+
+Before launching the headless browser, the universal HTML loader first tries to fetch markdown directly with one cheap `httpx` GET — returning it immediately on a hit and falling back to the browser unchanged on any miss. Two independent probes:
+
+| Probe | Env var | Default | Mechanism |
+|---|---|---|---|
+| **Suffix** | `KINDLY_MARKDOWN_SUFFIX_HOSTS` | `help.aliyun.com,www.alibabacloud.com/help` (on) | For listed hosts, request `{path}.md` — Aliyun docs serve `text/markdown` at that route. Add `host` or `host/path-prefix` entries for other `{path}.md` sites. |
+| **Accept** | `KINDLY_MARKDOWN_ACCEPT_PROBE` | `0` (off) | Set to `1` to request every universal-path URL with `Accept: text/markdown`. Catches supporters automatically (Cloudflare, Microsoft Learn, AWS, GitHub, … per [acceptmarkdown.com](https://acceptmarkdown.com/status)); on `text/html` the browser re-fetches (one extra request). |
+
+Both probes validate the response (`text/markdown`, ≥1 KB, non-empty after sanitize) and apply the same output cap as the browser path, so the returned markdown is consistent across paths. See `.env.example` for the full entries.
+
 ## Requirements
 
 - A search provider (priority order): `SERPER_API_KEY` (recommended) → `TAVILY_API_KEY` → `SEARXNG_BASE_URL` (self-hosted SearXNG)
