@@ -15,8 +15,6 @@ Works with **Claude Code**, **Codex**, **Antigravity**, **Cursor**, **Windsurf**
 
 If you like what we're building, please ⭐ **star this repo** – it's a huge motivation for us to keep going!
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server&type=Date)](https://star-history.com/#Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server&Date)
-
 ## How to use the suite
 
 **1. Install three MCP servers and one skill:**
