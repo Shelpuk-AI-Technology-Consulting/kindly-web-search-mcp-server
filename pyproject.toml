@@ -11,7 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "mcp",
     "pydantic",
-    "httpx",
+    "httpx[socks]",
     "beautifulsoup4",
     "markdownify",
     "trafilatura",
