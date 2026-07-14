@@ -1,4 +1,4 @@
-"""Search providers (Serper → Tavily → SearXNG)."""
+"""Search providers (Serper → SerpBase → Tavily → SearXNG)."""
 from __future__ import annotations
 
 import os
@@ -9,6 +9,7 @@ import httpx
 from ..models import WebSearchResult
 from ..utils.diagnostics import Diagnostics
 from .searxng import search_searxng
+from .serpbase import search_serpbase
 from .serper import search_serper
 from .tavily import search_tavily
 
@@ -19,6 +20,10 @@ class WebSearchProviderError(RuntimeError):
 
 def _has_serper_key() -> bool:
     return bool(os.environ.get("SERPER_API_KEY", "").strip())
+
+
+def _has_serpbase_key() -> bool:
+    return bool(os.environ.get("SERPBASE_API_KEY", "").strip())
 
 
 def _has_tavily_key() -> bool:
@@ -37,25 +42,30 @@ async def search_web(
     diagnostics: Diagnostics | None = None,
 ) -> list[WebSearchResult]:
     """
-    Search the web using Serper, Tavily, or SearXNG.
+    Search the web using Serper, SerpBase, Tavily, or SearXNG.
 
     Selection (strict order, no cross-provider fallback):
     - If SERPER_API_KEY is set: use Serper.
+    - Else if SERPBASE_API_KEY is set: use SerpBase.
     - Else if TAVILY_API_KEY is set: use Tavily.
     - Else if SEARXNG_BASE_URL is set: use SearXNG.
     """
     has_serper = _has_serper_key()
+    has_serpbase = _has_serpbase_key()
     has_tavily = _has_tavily_key()
     has_searxng = _has_searxng_config()
-    if not has_serper and not has_tavily and not has_searxng:
+    if not has_serper and not has_serpbase and not has_tavily and not has_searxng:
         raise WebSearchProviderError(
-            "No web search provider is configured. Set SERPER_API_KEY, TAVILY_API_KEY, or SEARXNG_BASE_URL."
+            "No web search provider is configured. Set SERPER_API_KEY, SERPBASE_API_KEY, TAVILY_API_KEY, or SEARXNG_BASE_URL."
         )
 
     provider: Callable[..., Awaitable[list[WebSearchResult]]]
     if has_serper:
         provider = search_serper
         provider_name = "serper"
+    elif has_serpbase:
+        provider = search_serpbase
+        provider_name = "serpbase"
     elif has_tavily:
         provider = search_tavily
         provider_name = "tavily"
@@ -72,6 +82,7 @@ async def search_web(
                 "num_results": num_results,
                 "provider": provider_name,
                 "has_serper_key": has_serper,
+                "has_serpbase_key": has_serpbase,
                 "has_tavily_key": has_tavily,
                 "has_searxng_config": has_searxng,
             },
