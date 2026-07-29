@@ -1,4 +1,4 @@
-"""Search providers (Serper → SerpBase → Tavily → SearXNG)."""
+"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya)."""
 from __future__ import annotations
 
 import os
@@ -11,6 +11,7 @@ from ..utils.diagnostics import Diagnostics
 from .searxng import search_searxng
 from .serpbase import search_serpbase
 from .serper import search_serper
+from .sofya import search_sofya
 from .tavily import search_tavily
 
 
@@ -34,6 +35,10 @@ def _has_searxng_config() -> bool:
     return bool(os.environ.get("SEARXNG_BASE_URL", "").strip())
 
 
+def _has_sofya_key() -> bool:
+    return bool(os.environ.get("SOFYA_API_KEY", "").strip())
+
+
 async def search_web(
     query: str,
     *,
@@ -42,21 +47,23 @@ async def search_web(
     diagnostics: Diagnostics | None = None,
 ) -> list[WebSearchResult]:
     """
-    Search the web using Serper, SerpBase, Tavily, or SearXNG.
+    Search the web using Serper, SerpBase, Tavily, SearXNG, or Sofya.
 
     Selection (strict order, no cross-provider fallback):
     - If SERPER_API_KEY is set: use Serper.
     - Else if SERPBASE_API_KEY is set: use SerpBase.
     - Else if TAVILY_API_KEY is set: use Tavily.
     - Else if SEARXNG_BASE_URL is set: use SearXNG.
+    - Else if SOFYA_API_KEY is set: use Sofya.
     """
     has_serper = _has_serper_key()
     has_serpbase = _has_serpbase_key()
     has_tavily = _has_tavily_key()
     has_searxng = _has_searxng_config()
-    if not has_serper and not has_serpbase and not has_tavily and not has_searxng:
+    has_sofya = _has_sofya_key()
+    if not has_serper and not has_serpbase and not has_tavily and not has_searxng and not has_sofya:
         raise WebSearchProviderError(
-            "No web search provider is configured. Set SERPER_API_KEY, SERPBASE_API_KEY, TAVILY_API_KEY, or SEARXNG_BASE_URL."
+            "No web search provider is configured. Set SERPER_API_KEY, SERPBASE_API_KEY, TAVILY_API_KEY, SEARXNG_BASE_URL, or SOFYA_API_KEY."
         )
 
     provider: Callable[..., Awaitable[list[WebSearchResult]]]
@@ -69,9 +76,12 @@ async def search_web(
     elif has_tavily:
         provider = search_tavily
         provider_name = "tavily"
-    else:
+    elif has_searxng:
         provider = search_searxng
         provider_name = "searxng"
+    else:
+        provider = search_sofya
+        provider_name = "sofya"
 
     if diagnostics:
         diagnostics.emit(
@@ -85,6 +95,7 @@ async def search_web(
                 "has_serpbase_key": has_serpbase,
                 "has_tavily_key": has_tavily,
                 "has_searxng_config": has_searxng,
+                "has_sofya_key": has_sofya,
             },
         )
 

@@ -116,12 +116,32 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         mock_tavily.assert_not_awaited()
         mock_searxng.assert_not_awaited()
 
+    async def test_uses_sofya_when_only_sofya_key(self) -> None:
+        from kindly_web_search_mcp_server.search import search_web
+
+        os.environ.pop("SERPER_API_KEY", None)
+        os.environ.pop("TAVILY_API_KEY", None)
+        os.environ.pop("SEARXNG_BASE_URL", None)
+        os.environ["SOFYA_API_KEY"] = "sofya_test"
+
+        with patch(
+            "kindly_web_search_mcp_server.search.search_sofya", new_callable=AsyncMock
+        ) as mock_sofya:
+            mock_sofya.return_value = [
+                WebSearchResult(title="So", link="https://sofya.example", snippet="sn", page_content="")
+            ]
+            out = await search_web("q", num_results=1)
+
+        self.assertEqual(out[0].link, "https://sofya.example")
+        mock_sofya.assert_awaited()
+
     async def test_raises_when_no_provider_configured(self) -> None:
         from kindly_web_search_mcp_server.search import WebSearchProviderError, search_web
 
         os.environ.pop("SERPER_API_KEY", None)
         os.environ.pop("TAVILY_API_KEY", None)
         os.environ.pop("SEARXNG_BASE_URL", None)
+        os.environ.pop("SOFYA_API_KEY", None)
 
         with self.assertRaises(WebSearchProviderError):
             await search_web("q", num_results=1)
