@@ -9,7 +9,14 @@ description = "MCP server: Serper web search + robust content retrieval."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "mcp",
+    # `<2`: the MCP SDK dropped `mcp.server.fastmcp` in 2.0.0, and `server.py` imports
+    # `FastMCP` from it. The documented install path (`uvx --from git+https://...`)
+    # re-resolves from PyPI on every start and ignores `uv.lock`, so leaving this
+    # unbounded broke every user the moment 2.0.0 shipped. Lift this bound only
+    # alongside a port to the 2.x `MCPServer` API.
+    # `>=1.25`: oldest release verified against this server; stops a constrained
+    # resolve from silently selecting an older, untested API.
+    "mcp>=1.25,<2",
     "pydantic",
     "httpx[socks]",
     "beautifulsoup4",
@@ -20,7 +27,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+# `packaging` is declared rather than inherited from pytest: the dependency-bound
+# guard in `tests/test_dependency_constraints.py` imports it directly, and relying
+# on a transitive dep is the same failure mode that guard exists to prevent.
+dev = ["pytest", "ruff", "packaging"]
 # Optional extras for improved PDF-to-Markdown conversion on supported Python versions.
 # These pull in `onnxruntime` transitively (via `pymupdf-layout`), which may not have wheels
 # for the newest CPython releases (e.g., cp314). Keeping them optional avoids install
