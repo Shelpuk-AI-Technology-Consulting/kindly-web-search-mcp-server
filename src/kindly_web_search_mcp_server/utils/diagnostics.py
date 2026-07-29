@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -10,6 +11,14 @@ from typing import Any, Mapping, TextIO
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _MASK_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "BEARER")
+
+# Credentials in a URL's userinfo component, e.g. `http://user:pass@proxy:8080`.
+# The name-based hints above cannot catch these: the snapshots in
+# `scrape/universal_html.py` include HTTP_PROXY/HTTPS_PROXY, whose names carry no
+# secret marker while their values routinely do. Matches the whole userinfo rather
+# than just `user:pass`, so the password-less `http://user@proxy` form is covered
+# too; `@` in an authority always delimits userinfo, so this cannot match a host.
+_URL_USERINFO_RE = re.compile(r"://[^/@\s]*@")
 
 MAX_SAMPLE_CHARS = 2000
 MAX_STDERR_CHARS = 4000
@@ -33,7 +42,9 @@ def mask_env_values(env: Mapping[str, str]) -> dict[str, str]:
         if any(hint in key.upper() for hint in _MASK_HINTS):
             masked[key] = f"*** ({len(raw)})"
         else:
-            masked[key] = raw
+            # Redact only the userinfo rather than the whole value: these snapshots
+            # exist to debug proxy routing, so the host and port must stay readable.
+            masked[key] = _URL_USERINFO_RE.sub("://***@", raw)
     return masked
 
 
