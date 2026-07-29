@@ -1,7 +1,17 @@
-"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya)."""
+"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya).
+
+:data:`PROVIDERS` is the single source of truth for which providers exist, what
+configures them, and the order they are selected in. Adding a provider means
+appending one entry here; the router, the startup preflight check in
+:mod:`~kindly_web_search_mcp_server.server`, and its diagnostics snapshot all read
+from it, and tests assert the documentation matches it.
+"""
+
 from __future__ import annotations
 
 import os
+import sys
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import httpx
@@ -15,28 +25,114 @@ from .sofya import search_sofya
 from .tavily import search_tavily
 
 
+# The provider coroutines are re-exported deliberately. `SearchProviderSpec` resolves
+# them by attribute name at call time rather than holding a reference, so a static
+# reader (and the linter) sees no use for the imports above -- but rebinding these
+# module attributes is exactly how tests substitute providers.
+__all__ = [
+    "PROVIDERS",
+    "SearchProviderSpec",
+    "WebSearchProviderError",
+    "any_provider_configured",
+    "provider_env_vars",
+    "search_searxng",
+    "search_serpbase",
+    "search_serper",
+    "search_sofya",
+    "search_tavily",
+    "search_web",
+]
+
+
 class WebSearchProviderError(RuntimeError):
     pass
 
 
-def _has_serper_key() -> bool:
-    return bool(os.environ.get("SERPER_API_KEY", "").strip())
+@dataclass(frozen=True)
+class SearchProviderSpec:
+    """Describe one search provider and how to reach it.
+
+    Attributes:
+        name: Short identifier reported as ``provider`` in diagnostics.
+        label: Human-readable name used in documentation and error messages.
+        env_var: Environment variable whose presence selects this provider.
+        function_name: Attribute name of this provider's search coroutine in
+            this module.
+        diagnostics_key: Key used for this provider's flag in the
+            ``search.provider_select`` diagnostics payload.
+    """
+
+    name: str
+    label: str
+    env_var: str
+    function_name: str
+    diagnostics_key: str
+
+    def is_configured(self) -> bool:
+        """Report whether this provider's environment variable is set.
+
+        Returns:
+            ``True`` when the variable holds a non-blank value.
+        """
+        return bool(os.environ.get(self.env_var, "").strip())
+
+    def search_function(self) -> Callable[..., Awaitable[list[WebSearchResult]]]:
+        """Resolve this provider's search coroutine.
+
+        Looked up by name at call time rather than captured as a reference when
+        :data:`PROVIDERS` is built. Tests patch these coroutines by module
+        attribute (``patch("...search.search_serper")``), which rebinds the module
+        attribute; a captured reference would silently keep pointing at the
+        original function and bypass the patch.
+
+        Returns:
+            The coroutine function that queries this provider.
+        """
+        return getattr(sys.modules[__name__], self.function_name)
 
 
-def _has_serpbase_key() -> bool:
-    return bool(os.environ.get("SERPBASE_API_KEY", "").strip())
+# Order is the selection order: the first configured provider wins, with no
+# cross-provider fallback. `searxng` keeps a `_config` diagnostics key rather than
+# `_key` because it is configured by a base URL, not an API key.
+PROVIDERS: tuple[SearchProviderSpec, ...] = (
+    SearchProviderSpec(
+        "serper", "Serper", "SERPER_API_KEY", "search_serper", "has_serper_key"
+    ),
+    SearchProviderSpec(
+        "serpbase",
+        "SerpBase",
+        "SERPBASE_API_KEY",
+        "search_serpbase",
+        "has_serpbase_key",
+    ),
+    SearchProviderSpec(
+        "tavily", "Tavily", "TAVILY_API_KEY", "search_tavily", "has_tavily_key"
+    ),
+    SearchProviderSpec(
+        "searxng", "SearXNG", "SEARXNG_BASE_URL", "search_searxng", "has_searxng_config"
+    ),
+    SearchProviderSpec(
+        "sofya", "Sofya", "SOFYA_API_KEY", "search_sofya", "has_sofya_key"
+    ),
+)
 
 
-def _has_tavily_key() -> bool:
-    return bool(os.environ.get("TAVILY_API_KEY", "").strip())
+def any_provider_configured() -> bool:
+    """Report whether at least one search provider is configured.
+
+    Returns:
+        ``True`` when any provider's environment variable is set.
+    """
+    return any(provider.is_configured() for provider in PROVIDERS)
 
 
-def _has_searxng_config() -> bool:
-    return bool(os.environ.get("SEARXNG_BASE_URL", "").strip())
+def provider_env_vars() -> tuple[str, ...]:
+    """List the environment variables that select a search provider.
 
-
-def _has_sofya_key() -> bool:
-    return bool(os.environ.get("SOFYA_API_KEY", "").strip())
+    Returns:
+        The variables in provider selection order.
+    """
+    return tuple(provider.env_var for provider in PROVIDERS)
 
 
 async def search_web(
@@ -47,41 +143,25 @@ async def search_web(
     diagnostics: Diagnostics | None = None,
 ) -> list[WebSearchResult]:
     """
-    Search the web using Serper, SerpBase, Tavily, SearXNG, or Sofya.
+    Search the web using the first configured provider in :data:`PROVIDERS`.
 
-    Selection (strict order, no cross-provider fallback):
-    - If SERPER_API_KEY is set: use Serper.
-    - Else if SERPBASE_API_KEY is set: use SerpBase.
-    - Else if TAVILY_API_KEY is set: use Tavily.
-    - Else if SEARXNG_BASE_URL is set: use SearXNG.
-    - Else if SOFYA_API_KEY is set: use Sofya.
+    Selection is by strict priority order with no cross-provider fallback: the
+    first provider whose environment variable is set handles the query, and a
+    failure from it is raised rather than retried against another provider.
     """
-    has_serper = _has_serper_key()
-    has_serpbase = _has_serpbase_key()
-    has_tavily = _has_tavily_key()
-    has_searxng = _has_searxng_config()
-    has_sofya = _has_sofya_key()
-    if not has_serper and not has_serpbase and not has_tavily and not has_searxng and not has_sofya:
+    configured = {provider.name: provider.is_configured() for provider in PROVIDERS}
+
+    selected = next(
+        (provider for provider in PROVIDERS if configured[provider.name]), None
+    )
+    if selected is None:
+        variables = ", ".join(provider_env_vars())
         raise WebSearchProviderError(
-            "No web search provider is configured. Set SERPER_API_KEY, SERPBASE_API_KEY, TAVILY_API_KEY, SEARXNG_BASE_URL, or SOFYA_API_KEY."
+            f"No web search provider is configured. Set one of: {variables}."
         )
 
-    provider: Callable[..., Awaitable[list[WebSearchResult]]]
-    if has_serper:
-        provider = search_serper
-        provider_name = "serper"
-    elif has_serpbase:
-        provider = search_serpbase
-        provider_name = "serpbase"
-    elif has_tavily:
-        provider = search_tavily
-        provider_name = "tavily"
-    elif has_searxng:
-        provider = search_searxng
-        provider_name = "searxng"
-    else:
-        provider = search_sofya
-        provider_name = "sofya"
+    provider_fn: Callable[..., Awaitable[list[WebSearchResult]]]
+    provider_fn = selected.search_function()
 
     if diagnostics:
         diagnostics.emit(
@@ -90,17 +170,16 @@ async def search_web(
             {
                 "query": query,
                 "num_results": num_results,
-                "provider": provider_name,
-                "has_serper_key": has_serper,
-                "has_serpbase_key": has_serpbase,
-                "has_tavily_key": has_tavily,
-                "has_searxng_config": has_searxng,
-                "has_sofya_key": has_sofya,
+                "provider": selected.name,
+                **{
+                    provider.diagnostics_key: configured[provider.name]
+                    for provider in PROVIDERS
+                },
             },
         )
 
     async def _run(client: httpx.AsyncClient) -> list[WebSearchResult]:
-        return await provider(query, num_results=num_results, http_client=client)
+        return await provider_fn(query, num_results=num_results, http_client=client)
 
     if http_client is not None:
         return await _run(http_client)
