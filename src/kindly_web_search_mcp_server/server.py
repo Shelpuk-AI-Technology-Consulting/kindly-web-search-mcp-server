@@ -12,7 +12,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
-from .search import search_web
+from .search import any_provider_configured, provider_env_vars, search_web
 from .utils.diagnostics import (
     Diagnostics,
     MAX_SAMPLE_CHARS,
@@ -107,6 +107,27 @@ def _resolve_host_port(host: str | None, port: int | None) -> tuple[str, int]:
     return resolved_host, resolved_port
 
 
+def _provider_configuration_warning() -> str | None:
+    """Build the startup warning shown when no search provider is configured.
+
+    Derived from :data:`~kindly_web_search_mcp_server.search.PROVIDERS` so that a
+    newly added provider cannot leave this check behind. Previously it named three
+    providers explicitly, so installs configured only with SerpBase or Sofya were
+    warned that search would fail while it worked normally.
+
+    Returns:
+        The warning text, or ``None`` when at least one provider is configured.
+    """
+    if any_provider_configured():
+        return None
+
+    variables = ", ".join(provider_env_vars())
+    return (
+        f"No search provider is configured (set one of: {variables}); "
+        "`web_search` calls will fail until one is provided."
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """
     Entrypoint for running the MCP server.
@@ -140,17 +161,11 @@ def main(argv: list[str] | None = None) -> None:
         )
         raise SystemExit(2)
 
-    if not (
-        os.environ.get("SERPER_API_KEY", "").strip()
-        or os.environ.get("TAVILY_API_KEY", "").strip()
-        or os.environ.get("SEARXNG_BASE_URL", "").strip()
-    ):
-        # Do not hard-fail on startup: many clients set env vars in their MCP config
-        # and expect the server to at least come up for tool discovery.
-        LOGGER.warning(
-            "No search provider is configured (SERPER_API_KEY, TAVILY_API_KEY, or SEARXNG_BASE_URL); "
-            "`web_search` calls will fail until one is provided."
-        )
+    # Do not hard-fail on startup: many clients set env vars in their MCP config
+    # and expect the server to at least come up for tool discovery.
+    warning = _provider_configuration_warning()
+    if warning:
+        LOGGER.warning(warning)
 
     if transport in ("sse", "streamable-http"):
         host, port = _resolve_host_port(args.host, args.port)
@@ -250,7 +265,8 @@ async def web_search(
 
     Prerequisites:
     - Requires at least one configured search provider in the server environment:
-      `SERPER_API_KEY` (Serper), `TAVILY_API_KEY` (Tavily), or `SEARXNG_BASE_URL` (SearXNG).
+      `SERPER_API_KEY` (Serper), `SERPBASE_API_KEY` (SerpBase), `TAVILY_API_KEY` (Tavily),
+      `SEARXNG_BASE_URL` (SearXNG), or `SOFYA_API_KEY` (Sofya).
       If none is set, this tool will fail.
 
     Returns:
@@ -260,7 +276,8 @@ async def web_search(
 
     Notes:
     - Content extraction is best-effort and may be truncated to avoid context “bombs”.
-    - Provider routing (strict order): Serper → Tavily → SearXNG. No cross-provider fallback.
+    - Provider routing (strict order): Serper → SerpBase → Tavily → SearXNG → Sofya.
+      No cross-provider fallback.
     - If the search provider fails (missing key, quota/rate-limit, network issues), the tool will error.
     - For a deeper look at one result, call `get_content()` on the chosen `link`.
     - This tool is often called under a hard per-call deadline; page_content resolution is bounded by
@@ -274,9 +291,9 @@ async def web_search(
     parent_diag = Diagnostics(parent_request_id, diag_enabled, stream=sys.stderr)
     if diag_enabled:
         env_snapshot = {
-            "SERPER_API_KEY": os.environ.get("SERPER_API_KEY", ""),
-            "TAVILY_API_KEY": os.environ.get("TAVILY_API_KEY", ""),
-            "SEARXNG_BASE_URL": os.environ.get("SEARXNG_BASE_URL", ""),
+            # Provider variables come from the registry so a new provider shows up
+            # in diagnostics without a second edit here.
+            **{name: os.environ.get(name, "") for name in provider_env_vars()},
             "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
             "KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS": os.environ.get("KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS", ""),
             "KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS": os.environ.get(
