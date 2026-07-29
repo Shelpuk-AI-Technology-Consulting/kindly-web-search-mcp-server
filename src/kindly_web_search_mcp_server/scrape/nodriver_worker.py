@@ -13,6 +13,7 @@ import re
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -352,6 +353,46 @@ def _is_snap_browser(executable_path: str) -> bool:
     return resolved.startswith("/snap/") or "/snap/" in resolved
 
 
+_UA_TEMPLATE = (
+    "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/{version} Safari/537.36"
+)
+_DEFAULT_CHROME_VERSION = "120.0.0.0"
+
+
+def _detect_chrome_version(executable_path: str | None) -> str:
+    if not executable_path:
+        return _DEFAULT_CHROME_VERSION
+    try:
+        result = subprocess.run(
+            [executable_path, "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        output = (result.stdout or "").strip()
+        # Chromium outputs e.g. "Chromium 131.0.6778.204" or "Google Chrome 131.0.6778.204"
+        parts = output.split()
+        for part in reversed(parts):
+            if re.match(r"\d+\.\d+\.\d+\.\d+", part):
+                return part
+    except Exception:
+        pass
+    return _DEFAULT_CHROME_VERSION
+
+
+def _resolve_user_agent(executable_path: str | None) -> str:
+    raw = (os.environ.get("KINDLY_USER_AGENT") or "").strip()
+    if raw:
+        return raw
+    version = _detect_chrome_version(executable_path)
+    if platform.system() == "Windows":
+        pl = "Windows NT 10.0; Win64; x64"
+    elif platform.system() == "Darwin":
+        pl = "Macintosh; Intel Mac OS X 10_15_7"
+    else:
+        pl = "X11; Linux x86_64"
+    return _UA_TEMPLATE.format(platform=pl, version=version)
+
+
 def _resolve_start_retry_attempts() -> int:
     raw = (os.environ.get("KINDLY_NODRIVER_RETRY_ATTEMPTS") or "").strip()
     try:
@@ -501,6 +542,7 @@ def _build_chromium_launch_args(
         "--window-size=1920,1080",
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
+        "--disable-features=AutomationControlled",
         "--disable-logging",
         "--log-level=3",
         f"--user-agent={user_agent}",
@@ -690,16 +732,19 @@ async def _fetch_html(
                 "reuse_browser": False,
             },
         )
+        # Resolve user agent dynamically from browser version
+        resolved_user_agent = _resolve_user_agent(resolved_browser_executable_path)
         base_browser_args = [
             "--window-size=1920,1080",
             *([] if sandbox_enabled else ["--no-sandbox"]),
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
+            "--disable-features=AutomationControlled",
             "--disable-logging",
             "--log-level=3",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
-            f"--user-agent={user_agent}",
+            f"--user-agent={resolved_user_agent}",
         ]
         _emit_diag(
             "worker.browser_args",

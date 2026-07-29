@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .chromium_pool import get_chromium_pool, reuse_enabled
+import httpx
+
+from .chromium_pool import ChromiumSlot, get_chromium_pool, reuse_enabled
 from .extract import extract_content_as_markdown
 from .sanitize import sanitize_markdown
 from ..utils.diagnostics import (
@@ -26,9 +28,7 @@ from ..utils.diagnostics import (
 
 
 DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
+    ""  # Empty triggers dynamic detection in nodriver_worker._resolve_user_agent
 )
 
 
@@ -198,7 +198,9 @@ def _append_tail_text(existing: str, addition: str, *, limit: int) -> str:
     return combined[-limit:]
 
 
-def _consume_stderr_line(state: _StderrAccumulator, line: str, *, tail_limit: int) -> None:
+def _consume_stderr_line(
+    state: _StderrAccumulator, line: str, *, tail_limit: int
+) -> None:
     if line == "":
         return
     if line.startswith("KINDLY_DIAG "):
@@ -390,10 +392,14 @@ async def _run_pipe_probe(
             "stderr_truncated": stderr_truncated,
             "exit_code": proc.returncode,
             "time_to_first_stdout_ms": (
-                None if stdout_first is None else int((stdout_first - probe_started) * 1000)
+                None
+                if stdout_first is None
+                else int((stdout_first - probe_started) * 1000)
             ),
             "time_to_first_stderr_ms": (
-                None if stderr_first is None else int((stderr_first - probe_started) * 1000)
+                None
+                if stderr_first is None
+                else int((stderr_first - probe_started) * 1000)
             ),
             "elapsed_ms": int((time.monotonic() - probe_started) * 1000),
             "event_loop": loop.__class__.__name__,
@@ -483,6 +489,7 @@ async def _emit_worker_heartbeat(
         )
         await asyncio.sleep(STREAM_HEARTBEAT_INTERVAL_SECONDS)
 
+
 async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is not None:
         return
@@ -560,7 +567,9 @@ async def fetch_html_via_nodriver(
     if use_pool:
         try:
             pool = await get_chromium_pool(diagnostics=diagnostics)
-            slot = await pool.acquire(user_agent=config.user_agent, diagnostics=diagnostics)
+            slot = await pool.acquire(
+                user_agent=config.user_agent, diagnostics=diagnostics
+            )
         except Exception as exc:
             if diagnostics:
                 diagnostics.emit(
@@ -571,6 +580,7 @@ async def fetch_html_via_nodriver(
             slot = None
     if slot is None:
         use_pool = False
+
     def _compose_cmd(active_slot: ChromiumSlot | None) -> list[str]:
         cmd = list(base_cmd)
         if active_slot is not None:
@@ -593,14 +603,14 @@ async def fetch_html_via_nodriver(
     cmd = _compose_cmd(slot)
 
     env = _maybe_add_src_to_pythonpath(dict(os.environ))
-    
+
     # Ensure nodriver can find the browser: if we have a resolved browser path,
     # propagate it via environment variables that nodriver recognizes.
     if browser_executable_path:
         env["KINDLY_BROWSER_EXECUTABLE_PATH"] = browser_executable_path
         env["BROWSER_EXECUTABLE_PATH"] = browser_executable_path
         env["CHROME_BIN"] = browser_executable_path
-    
+
     if diagnostics and diagnostics.enabled:
         env["KINDLY_DIAGNOSTICS"] = "1"
         env["KINDLY_REQUEST_ID"] = diagnostics.request_id
@@ -627,10 +637,18 @@ async def fetch_html_via_nodriver(
         if diagnostics is None:
             return
         env_snapshot = {
-            "KINDLY_BROWSER_EXECUTABLE_PATH": env.get("KINDLY_BROWSER_EXECUTABLE_PATH", ""),
-            "KINDLY_HTML_TOTAL_TIMEOUT_SECONDS": env.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS", ""),
-            "KINDLY_NODRIVER_RETRY_ATTEMPTS": env.get("KINDLY_NODRIVER_RETRY_ATTEMPTS", ""),
-            "KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS": env.get("KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS", ""),
+            "KINDLY_BROWSER_EXECUTABLE_PATH": env.get(
+                "KINDLY_BROWSER_EXECUTABLE_PATH", ""
+            ),
+            "KINDLY_HTML_TOTAL_TIMEOUT_SECONDS": env.get(
+                "KINDLY_HTML_TOTAL_TIMEOUT_SECONDS", ""
+            ),
+            "KINDLY_NODRIVER_RETRY_ATTEMPTS": env.get(
+                "KINDLY_NODRIVER_RETRY_ATTEMPTS", ""
+            ),
+            "KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS": env.get(
+                "KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS", ""
+            ),
             "KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS": env.get(
                 "KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS", ""
             ),
@@ -690,7 +708,9 @@ async def fetch_html_via_nodriver(
             )
 
         try:
-            raw_timeout = (os.environ.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS") or "").strip()
+            raw_timeout = (
+                os.environ.get("KINDLY_HTML_TOTAL_TIMEOUT_SECONDS") or ""
+            ).strip()
             used_default = False
             invalid = False
             parsed_value = config.total_timeout_seconds
@@ -922,6 +942,21 @@ async def fetch_html_via_nodriver(
             await pool.release(slot, diagnostics=diagnostics)
 
 
+def _apply_markdown_cap(
+    markdown: str,
+    config: UniversalHtmlLoaderConfig,
+) -> str:
+    """Apply the output length cap identically for every Markdown source.
+
+    Shared by the browser path (``html_to_markdown``) and the markdown-suffix fast
+    path so both emit the same ``…(truncated)`` marker once ``len(markdown)`` exceeds
+    ``config.max_markdown_chars``. Byte-for-byte equivalent to the former inline cap.
+    """
+    if len(markdown) > config.max_markdown_chars:
+        return markdown[: config.max_markdown_chars].rstrip() + "\n\n…(truncated)\n"
+    return markdown
+
+
 def html_to_markdown(
     html: str,
     *,
@@ -933,10 +968,282 @@ def html_to_markdown(
     """
     markdown = extract_content_as_markdown(html)
     markdown = sanitize_markdown(markdown)
-    if len(markdown) > config.max_markdown_chars:
-        markdown = markdown[: config.max_markdown_chars].rstrip() + "\n\n…(truncated)\n"
+    markdown = _apply_markdown_cap(markdown, config)
     if markdown.strip() in ("", "Could not extract main content."):
         return f"_Could not extract main content._\n\nSource: {source_url}\n"
+    return markdown
+
+
+# --- Markdown-suffix fast path -------------------------------------------------
+# Some docs platforms serve a clean markdown edition at `{path}.md`
+# (Content-Type: text/markdown). For allowlisted hosts the loader probes that
+# edition with one httpx GET before launching the headless browser, and falls
+# back transparently on any miss. See docs/markdown-suffix-fast-path.md.
+MD_SUFFIX_PROBE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+MIN_MD_SUFFIX_BYTES = 1024
+MD_SUFFIX_PROBE_TIMEOUT_SECONDS = 5.0
+_DEFAULT_MD_SUFFIX_HOSTS = "help.aliyun.com,www.alibabacloud.com/help"
+
+
+def _load_md_suffix_hosts() -> list[tuple[str, str | None]]:
+    """Parse ``KINDLY_MARKDOWN_SUFFIX_HOSTS`` into ``(host, path_prefix|None)``.
+
+    Each entry is ``host`` (whole host) or ``host/path-prefix`` (scoped to a
+    subtree). Empty/absent env disables the feature.
+    """
+    raw = os.environ.get(
+        "KINDLY_MARKDOWN_SUFFIX_HOSTS", _DEFAULT_MD_SUFFIX_HOSTS
+    ).strip()
+    if not raw:
+        return []
+    out: list[tuple[str, str | None]] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "/" in item:
+            host, _, prefix = item.partition("/")
+            host = host.strip().lower()
+            prefix = ("/" + prefix.strip()).rstrip("/")
+            if not host:
+                continue
+            out.append((host, prefix or None))
+        else:
+            out.append((item.lower(), None))
+    return out
+
+
+def _md_suffix_host_matches(url: str, hosts: list[tuple[str, str | None]]) -> bool:
+    """True when ``url``'s host (and optional path prefix) is allowlisted."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    for entry_host, prefix in hosts:
+        if entry_host != host:
+            continue
+        if prefix is None or path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def _build_md_suffix_url(url: str) -> str | None:
+    """Rewrite ``url`` so its path ends with ``.md`` (before query/fragment).
+
+    Returns ``None`` when the path is not a doc leaf (empty or ends with ``/``).
+    Idempotent on ``.md``; maps ``.html`` -> ``.md``. Query and fragment are
+    preserved so ``.md`` always lands before them.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    path = parsed.path or ""
+    if not path or path.endswith("/"):
+        return None
+    if path.endswith(".md"):
+        new_path = path
+    elif path.endswith(".html"):
+        new_path = path[: -len(".html")] + ".md"
+    else:
+        new_path = path + ".md"
+    return parsed._replace(path=new_path).geturl()
+
+
+async def _probe_markdown_suffix(
+    url: str,
+    *,
+    config: UniversalHtmlLoaderConfig,
+    diagnostics: Diagnostics | None = None,
+) -> str | None:
+    """Probe ``{path}.md`` for allowlisted hosts; return capped Markdown or None.
+
+    One httpx GET. On any miss -- non-allowlisted host, not a doc leaf, network
+    error, non-200, content type other than ``text/markdown``, body under
+    ``MIN_MD_SUFFIX_BYTES``, or empty after sanitize -- return ``None`` so the
+    caller falls back to the browser path. Never raises into the caller.
+    """
+    hosts = _load_md_suffix_hosts()
+    if not hosts or not _md_suffix_host_matches(url, hosts):
+        return None
+    md_url = _build_md_suffix_url(url)
+    if md_url is None:
+        return None
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=MD_SUFFIX_PROBE_TIMEOUT_SECONDS, follow_redirects=True
+        ) as client:
+            resp = await client.get(
+                md_url,
+                headers={
+                    "User-Agent": MD_SUFFIX_PROBE_USER_AGENT,
+                    "Accept": "text/markdown, text/html;q=0.5",
+                },
+            )
+    except Exception as exc:
+        if diagnostics:
+            diagnostics.emit(
+                "content.md_suffix_probe",
+                "Markdown-suffix probe request failed",
+                {
+                    "result": "miss",
+                    "reason": "request_error",
+                    "md_url": md_url,
+                    "error": type(exc).__name__,
+                },
+            )
+        return None
+
+    content_type = (
+        (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    )
+    body_bytes = resp.content or b""
+    if (
+        resp.status_code != 200
+        or content_type != "text/markdown"
+        or len(body_bytes) < MIN_MD_SUFFIX_BYTES
+    ):
+        if diagnostics:
+            diagnostics.emit(
+                "content.md_suffix_probe",
+                "Markdown-suffix probe missed",
+                {
+                    "result": "miss",
+                    "reason": "validation_failed",
+                    "md_url": md_url,
+                    "status": resp.status_code,
+                    "content_type": content_type,
+                    "bytes": len(body_bytes),
+                },
+            )
+        return None
+
+    markdown = sanitize_markdown(body_bytes.decode("utf-8", errors="replace"))
+    if not markdown.strip():
+        if diagnostics:
+            diagnostics.emit(
+                "content.md_suffix_probe",
+                "Markdown-suffix probe empty",
+                {"result": "miss", "reason": "empty_body", "md_url": md_url},
+            )
+        return None
+
+    markdown = _apply_markdown_cap(markdown, config)
+    if diagnostics:
+        diagnostics.emit(
+            "content.md_suffix_probe",
+            "Markdown-suffix probe hit",
+            {
+                "result": "hit",
+                "md_url": md_url,
+                "bytes": len(body_bytes),
+                "content_type": content_type,
+            },
+        )
+    return markdown
+
+
+def _accept_probe_enabled() -> bool:
+    """Whether the blanket Accept: text/markdown probe is enabled (default off)."""
+    return (os.environ.get("KINDLY_MARKDOWN_ACCEPT_PROBE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+async def _probe_markdown_accept_blanket(
+    url: str,
+    *,
+    config: UniversalHtmlLoaderConfig,
+    diagnostics: Diagnostics | None = None,
+) -> str | None:
+    """Probe the URL as-is with ``Accept: text/markdown``; return Markdown or None.
+
+    One httpx GET of the original URL (no path rewrite). On any miss -- network
+    error, non-200, content type other than ``text/markdown``, body under
+    ``MIN_MD_SUFFIX_BYTES``, or empty after sanitize -- return ``None`` so the
+    caller falls back to the browser path (which re-fetches). Never raises into
+    the caller. Only reached when ``KINDLY_MARKDOWN_ACCEPT_PROBE`` is enabled.
+    """
+    try:
+        async with httpx.AsyncClient(
+            timeout=MD_SUFFIX_PROBE_TIMEOUT_SECONDS, follow_redirects=True
+        ) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "User-Agent": MD_SUFFIX_PROBE_USER_AGENT,
+                    "Accept": "text/markdown, text/html;q=0.5",
+                },
+            )
+    except Exception as exc:
+        if diagnostics:
+            diagnostics.emit(
+                "content.md_accept_probe",
+                "Markdown accept-probe request failed",
+                {
+                    "result": "miss",
+                    "reason": "request_error",
+                    "url": url,
+                    "error": type(exc).__name__,
+                },
+            )
+        return None
+
+    content_type = (
+        (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    )
+    body_bytes = resp.content or b""
+    if (
+        resp.status_code != 200
+        or content_type != "text/markdown"
+        or len(body_bytes) < MIN_MD_SUFFIX_BYTES
+    ):
+        if diagnostics:
+            diagnostics.emit(
+                "content.md_accept_probe",
+                "Markdown accept-probe missed",
+                {
+                    "result": "miss",
+                    "reason": "validation_failed",
+                    "url": url,
+                    "status": resp.status_code,
+                    "content_type": content_type,
+                    "bytes": len(body_bytes),
+                },
+            )
+        return None
+
+    markdown = sanitize_markdown(body_bytes.decode("utf-8", errors="replace"))
+    if not markdown.strip():
+        if diagnostics:
+            diagnostics.emit(
+                "content.md_accept_probe",
+                "Markdown accept-probe empty",
+                {"result": "miss", "reason": "empty_body", "url": url},
+            )
+        return None
+
+    markdown = _apply_markdown_cap(markdown, config)
+    if diagnostics:
+        diagnostics.emit(
+            "content.md_accept_probe",
+            "Markdown accept-probe hit",
+            {
+                "result": "hit",
+                "url": url,
+                "bytes": len(body_bytes),
+                "content_type": content_type,
+            },
+        )
     return markdown
 
 
@@ -956,6 +1263,22 @@ async def load_url_as_markdown(
         if diagnostics:
             diagnostics.emit("content.skip", "Skipping probable PDF", {"url": url})
         return None
+
+    # Markdown-suffix fast path: for allowlisted hosts, try `{path}.md` before
+    # launching the headless browser. Returns None on any miss -> fall through.
+    probed = await _probe_markdown_suffix(url, config=config, diagnostics=diagnostics)
+    if probed is not None:
+        return probed
+
+    # Blanket Accept: text/markdown probe (opt-in via KINDLY_MARKDOWN_ACCEPT_PROBE).
+    # For any URL the suffix path missed, ask the server for markdown; on text/html
+    # or any other miss the browser re-fetches (the accepted double-fetch tax).
+    if _accept_probe_enabled():
+        probed = await _probe_markdown_accept_blanket(
+            url, config=config, diagnostics=diagnostics
+        )
+        if probed is not None:
+            return probed
 
     try:
         html = await fetch_html_via_nodriver(

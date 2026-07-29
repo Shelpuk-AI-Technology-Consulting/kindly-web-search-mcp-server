@@ -12,6 +12,7 @@ class Settings:
     """
 
     serper_api_key: str = os.environ.get("SERPER_API_KEY", "")
+    serpbase_api_key: str = os.environ.get("SERPBASE_API_KEY", "")
 
 
 settings = Settings()
