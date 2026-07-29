@@ -11,6 +11,7 @@ truth. The prose copies cannot be generated, so these tests fail when one drifts
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -52,15 +53,47 @@ def test_tool_description_documents_every_provider(
     assert provider.label in doc, f"web_search's docstring omits {provider.label}."
 
 
+def _assert_states_registry_order(text: str, pattern: str, source: str) -> None:
+    """Assert the sentence matched by ``pattern`` lists providers in registry order.
+
+    Checks the matched sentence alone rather than the surrounding document. A
+    document-wide scan passes as soon as any earlier list happens to be ordered,
+    which would leave the ordering claim itself unchecked.
+
+    Args:
+        text: Document containing the ordering claim.
+        pattern: Regex whose first group captures the claim, on one line.
+        source: Human-readable name of the document, used in failure messages.
+    """
+    match = re.search(pattern, text)
+    assert match, f"{source} no longer states a provider order."
+
+    claim = match.group(1)
+    positions = [claim.find(provider.label) for provider in PROVIDERS]
+    missing = [p.label for p, pos in zip(PROVIDERS, positions) if pos < 0]
+
+    assert not missing, f"{source} order omits {missing}: {claim.strip()}"
+    assert positions == sorted(positions), (
+        f"{source} order '{claim.strip()}' disagrees with PROVIDERS: "
+        f"{[p.name for p in PROVIDERS]}."
+    )
+
+
 def test_tool_description_states_the_real_routing_order() -> None:
     """Describe providers in the order the router actually selects them"""
-    doc = _tool_docstring()
-    positions = [doc.find(provider.label) for provider in PROVIDERS]
+    _assert_states_registry_order(
+        _tool_docstring(),
+        r"Provider routing \(strict order\):([^\n]*)",
+        "web_search's docstring",
+    )
 
-    assert all(position >= 0 for position in positions)
-    assert positions == sorted(positions), (
-        "web_search's docstring lists providers in a different order than "
-        f"PROVIDERS selects them: {[p.name for p in PROVIDERS]}."
+
+def test_env_example_states_the_real_selection_order() -> None:
+    """Keep the example env file's stated selection order honest"""
+    _assert_states_registry_order(
+        (REPO_ROOT / ".env.example").read_text(encoding="utf-8"),
+        r"Selection order is:([^\n]*)",
+        ".env.example",
     )
 
 
@@ -105,13 +138,13 @@ def test_no_startup_warning_for_any_single_provider(
         provider: Registry entry to configure as the only provider.
         monkeypatch: pytest fixture used to scope environment changes.
     """
-    from kindly_web_search_mcp_server.server import provider_configuration_warning
+    from kindly_web_search_mcp_server.server import _provider_configuration_warning
 
     for entry in PROVIDERS:
         monkeypatch.delenv(entry.env_var, raising=False)
     monkeypatch.setenv(provider.env_var, "configured")
 
-    assert provider_configuration_warning() is None
+    assert _provider_configuration_warning() is None
 
 
 def test_startup_warning_lists_every_provider_when_none_configured(
@@ -122,16 +155,43 @@ def test_startup_warning_lists_every_provider_when_none_configured(
     Args:
         monkeypatch: pytest fixture used to scope environment changes.
     """
-    from kindly_web_search_mcp_server.server import provider_configuration_warning
+    from kindly_web_search_mcp_server.server import _provider_configuration_warning
 
     for entry in PROVIDERS:
         monkeypatch.delenv(entry.env_var, raising=False)
 
-    warning = provider_configuration_warning()
+    warning = _provider_configuration_warning()
 
     assert warning is not None
     for entry in PROVIDERS:
         assert entry.env_var in warning
+
+
+def test_readme_provider_lists_are_complete() -> None:
+    """Complete every README line that enumerates provider variables
+
+    A line naming two or more provider variables is claiming to list the options,
+    so it must name them all. Lines naming exactly one are configuration snippets
+    (a shell export, a JSON key, a ``-e`` flag) and are left alone. Checking only
+    that each provider appears *somewhere* in the README misses a list that was
+    updated in one place and skipped in another.
+    """
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    env_vars = {provider.env_var for provider in PROVIDERS}
+
+    incomplete = []
+    for number, line in enumerate(readme.splitlines(), start=1):
+        present = {env_var for env_var in env_vars if env_var in line}
+        if len(present) >= 2 and present != env_vars:
+            incomplete.append((number, sorted(env_vars - present), line.strip()[:70]))
+
+    assert not incomplete, (
+        "README lines enumerate providers incompletely:\n"
+        + "\n".join(
+            f"  L{number} missing {missing}: {text}"
+            for number, missing, text in incomplete
+        )
+    )
 
 
 def test_registry_entries_are_unique() -> None:

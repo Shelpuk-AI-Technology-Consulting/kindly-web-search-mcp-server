@@ -107,7 +107,7 @@ def _resolve_host_port(host: str | None, port: int | None) -> tuple[str, int]:
     return resolved_host, resolved_port
 
 
-def provider_configuration_warning() -> str | None:
+def _provider_configuration_warning() -> str | None:
     """Build the startup warning shown when no search provider is configured.
 
     Derived from :data:`~kindly_web_search_mcp_server.search.PROVIDERS` so that a
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Do not hard-fail on startup: many clients set env vars in their MCP config
     # and expect the server to at least come up for tool discovery.
-    warning = provider_configuration_warning()
+    warning = _provider_configuration_warning()
     if warning:
         LOGGER.warning(warning)
 

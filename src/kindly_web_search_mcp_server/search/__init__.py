@@ -142,26 +142,40 @@ async def search_web(
     http_client: httpx.AsyncClient | None = None,
     diagnostics: Diagnostics | None = None,
 ) -> list[WebSearchResult]:
-    """
-    Search the web using the first configured provider in :data:`PROVIDERS`.
+    """Search the web using the first configured provider in :data:`PROVIDERS`
 
     Selection is by strict priority order with no cross-provider fallback: the
     first provider whose environment variable is set handles the query, and a
     failure from it is raised rather than retried against another provider.
-    """
-    configured = {provider.name: provider.is_configured() for provider in PROVIDERS}
 
-    selected = next(
-        (provider for provider in PROVIDERS if configured[provider.name]), None
-    )
+    Args:
+        query: The search query to run.
+        num_results: Maximum number of results to return.
+        http_client: Client to reuse for the request. A short-lived client is
+            created when omitted.
+        diagnostics: Sink for the provider-selection diagnostic. Nothing is
+            emitted when omitted.
+
+    Returns:
+        The provider's results, at most ``num_results`` of them.
+
+    Raises:
+        WebSearchProviderError: If no provider is configured.
+    """
+    # Read each provider's configuration once, so the selection and the emitted
+    # diagnostic cannot disagree if the environment changes mid-call.
+    statuses = [(provider, provider.is_configured()) for provider in PROVIDERS]
+
+    selected = next((provider for provider, ok in statuses if ok), None)
     if selected is None:
         variables = ", ".join(provider_env_vars())
         raise WebSearchProviderError(
             f"No web search provider is configured. Set one of: {variables}."
         )
 
-    provider_fn: Callable[..., Awaitable[list[WebSearchResult]]]
-    provider_fn = selected.search_function()
+    provider_fn: Callable[..., Awaitable[list[WebSearchResult]]] = (
+        selected.search_function()
+    )
 
     if diagnostics:
         diagnostics.emit(
@@ -171,10 +185,7 @@ async def search_web(
                 "query": query,
                 "num_results": num_results,
                 "provider": selected.name,
-                **{
-                    provider.diagnostics_key: configured[provider.name]
-                    for provider in PROVIDERS
-                },
+                **{provider.diagnostics_key: ok for provider, ok in statuses},
             },
         )
 

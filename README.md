@@ -324,7 +324,7 @@ args = [
   "start-mcp-server",
 ]
 # Forward variables from your shell/OS environment:
-env_vars = ["SERPER_API_KEY", "TAVILY_API_KEY", "SEARXNG_BASE_URL", "GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH"]
+env_vars = ["SERPER_API_KEY", "SERPBASE_API_KEY", "TAVILY_API_KEY", "SEARXNG_BASE_URL", "SOFYA_API_KEY", "GITHUB_TOKEN", "KINDLY_BROWSER_EXECUTABLE_PATH"]
 startup_timeout_sec = 120.0
 ```
 
@@ -551,7 +551,7 @@ Paste this into your `mcpServers` object (don’t overwrite other servers):
 ```
 
 If Antigravity can’t find `uvx`, replace `"uvx"` with the absolute path (`which uvx` on macOS/Linux, `where uvx` on Windows).
-Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` / `SEARXNG_BASE_URL` is non-empty.
+Make sure at least one of `SERPER_API_KEY` / `SERPBASE_API_KEY` / `TAVILY_API_KEY` / `SEARXNG_BASE_URL` / `SOFYA_API_KEY` is non-empty.
 If the first start is slow, run the `uvx` command from Quickstart once in a terminal to prebuild the environment, then click **Refresh**.
 Don’t commit/share `mcp_config.json` if it contains API keys.
 
@@ -755,7 +755,7 @@ docker run --rm -p 8000:8000 \
 ```
 
 - MCP endpoint: `http://<server-host>:8000/mcp`
-- Make sure at least one of `SERPER_API_KEY` / `TAVILY_API_KEY` / `SEARXNG_BASE_URL` is set.
+- Make sure at least one of `SERPER_API_KEY` / `SERPBASE_API_KEY` / `TAVILY_API_KEY` / `SEARXNG_BASE_URL` / `SOFYA_API_KEY` is set.
 - `page_content` extraction runs on the server machine/container (this Docker image includes Chromium).
 - Remote HTTP is typically **unauthenticated** and **unencrypted** by default; don’t expose this port publicly. Use VPN/firewall rules or a reverse proxy with TLS + auth.
 - Don’t bake API keys into the image; pass them via env vars at runtime.
