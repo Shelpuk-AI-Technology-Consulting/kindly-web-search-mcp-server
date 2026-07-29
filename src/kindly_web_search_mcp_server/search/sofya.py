@@ -41,7 +41,7 @@ async def search_sofya(
     Sofya endpoint:
     - POST https://sofya.co/v1/search
     - Header: Authorization: Bearer <SOFYA_API_KEY>
-    - JSON: {"query": "<query>", "max_results": <num_results>, "search_depth": "snippets"}
+    - JSON: {"query": "<query>", "max_results": <clamped to 1..20>, "search_depth": "snippets"}
 
     `snippets` costs 1 credit and returns SERP text without fetching pages, while
     `basic` costs 3 and returns extracted page content. The cheap depth is correct
@@ -94,14 +94,22 @@ async def search_sofya(
             continue
         title = item.get("title")
         link = item.get("url")
-        # `content` holds extracted page text and is only populated when Sofya
-        # fetched the page. At `snippets` depth it does not, and the SERP text
-        # arrives in `description` instead, so fall back rather than drop the hit.
-        snippet = item.get("content") or item.get("description") or ""
         if not isinstance(title, str) or not isinstance(link, str):
             continue
-        if not isinstance(snippet, str):
-            snippet = ""
+
+        # `content` holds extracted page text and is populated only when Sofya
+        # fetched the page. At `snippets` depth it does not, and the SERP text
+        # arrives in `description` instead. Take the first field that actually
+        # carries text: testing truthiness alone would latch onto a non-string
+        # `content` and never reach `description`.
+        snippet = next(
+            (
+                value
+                for value in (item.get("content"), item.get("description"))
+                if isinstance(value, str) and value
+            ),
+            "",
+        )
 
         # `page_content` is populated later by the MCP tool (best-effort).
         results.append(WebSearchResult(title=title, link=link, snippet=snippet, page_content=""))
@@ -113,8 +121,8 @@ async def search_sofya(
     # and would hide the mismatch, so surface it instead.
     if raw_results and not results:
         raise SofyaError(
-            f"Sofya returned {len(raw_results)} result(s) but none had a usable "
-            "`title` and `url`; the response schema may have changed."
+            f"Sofya returned {len(raw_results)} result(s) but none could be parsed; "
+            "each needs a string `title` and `url`. The response schema may have changed."
         )
 
     return results

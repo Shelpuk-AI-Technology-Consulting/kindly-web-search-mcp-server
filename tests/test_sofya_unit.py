@@ -138,6 +138,46 @@ class TestSofyaSnippetSource(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].snippet, "SERP snippet text")
 
+    def test_uses_description_when_content_is_an_empty_string(self) -> None:
+        """Treat a blank `content` as absent rather than as the snippet"""
+        results = self._search(
+            {
+                "results": [
+                    {
+                        "title": "Result",
+                        "url": "https://example.org",
+                        "content": "",
+                        "description": "SERP snippet text",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(results[0].snippet, "SERP snippet text")
+
+    def test_uses_description_when_content_is_not_a_string(self) -> None:
+        """Fall through to `description` when `content` is a non-string value
+
+        A truthiness-only fallback latches onto the non-string and never reaches
+        `description`, silently returning an empty snippet.
+        """
+        for odd_content in ({"nested": "object"}, 123, ["list"]):
+            with self.subTest(content=odd_content):
+                results = self._search(
+                    {
+                        "results": [
+                            {
+                                "title": "Result",
+                                "url": "https://example.org",
+                                "content": odd_content,
+                                "description": "SERP snippet text",
+                            }
+                        ]
+                    }
+                )
+
+                self.assertEqual(results[0].snippet, "SERP snippet text")
+
     def test_prefers_content_when_both_are_present(self) -> None:
         """Keep extracted page text when the API did fetch the page"""
         results = self._search(
@@ -165,13 +205,25 @@ class TestSofyaSnippetSource(unittest.TestCase):
         self.assertEqual(results[0].snippet, "")
 
     def test_raises_when_no_returned_result_is_usable(self) -> None:
-        """Fail loudly instead of returning nothing when the schema does not match"""
+        """Fail loudly instead of returning nothing when the schema does not match
+
+        Covers both ways a result is discarded: an entry that is not an object,
+        and an object without a usable string ``title`` and ``url``.
+        """
         from kindly_web_search_mcp_server.search.sofya import SofyaError
 
         with self.assertRaises(SofyaError) as caught:
-            self._search({"results": [{"headline": "x"}, {"headline": "y"}]})
+            self._search(
+                {
+                    "results": [
+                        {"headline": "no title or url"},
+                        "not an object",
+                        {"title": "Result", "url": 123},
+                    ]
+                }
+            )
 
-        self.assertIn("2", str(caught.exception))
+        self.assertIn("3", str(caught.exception))
 
     def test_returns_empty_when_the_api_found_nothing(self) -> None:
         """Return no results, without error, when the query genuinely matched nothing"""
