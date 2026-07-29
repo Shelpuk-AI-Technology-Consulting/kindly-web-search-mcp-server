@@ -62,6 +62,21 @@ def test_redacts_password_less_userinfo() -> None:
     assert masked["HTTP_PROXY"] == "http://***@proxy.corp:8080"
 
 
+def test_redacts_password_containing_unescaped_at_sign() -> None:
+    """Redact through to the last `@`, so no tail of the password survives"""
+    masked = mask_env_values({"HTTP_PROXY": "http://user:pa@ss@proxy.corp:8080"})
+
+    assert masked["HTTP_PROXY"] == "http://***@proxy.corp:8080"
+    assert "ss" not in masked["HTTP_PROXY"].replace("proxy.corp", "")
+
+
+def test_redacts_each_url_in_a_multi_url_value() -> None:
+    """Handle values holding more than one credentialed URL"""
+    masked = mask_env_values({"X": "http://a:b@one.example,https://c:d@two.example"})
+
+    assert masked["X"] == "http://***@one.example,https://***@two.example"
+
+
 def test_redacts_credentials_in_any_url_valued_variable() -> None:
     """Apply userinfo redaction regardless of the variable's name"""
     masked = mask_env_values({"SEARXNG_BASE_URL": "https://u:p@searx.example.org"})

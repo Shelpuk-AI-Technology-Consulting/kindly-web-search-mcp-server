@@ -19,6 +19,12 @@ import tempfile
 import time
 from typing import TextIO
 
+# The only package import in this module. This worker is otherwise stdlib-only
+# because it runs as a `python -m` subprocess, but `utils.diagnostics` is itself
+# stdlib-only behind empty package `__init__` files, so the import is free. Sharing
+# the redaction keeps one definition of what a credential looks like.
+from ..utils.diagnostics import redact_url_credentials
+
 
 class _NullTextIO(io.TextIOBase):
     """
@@ -1038,7 +1044,10 @@ async def _fetch_html(
                         {
                             "attempt": attempt + 1,
                             "user_data_dir": resolved_user_data_dir,
-                            "args": chromium_args,
+                            # `--proxy-server` carries KINDLY_CHROME_PROXY verbatim, which
+                            # may embed credentials. Redact the emitted copy only; Chromium
+                            # still receives the real `chromium_args` below.
+                            "args": [redact_url_credentials(arg) for arg in chromium_args],
                         },
                     )
                     chrome_proc = await _launch_chromium(resolved_browser_executable_path, chromium_args)

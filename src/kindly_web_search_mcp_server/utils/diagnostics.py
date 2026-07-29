@@ -13,12 +13,16 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _MASK_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "BEARER")
 
 # Credentials in a URL's userinfo component, e.g. `http://user:pass@proxy:8080`.
-# The name-based hints above cannot catch these: the snapshots in
-# `scrape/universal_html.py` include HTTP_PROXY/HTTPS_PROXY, whose names carry no
-# secret marker while their values routinely do. Matches the whole userinfo rather
-# than just `user:pass`, so the password-less `http://user@proxy` form is covered
-# too; `@` in an authority always delimits userinfo, so this cannot match a host.
-_URL_USERINFO_RE = re.compile(r"://[^/@\s]*@")
+# The name-based hints above cannot catch these: proxy variables and CLI flags carry
+# no secret marker in their names while their values routinely do.
+#
+# The character class admits `@` so the match runs to the *last* `@` before the path,
+# which covers passwords containing an unescaped `@` (`http://user:pa@ss@host`). A
+# stricter class stopping at the first `@` leaves the remainder of such a password
+# exposed. The trade-off is that a pathological value may over-redact, which fails
+# closed. `/` and whitespace still bound the match, so an `@` in a path is untouched.
+_URL_USERINFO_RE = re.compile(r"://[^/\s]*@")
+_REDACTED_USERINFO = "://***@"
 
 MAX_SAMPLE_CHARS = 2000
 MAX_STDERR_CHARS = 4000
@@ -35,7 +39,40 @@ def new_request_id() -> str:
     return str(uuid.uuid4())
 
 
+def redact_url_credentials(text: str) -> str:
+    """Strip credentials from any URL userinfo component in ``text``
+
+    Removes the ``user:pass@`` portion of a URL while leaving the scheme, host,
+    and port readable, so diagnostics emitted to stderr stay useful for debugging
+    proxy routing without disclosing secrets. Values containing no credentialed
+    URL are returned unchanged.
+
+    Args:
+        text: Arbitrary text that may embed one or more URLs, such as an
+            environment variable value or a command-line argument.
+
+    Returns:
+        The text with every URL userinfo component replaced by ``***``.
+    """
+    return _URL_USERINFO_RE.sub(_REDACTED_USERINFO, text)
+
+
 def mask_env_values(env: Mapping[str, str]) -> dict[str, str]:
+    """Mask secrets in an environment snapshot bound for diagnostics output
+
+    Applies two complementary rules. Variables whose *name* signals a secret are
+    replaced wholesale with their length, since no part of the value is safe to
+    show. Every other value keeps its content but has any URL credentials removed,
+    because variables such as ``HTTP_PROXY`` carry no secret marker in their name
+    yet routinely embed ``user:pass@`` in their value.
+
+    Args:
+        env: The environment snapshot to mask. ``None`` values are treated as
+            empty strings.
+
+    Returns:
+        A new mapping with the same keys and masked values.
+    """
     masked: dict[str, str] = {}
     for key, value in env.items():
         raw = "" if value is None else str(value)
@@ -44,7 +81,7 @@ def mask_env_values(env: Mapping[str, str]) -> dict[str, str]:
         else:
             # Redact only the userinfo rather than the whole value: these snapshots
             # exist to debug proxy routing, so the host and port must stay readable.
-            masked[key] = _URL_USERINFO_RE.sub("://***@", raw)
+            masked[key] = redact_url_credentials(raw)
     return masked
 
 
