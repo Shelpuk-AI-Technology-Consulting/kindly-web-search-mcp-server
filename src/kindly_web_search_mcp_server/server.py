@@ -9,6 +9,7 @@ import time
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
@@ -26,11 +27,19 @@ from .utils.logging import configure_logging
 configure_logging()
 LOGGER = logging.getLogger(__name__)
 
+allowed_hosts = [h.strip() for h in os.getenv("FASTMCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+allowed_origins = [o.strip() for o in os.getenv("FASTMCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
 mcp = FastMCP(
     "kindly-web-search",
     instructions=(
         "Web search via Serper (default), Tavily, or a self-hosted SearXNG instance with best-effort "
         "scraping/extraction of result pages into Markdown for LLM consumption."
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=bool(allowed_hosts or allowed_origins),
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
     ),
 )
 
@@ -94,7 +103,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def _resolve_transport(raw: str | None) -> Transport:
     if raw in ("stdio", "sse", "streamable-http"):
         return raw
-    return "stdio"
+    return os.environ.get("FASTMCP_TRANSPORT", "stdio")
 
 
 def _resolve_host_port(host: str | None, port: int | None) -> tuple[str, int]:
