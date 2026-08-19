@@ -101,9 +101,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_transport(raw: str | None) -> Transport:
-    if raw in ("stdio", "sse", "streamable-http"):
-        return raw
-    return os.environ.get("FASTMCP_TRANSPORT", "stdio")
+    resolved_transport = raw or os.environ.get("FASTMCP_TRANSPORT", "stdio")
+    if resolved_transport == "http":
+        return "streamable-http"
+    if resolved_transport in ("stdio", "sse", "streamable-http"):
+        return resolved_transport
+    return "stdio"
 
 
 def _resolve_host_port(host: str | None, port: int | None) -> tuple[str, int]:
