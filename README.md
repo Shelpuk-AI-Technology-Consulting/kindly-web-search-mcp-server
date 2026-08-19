@@ -760,6 +760,36 @@ docker run --rm -p 8000:8000 \
 - Remote HTTP is typically **unauthenticated** and **unencrypted** by default; don’t expose this port publicly. Use VPN/firewall rules or a reverse proxy with TLS + auth.
 - Don’t bake API keys into the image; pass them via env vars at runtime.
 
+### Docker-compose
+
+Add a subsection to `services:` in your `docker-compose.yml`. Setup variables as described above.
+
+```yaml
+  kindly-web-search-mcp:
+    build:
+      context: https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server.git#main
+    container_name: kindly-web-search-mcp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SEARXNG_BASE_URL=...
+      - GITHUB_TOKEN=${KINDLY_GITHUB_TOKEN:-}
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_PORT=8000
+      - FASTMCP_TRANSPORT=http
+```
+
+`FASTMCP_TRANSPORT` can be `streamable-http` (or simply `http`) for Streamable HTTP, `sse` for SSE.
+
+Run with:
+
+```bash
+docker compose up -d
+```
+
+Container will be built at the first run. To rebuild it, append `--build` to the command above.
+
 ## Troubleshooting
 
 - “No Chromium-based browser executable found”: install Chrome/Chromium/Edge and set `KINDLY_BROWSER_EXECUTABLE_PATH` if needed.
