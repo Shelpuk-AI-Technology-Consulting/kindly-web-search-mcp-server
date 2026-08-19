@@ -10,6 +10,8 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+import uvicorn
+from starlette.middleware.cors import CORSMiddleware
 
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
@@ -188,11 +190,28 @@ def main(argv: list[str] | None = None) -> None:
             if hasattr(mcp, "settings") and hasattr(mcp.settings, key):
                 setattr(mcp.settings, key, value)
 
-    try:
-        mcp.run(transport=transport, mount_path=args.mount_path)
-    except TypeError:
-        # Backward-compat: older MCP SDKs may not accept `mount_path`.
-        mcp.run(transport=transport)
+        asgi_app = (
+            mcp.streamable_http_app()
+            if hasattr(mcp, "streamable_http_app")
+            else mcp.sse_app()
+        )
+
+        # NB: allow_credentials=True will require explicit methods & headers
+        app = CORSMiddleware(
+            asgi_app,
+            allow_origins=allowed_origins if allowed_origins else ["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["mcp-session-id", "mcp-protocol-version"],
+        )
+        uvicorn.run(app, host=host, port=port)
+    else:
+        try:
+            mcp.run(transport=transport, mount_path=args.mount_path)
+        except TypeError:
+            # Backward-compat: older MCP SDKs may not accept `mount_path`.
+            mcp.run(transport=transport)
 
 
 
