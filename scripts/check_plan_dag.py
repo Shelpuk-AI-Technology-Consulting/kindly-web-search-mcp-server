@@ -17,10 +17,11 @@ Accepted grammar for the ``Blocked by`` cell::
     impl E0-1                           one prerequisite
     impl E0-1, merge E1-6, complete X-2  several, comma separated
 
-Dependency kinds:
-    ``impl``: cannot be written until the other step exists.
-    ``merge``: can be written independently, cannot merge until the other lands.
-    ``complete``: the other is not a PR (a decision, milestone or operation).
+Dependency kinds (validated against the target's declared Type):
+    ``impl``: the artefact or decision is needed before authoring. Any target.
+    ``merge``: authoring proceeds; a prerequisite PR must land first. PR targets only.
+    ``complete``: authoring proceeds; a non-PR prerequisite must finish before this
+        step merges or activates. Milestone, decision, operation or external only.
 
 Exit codes:
     0: every declaration is well formed and the graph is acyclic.
@@ -43,6 +44,8 @@ STEP_ROW = re.compile(
 EXTERNAL_ROW = re.compile(r"^\|\s*\*\*(?P<id>X-\d+)\*\*\s*\|", re.M)
 #: ``Files: tests/a.py, tests/b.py``
 FILES_LINE = re.compile(r"^Files:\s*(?P<files>.+)$", re.M)
+#: A real import, not the string "import unittest" quoted inside a test.
+UNITTEST_IMPORT = re.compile(r"^(import unittest|from unittest)", re.M)
 
 DEPENDENCY = re.compile(r"^(?P<kind>impl|merge|complete)\s+(?P<id>E\d+-\d+[ab]?|X-\d+)$")
 VALID_TYPES = {"PR", "milestone", "decision", "operation"}
@@ -126,14 +129,28 @@ def parse_plan(text: str) -> tuple[dict[str, dict], set[str]]:
 
 
 def check_references(steps: dict[str, dict], externals: set[str]) -> list[str]:
-    """Find dependencies pointing at ids the plan never defines.
+    """Check every dependency resolves and uses a kind valid for its target.
+
+    The kinds carry different scheduling meaning, so a mislabelled one silently
+    changes what the plan claims can be parallelised:
+
+    ``impl``
+        The artefact or decision is needed before authoring. Valid for any target.
+    ``merge``
+        Authoring proceeds now; a prerequisite **PR** must land first. Only valid
+        against a step of type ``PR`` -- a milestone or an admin operation has no
+        merge to wait on.
+    ``complete``
+        Authoring proceeds now; a **non-PR** prerequisite must finish before this
+        step merges or activates. Only valid against a milestone, decision,
+        operation or external prerequisite.
 
     Args:
         steps: Parsed step table.
         externals: Declared external prerequisite ids.
 
     Returns:
-        Human-readable problems, empty when every reference resolves.
+        Human-readable problems, empty when every reference is valid.
     """
     known = set(steps) | externals
     problems = []
@@ -141,12 +158,40 @@ def check_references(steps: dict[str, dict], externals: set[str]) -> list[str]:
         for kind, dep in record["deps"]:
             if dep not in known:
                 problems.append(f"{step_id} depends on undefined {dep}")
-            elif dep in externals and kind != "complete":
+                continue
+            target_type = "external" if dep in externals else steps[dep]["type"]
+            if kind == "merge" and target_type != "PR":
                 problems.append(
-                    f"{step_id} declares '{kind} {dep}', but {dep} is an external "
-                    "prerequisite and must use 'complete'"
+                    f"{step_id} declares 'merge {dep}', but {dep} is a "
+                    f"{target_type} and has no PR to land; use 'complete'"
+                )
+            elif kind == "complete" and target_type == "PR":
+                problems.append(
+                    f"{step_id} declares 'complete {dep}', but {dep} is a PR; "
+                    "use 'merge'"
                 )
     return problems
+
+
+def check_row_syntax(text: str, parsed: set[str]) -> list[str]:
+    """Report table rows that look like steps but did not parse.
+
+    A row missing a column silently fails :data:`STEP_ROW` and vanishes from the
+    graph. That is the same class of defect as a mis-parsed dependency: the
+    validator passes while the plan is wrong.
+
+    Args:
+        text: Full Markdown source of the implementation plan.
+        parsed: Step ids that were successfully parsed.
+
+    Returns:
+        Human-readable problems, empty when every candidate row parsed.
+    """
+    candidates = set(re.findall(r"^\|\s*\*\*(E\d+-\d+[ab]?)\*\*", text, re.M))
+    return [
+        f"row for {step_id} looks like a step but did not parse — check its columns"
+        for step_id in sorted(candidates - parsed)
+    ]
 
 
 def topological_order(steps: dict[str, dict]) -> tuple[list[str], list[str]]:
@@ -212,25 +257,59 @@ def longest_chain(steps: dict[str, dict], ordered: list[str]) -> tuple[int, list
     return depth[end] + 1, list(reversed(chain))
 
 
-def check_file_ownership(text: str) -> list[str]:
-    """Ensure any file named in a ``Files:`` line is claimed by only one step.
+def check_file_ownership(text: str, repo_root: Path | None = None) -> list[str]:
+    """Check the batched steps' file claims are unique, real and complete.
 
     Batched steps (the async migration) declare the files they own so two
-    engineers cannot pick up the same file.
+    engineers cannot pick up the same file. Uniqueness alone is not enough: an
+    empty, malformed or forgotten claim also leaves a file unowned, which is the
+    failure this is actually guarding against.
 
     Args:
         text: Full Markdown source of the implementation plan.
+        repo_root: Repository root, used to check the claimed paths exist and that
+            every unittest-style test file is claimed. Existence and completeness
+            checks are skipped when it is ``None`` or has no ``tests`` directory,
+            so synthetic fragments can be validated in isolation.
 
     Returns:
-        Human-readable problems, empty when no file is claimed twice.
+        Human-readable problems, empty when every claim is unique, real and total.
     """
-    seen: dict[str, int] = {}
+    claims: dict[str, int] = {}
     for match in FILES_LINE.finditer(text):
-        for path in match.group("files").split(","):
-            cleaned = path.replace("`", "").strip()
-            if cleaned:
-                seen[cleaned] = seen.get(cleaned, 0) + 1
-    return [f"file {path} is claimed by {count} steps" for path, count in seen.items() if count > 1]
+        entries = [p.replace("`", "").strip() for p in match.group("files").split(",")]
+        entries = [e for e in entries if e]
+        if not entries:
+            return ["a Files: line declares no files"]
+        for path in entries:
+            claims[path] = claims.get(path, 0) + 1
+
+    problems = [
+        f"file {path} is claimed by {count} steps"
+        for path, count in sorted(claims.items())
+        if count > 1
+    ]
+
+    tests_dir = (repo_root / "tests") if repo_root else None
+    if tests_dir is None or not tests_dir.is_dir():
+        return problems
+
+    problems += [
+        f"claimed file {path} does not exist"
+        for path in sorted(claims)
+        if not (repo_root / path).exists()
+    ]
+
+    # Anything still on unittest needs an owning migration batch, or it is simply
+    # forgotten -- the exact outcome the claim lists exist to prevent.
+    unclaimed = sorted(
+        f"tests/{path.name}"
+        for path in tests_dir.glob("test_*.py")
+        if UNITTEST_IMPORT.search(path.read_text(encoding="utf-8"))
+        and f"tests/{path.name}" not in claims
+    )
+    problems += [f"unittest-style {path} is claimed by no migration batch" for path in unclaimed]
+    return problems
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -255,8 +334,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: no steps parsed from {plan_path}")
         return 1
 
-    problems = check_references(steps, externals) + check_file_ownership(
-        plan_path.read_text(encoding="utf-8")
+    source = plan_path.read_text(encoding="utf-8")
+    problems = (
+        check_references(steps, externals)
+        + check_row_syntax(source, set(steps))
+        + check_file_ownership(source, plan_path.resolve().parents[1])
     )
 
     ordered, stuck = topological_order(steps)

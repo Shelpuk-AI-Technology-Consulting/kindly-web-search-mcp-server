@@ -8,27 +8,28 @@ not new design.
 
 ## 1. Rules
 
-### 1.1 Two phases, because the repository starts red
+### 1.1 CI arrives with green, not before it
 
-The repository has 11 known failures (TEST_SUITE §1.1). "Every merged step leaves
-the suite green" cannot hold until E1-6 restores it, so the invariant is stated in
-two phases and the CI activation order follows from it:
+The repository has 11 known failures (TEST_SUITE §1.1), so there is no honest way
+to run a required suite until E1-6 restores it. Attempting to enforce "no new
+failures" in the meantime does not work either: a per-OS **count** cannot tell the
+difference between fixing one stale test and breaking a different one.
 
-| Phase | Invariant | CI |
-|---|---|---|
-| **Before E1-6** | No PR may introduce a failure beyond the recorded per-OS baseline. The baseline count may only go down. | The workflow runs and reports. **Nothing is a required check.** |
-| **After E1-6** | Every merged PR is fully green. | `ci-required` becomes required (E4-5); further jobs are activated one at a time. |
+So there is no interim enforcement phase. **E4-1 is authored early and merges with
+`complete E1-6`**, landing green, and E4-2 makes it required immediately after —
+which is what TEST_SUITE §8B asks for. Every later job is added and activated
+incrementally on top of an already-enforced gate.
 
-A workflow that runs a failing suite is not made acceptable by branch protection
-being off — it is still red on `main`. So E4-1 lands the workflow in
-**reporting-only** mode, and every activation is its own step.
+Before E1-6 the repository has no CI, exactly as today. That is the honest
+position, and it is short.
 
 ### 1.2 Infrastructure → tests → activation
 
 Never activation first. A marker-selected job enabled before its tests exist is
 red by construction under `--min-selected`, and the tests that would fix it then
-cannot merge past the job they need to fix. Every required job therefore has a
-separate activation step whose only content is adding it to `ci-required.needs`.
+cannot merge past the job they need to fix. So a new job is **added in
+reporting-only mode** in one step and **added to `ci-required.needs`** in another,
+whose only content is that one line.
 
 ### 1.3 Red and green ship together
 
@@ -38,19 +39,22 @@ must — that happens in the author's tree, evidenced in the PR description.
 
 ### 1.4 Dependency kinds
 
-| Kind | Meaning |
-|---|---|
-| `impl` | cannot be written until the other step exists |
-| `merge` | can be written independently; cannot merge until the other lands |
-| `complete` | the other is not a PR — a decision, milestone or operation |
+Validated against the target's declared Type by `scripts/check_plan_dag.py`.
 
-A step blocked only by `merge` or `complete` is fully parallelisable today.
+| Kind | Meaning | Valid targets |
+|---|---|---|
+| `impl` | The artefact or decision is needed **before authoring** | any |
+| `merge` | Authoring proceeds now; a prerequisite **PR** must land first | `PR` |
+| `complete` | Authoring proceeds now; a **non-PR** prerequisite must finish before this step merges or activates | milestone, decision, operation, external |
+
+A step blocked only by `merge` or `complete` can be written today. A step with any
+`impl` dependency cannot.
 
 ### 1.5 Step types
 
 `PR` (a reviewable change), `milestone` (a state assertion, no diff),
 `decision` (a recorded choice), `operation` (a repository or infrastructure
-action). Non-PR steps are depended on with `complete`.
+action).
 
 ### 1.6 Conventions
 
@@ -65,43 +69,46 @@ action). Non-PR steps are depended on with `complete`.
 ## 2. Sequencing for parallelism
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
-block, both S. Everything else fans out from them; the validator reports how many
-steps that is. Each stream starts on its own narrow dependency, not on a wave.
+block, both S. Everything else fans out; the validator reports how many steps that
+is. Each stream starts on its own narrow dependency, not on a wave.
 
 | # | Stream | Starts after | Steps |
 |---|---|---|---|
 | 1 | Worker seam & protocol | E0-2 | E2-1, E2-2, E2-3, E2-4 |
 | 2 | Baseline restoration | E0-2 | E1-1, E1-2, E1-3, E1-5 |
 | 3 | Fixtures & corpus | E0-2 | E3-1 … E3-5 |
-| 4 | CI skeleton | E0-3 | E4-1, E4-9 |
+| 4 | CI skeleton | E0-3 | E4-1, E4-11 |
 | 5 | L1 parsers | E0-1 | E5-1, E5-2 |
 | 6 | L1 resolvers & accumulators | E0-2 | E5-3, E5-6, E5-7 |
 | 7 | L2 contracts | E0-2 | E6-1, E6-3 |
 | 8 | L4 live canary | E0-2 | E8-4 |
 | 9 | Coverage configs | E0-1 | E0-4 |
 
-Opening later, as prerequisites land: L3 server (E3-4), L3 worker (E2-3 + E3-1),
-L4 product (E3-2 + E3-5), coverage controls (E2-3 → E10-1), ChromiumPool (E3-4),
-security sanitizer (E5-7), transforms (E3-3).
+Opening later: L3 server (E3-4), L3 worker (E2-3 + E3-1 + E6-2), L4 product
+(E3-2 + E3-5), coverage controls (E2-3 → E10-1), ChromiumPool (E3-4), security
+sanitizer (E5-7), transforms (E3-3).
 
 ---
 
 ## 3. External prerequisites
 
 Not reviewable PRs. Each needs an owner, evidence of completion, and a **rollback
-note recorded before any step that depends on it activates**.
+note recorded before any dependent step activates**.
 
 | ID | Prerequisite | Blocks | Owner |
 |---|---|---|---|
-| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1). Is fetching private-network addresses intentional? Artefact: an approved amendment to TEST_SUITE §7.2 stating the policy. | E9-2, E9-3 | maintainer |
-| **X-2** | Repository admin authority — branch protection, require a PR, no bypass actors | E4-5 | repo admin |
+| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1). Is fetching private-network addresses intentional? Artefact: an approved amendment to §7.2 stating the policy, including whether enforcement is required and where. | E9-2, E9-3 — **before authoring** | maintainer |
+| **X-2** | Repository admin authority — branch protection, require a PR, no bypass actors | E4-2 | repo admin |
 | **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-6 | repo admin |
-| **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-10 | maintainer |
+| **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-12 | maintainer |
+| **X-5** | Observational coverage reviewer and cadence (TEST_SUITE §10.4 requires a named owner; unowned reporting decays into the signal nobody reads) | E10-7 | maintainer |
 
-**X-1 blocks two steps from being written.** X-2, X-3 and X-4 block activation or
-infrastructure only; every test they eventually gate can be written and merged
-first. `outputSchema is None` is **normative for this implementation** (E6-1); if
-TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision here.
+**X-1 is the only prerequisite that blocks authoring** — it is declared `impl`
+because the tests cannot be written until the policy exists. The rest block merge
+or activation, so the work they gate can be written first.
+
+`outputSchema is None` is **normative for this implementation** (E6-1). If
+TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 
 ---
 
@@ -111,15 +118,21 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E0-1** | Test dependencies and the `ratchet` extra | PR | — | S |
+| **E0-1** | Apply §10.2's dependency constraints in full | PR | — | S |
 | **E0-2** | `[tool.pytest.ini_options]` with markers | PR | impl E0-1 | S |
 | **E0-3** | `--min-selected` collection guard | PR | impl E0-2 | S |
 | **E0-4** | The three coverage configs | PR | impl E0-1 | S |
 
-- **E0-1.** `pytest-asyncio`, `hypothesis`, `coverage`, `diff-cover`, `mypy` at
-  §10.2's bounds; a `ratchet` extra; `requirements-ratchet.txt` per §10.4.
-  *Verify:* `pip install -e .[dev]` succeeds on both platforms; the lockfile has no
-  local path or VCS URL; a fresh venv from it runs all five tools.
+- **E0-1.** The **whole** table in §10.2, not just the new entries: add
+  `pytest-asyncio`, `hypothesis`, `coverage`, `diff-cover`, `mypy`, **and bound
+  the existing `pytest`, `ruff` and `packaging`, which are currently unbounded**.
+  `mutmut>=3,<4` goes in a separate `mutation` extra so the nightly can install it
+  without putting a Linux-only tool in `dev`. Add a `ratchet` extra and generate
+  `requirements-ratchet.txt` per §10.4.
+  *Verify:* `pip install -e .[dev]` succeeds on both platforms;
+  `pip install -e .[mutation]` provides a working `mutmut`; `test_dependency_constraints.py`
+  is extended to assert every §10.2 bound and fails if one is removed; the
+  lockfile has no local path or VCS URL.
 - **E0-2.** *Verify:* `pytest --markers` lists all seven; an unregistered marker
   fails collection; pass/fail counts unchanged.
 - **E0-3.** *Verify:* `-m <unmatched> --min-selected=1` exits 4 with the count in
@@ -144,8 +157,9 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 | **E1-6** | Suite green on both platforms | milestone | merge E1-1, merge E1-3, merge E1-4, merge E1-5 | S |
 
 - **E1-1.** §1.1 predicts 12 POSIX failures *from source, unmeasured*. Run it.
-  *Verify:* both per-OS numbers committed into §1.1, replacing the prediction; a
-  `BASELINE.md` or equivalent records them for §1.1's phase-one invariant.
+  *Verify:* both per-OS numbers, **and the exact failing node ids**, committed
+  into §1.1. The node ids matter: a count cannot tell a fixed test from a swapped
+  one, and the list is what makes the remaining repairs checkable.
 - **E1-2.** Direct tests of `_build_chromium_launch_args`,
   `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
   `_resolve_start_retry_attempts` with §3.1's ambient-state seams.
@@ -165,8 +179,8 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
   the runtime conformance test.
 - **E1-5.** *Verify:* passes on both platforms; each retained case (explicit,
   malformed, zero, negative, `num_results` limit) fails if the clamp is removed.
-- **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, recorded in the
-  milestone issue. Phase two of §1.1 begins here.
+- **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, and the E1-1
+  node-id list is empty. CI enforcement begins here.
 
 ---
 
@@ -174,24 +188,26 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E2-1** | `WorkerProcess` Protocol, typed fake, mypy harness — test-only | PR | impl E0-1 | M |
+| **E2-1** | `WorkerProcess` Protocol, typed fake, mypy harness | PR | impl E0-1 | M |
 | **E2-2** | Extract `_build_worker_command` | PR | impl E0-2 | S |
 | **E2-3** | Extract `_run_worker_command` into `scrape/worker_runner.py` | PR | impl E2-2, merge E1-4 | M |
 | **E2-4** | Annotate `_run_worker_command` with `WorkerProcess` | PR | impl E2-1, impl E2-3 | S |
 
-- **E2-1.** No production change. `@runtime_checkable` Protocol over the surface
-  production already consumes from `asyncio.subprocess.Process`; a concrete fully
-  annotated fake (not `AsyncMock`); the forcing assignment; `disallow_any_expr` on
-  that surface; the runtime contract test.
+- **E2-1.** **The Protocol lives in production**, in a small type-only module —
+  `src/kindly_web_search_mcp_server/scrape/types.py`. It has to: E2-4 annotates
+  production code with it, and production importing from `tests/` is not an
+  option. The step is a production change that adds no behaviour.
+  The typed fake under `tests/` imports that canonical Protocol, so there is one
+  definition rather than two that can drift.
   **The negative fixture is excluded from the ordinary mypy target.** A file that
   must fail type-checking cannot sit in the path the `types` job checks, or that
-  job is red forever. It lives under `tests/typing_negative/`, excluded in mypy
+  job is red forever. It lives under `tests/typing_negative/`, is excluded in mypy
   config, and is exercised by a harness that shells out to mypy, asserts a
   non-zero exit, and asserts the *specific* diagnostic code.
   *Verify:* the harness fails if the negative fixture starts type-checking
   cleanly; removing `stdout` from the fake fails mypy and the conformance test; a
   test documents that `isinstance` alone does not catch a wrong `wait()`
-  signature.
+  signature; no module under `src/` imports from `tests/`.
 - **E2-2.** **Production change.** *Verify:* an L1 test asserts the command shape
   including `-m kindly_web_search_mcp_server.scrape.nodriver_worker`; existing
   tests unchanged.
@@ -202,8 +218,9 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
   `_run_worker_command` importable and accepts an arbitrary command; no `command=`
   parameter on any public function; `universal_html.py` retains the Markdown-probe
   path and no subprocess management.
-- **E2-4.** **Production change.** *Verify:* mypy checks the production signature
-  against the Protocol; changing the Protocol without the function fails.
+- **E2-4.** **Production change**, annotation only, since E2-1 already placed the
+  Protocol in `src/`. *Verify:* mypy checks the production signature against the
+  Protocol; changing the Protocol without the function fails.
 
 ---
 
@@ -235,8 +252,11 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
   at least three handcrafted fragments.
 - **E3-4.** §5.4: readiness handshake, ephemeral ports, isolated profile
   directories, PID-tree cleanup keyed on spawned PIDs, child log capture on
-  failure. *Verify:* a hanging fixture child is killed at the deadline and its PID
-  tree is gone; cleanup never matches processes by name.
+  failure. **Includes an injectable DNS-resolution and transport seam**, which
+  E9-3 needs to simulate rebinding deterministically rather than racing real DNS.
+  *Verify:* a hanging fixture child is killed at the deadline and its PID tree is
+  gone; cleanup never matches processes by name; the resolver seam returns
+  scripted addresses on successive lookups of one hostname.
 - **E3-5.** *Verify:* a file added there without `@pytest.mark.package` fails the
   policy test; source-checkout jobs pass `--ignore=tests/package`.
 
@@ -246,52 +266,62 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E4-1** | Workflow skeleton, broad job, `ci-required` — reporting only | PR | impl E0-3 | M |
-| **E4-2** | Split into the normative `fast` and `subsystem` jobs | PR | merge E1-6, merge E4-1 | M |
-| **E4-3** | `fast-extras` job | PR | merge E4-2 | S |
-| **E4-4** | `types` job | PR | merge E2-1, merge E4-1 | S |
-| **E4-5** | Enable branch protection | operation | complete X-2, merge E4-2, merge E4-3, merge E4-4 | S |
+| **E4-1** | Workflow skeleton, broad job, `ci-required` | PR | impl E0-3, complete E1-6 | M |
+| **E4-2** | Enable branch protection | operation | complete X-2, merge E4-1 | S |
+| **E4-3** | Split into the normative `fast` and `subsystem` jobs | PR | merge E4-1 | M |
+| **E4-4** | Add the `fast-extras` job | PR | merge E4-3 | S |
+| **E4-5** | Add the `types` job | PR | merge E2-1, merge E4-1 | S |
 | **E4-6** | Build and publish the test-runtime image | PR | complete X-3 | L |
-| **E4-7** | Activate the `chromium` job | PR | merge E7-3, merge E4-6 | S |
-| **E4-8** | Activate the `package` job | PR | merge E8-1 | S |
-| **E4-9** | Nightly workflow foundation | PR | impl E0-3 | S |
-| **E4-10** | Add the live jobs to the nightly | PR | merge E8-4, complete X-4 | M |
+| **E4-7** | Add the `chromium` job, reporting only | PR | merge E7-3, merge E4-6 | S |
+| **E4-8** | Activate the `chromium` job | PR | merge E4-7 | S |
+| **E4-9** | Add the `package` job, reporting only | PR | merge E8-1 | S |
+| **E4-10** | Activate the `package` job | PR | merge E4-9 | S |
+| **E4-11** | Nightly workflow foundation | PR | impl E0-3 | S |
+| **E4-12** | Add the live jobs to the nightly | PR | merge E8-4, complete X-4 | M |
 
 - **E4-1.** §10.3's complete trigger list; one job selecting
   `--ignore=tests/package -m "not live and not chromium and not package"` on both
   platforms — deliberately **including** `subsystem`, per TEST_SUITE §8B; and
   `ci-required` with `if: always()` asserting every dependency is `success`.
-  **Not a required check yet** (§1.1). *Verify:* a failing test makes `ci-required`
-  red; a **skipped** dependency also makes it red; a fork PR triggers the workflow.
-- **E4-2.** Narrow the broad job to the normative selector
-  `-m "not live and not subsystem and not chromium and not package"` over the
-  Python 3.13/3.14 × mcp {min, max} matrix, and add `subsystem` selecting
-  `-m "subsystem and not chromium and not live"` on both platforms.
-  *Verify:* every test that ran in E4-1's broad job runs in exactly one of the two;
-  `--min-selected` floors are set from the counts observed in E4-1.
-- **E4-3.** `fast-extras`: the `fast` selector with `pdf-advanced` installed,
-  Python 3.13 only. *Verify:* the job installs the extras and a PDF-path test that
-  skips without them runs here; it is in `ci-required.needs`.
-- **E4-4.** *Verify:* the negative fixture directory is excluded; the job is green
-  on merge; introducing an `Any` on the Protocol surface makes it red.
-- **E4-5.** No diff to the repository. *Verify:* a PR with a red `ci-required`
-  cannot be merged, including by an administrator; the rollback procedure is
-  recorded in the operation ticket.
+  Merges only once E1-6 lands, so it is green from its first run.
+  *Verify:* a failing test makes `ci-required` red; a **skipped** dependency also
+  makes it red; a fork PR triggers the workflow; the job is green on merge.
+- **E4-2.** No diff. *Verify:* a PR with a red `ci-required` cannot be merged,
+  including by an administrator; the rollback procedure is recorded in the ticket.
+  This is the minimum viable gate of §8B and it lands immediately after green.
+- **E4-3.** Narrow the broad job to `-m "not live and not subsystem and not
+  chromium and not package"` over Python 3.13/3.14 × mcp {min, max}, and add
+  `subsystem` selecting `-m "subsystem and not chromium and not live"` on both
+  platforms; both join `ci-required.needs`.
+  *Verify:* every test that ran in E4-1's broad job runs in exactly one of the
+  two; `--min-selected` floors are set from the counts observed in E4-1.
+- **E4-4.** The `fast` selector with `pdf-advanced` installed, Python 3.13 only.
+  *Verify:* a PDF-path test that skips without the extras runs here; it joins
+  `ci-required.needs`.
+- **E4-5.** *Verify:* the negative-fixture directory is excluded; green on merge;
+  introducing an `Any` on the Protocol surface makes it red.
 - **E4-6.** Python, Chromium, system deps, **no application code**, from a pinned
   base digest with pinned package versions. Not wired into CI.
   *Verify:* a manual workflow run pulls by digest, installs a wheel into it and
   launches Chromium; the digest is recorded in the repository.
-- **E4-7.** *Verify:* the job runs E7-3's tests with a real `--min-selected`; the
-  wheel-resolution assertion holds; it is in `ci-required.needs`.
-- **E4-8.** `tests/package -m package`, Python 3.13 × mcp {min, max}.
-  *Verify:* as E4-7, against E8-1's tests.
-- **E4-9.** A `schedule`-triggered workflow with `workflow_dispatch` and a
+- **E4-7.** Adds the job, **not** to `ci-required`. *Verify:* it runs E7-3's tests
+  with a real `--min-selected` and is green; the wheel-resolution assertion holds.
+- **E4-8.** One line. *Verify:* `chromium` is in `ci-required.needs` and the
+  aggregate is green.
+- **E4-9.** `tests/package -m package`, Python 3.13 × mcp {min, max}, reporting
+  only. *Verify:* green against E8-1's tests.
+- **E4-10.** One line. *Verify:* as E4-8.
+- **E4-11.** A `schedule`-triggered workflow with `workflow_dispatch` and a
   `nightly-summary` aggregator, and **no jobs yet**. Exists so mutation and live
-  work can attach independently. *Verify:* a manual dispatch runs and the summary
+  work attach independently. *Verify:* a manual dispatch runs and the summary
   reports zero jobs without failing.
-- **E4-10.** `live-serper` and `live-extraction`. *Verify:* with the secret removed
-  the job **fails** rather than skipping; `KINDLY_RUN_LIVE_TESTS=1` is set in the
-  job env; the summary reports skip counts; fork PRs never receive the secret.
+- **E4-12.** `live-serper` and `live-extraction`, each with its **own** credential
+  criteria — they are not the same case.
+  *Verify:* removing `SERPER_API_KEY` makes **`live-serper`** fail before
+  collection, while **`live-extraction` still runs**, since it needs a browser and
+  no provider credential; `KINDLY_RUN_LIVE_TESTS=1` is set in both job envs; the
+  summary reports skip counts; fork PRs never receive the secret; both join
+  `nightly-summary.needs`.
 
 ---
 
@@ -301,11 +331,14 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 |---|---|---|---|---|
 | **E5-1** | Parser mutual-exclusivity property | PR | impl E0-1 | M |
 | **E5-2** | Per-parser identifier preservation and rejection | PR | impl E0-1 | M |
-| **E5-3** | Environment resolver tables | PR | impl E0-2 | M |
-| **E5-4** | Launch-arg and sandbox resolver coverage | PR | impl E1-2 | S |
+| **E5-3** | Server, search and pool configuration resolvers | PR | impl E0-2 | M |
+| **E5-4** | Nodriver launch and sandbox resolvers | PR | impl E1-2 | S |
 | **E5-5** | Markdown transforms against the corpus | PR | impl E3-3 | M |
 | **E5-6** | Text accumulators and encoding-cookie helpers | PR | impl E0-2 | S |
 | **E5-7** | Redaction helper units — existing behaviour only | PR | impl E0-2 | M |
+
+E5-3 and E5-4 own **disjoint** function sets, so they can run in parallel without
+duplicating tests or touching the same files.
 
 - **E5-1.** Hypothesis over generated URLs. *Verify:* fails if any parser's
   matching is widened to overlap another; the shrunk counterexample is readable.
@@ -313,21 +346,27 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
   identifiers returns exactly those identifiers; a rejected URL raises that
   parser's own error type; rejection is stable across trailing slashes, scheme
   case and query order. *Verify:* each property fails if its parser's group
-  extraction is off by one, and if the parser is changed to raise bare `Exception`.
-- **E5-3.** `_resolve_transport`, `_resolve_host_port`,
+  extraction is off by one, and if the parser raises bare `Exception`.
+- **E5-3.** Owns `server.py`'s `_resolve_transport`, `_resolve_host_port`,
   `_resolve_tool_total_timeout_seconds`, `_resolve_web_search_max_concurrency`,
-  `_resolve_transport_security`, `_cors_origin_regex`, plus `_parse_port_range` and
-  the `_resolve_*` families in `chromium_pool.py` and `nodriver_worker.py`.
+  `_resolve_transport_security`, `_cors_origin_regex`, `_get_int_env`,
+  `_get_float_env`; and `chromium_pool.py`'s `_resolve_reuse_enabled`,
+  `_resolve_pool_size`, `_resolve_acquire_timeout_seconds`, `_parse_port_range`,
+  `_resolve_port_range`, `_pick_port`.
   *Verify:* each parameterized over unset, blank, valid, malformed, zero, negative
   and out-of-range; every case fails if its branch is removed.
-- **E5-4.** Extends E1-2 to the resolvers it did not need. *Verify:* every
-  `_resolve_*` in `nodriver_worker.py` has at least one test that fails when its
-  default is inverted.
+- **E5-4.** Owns the remaining `nodriver_worker.py` resolvers not covered by E1-2:
+  `_resolve_user_agent`, `_detect_chrome_version`, `_resolve_retry_backoff_seconds`,
+  `_resolve_devtools_ready_timeout_seconds`, `_resolve_worker_timeout_seconds`,
+  `_resolve_worker_timeout_details`, `_resolve_snap_backoff_multiplier`,
+  `_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`.
+  *Verify:* each fails when its default is inverted; no function is also tested by
+  E5-3 or E1-2.
 - **E5-5.** `html_to_markdown`, `sanitize_markdown`, `extract_content_as_markdown`,
   `_apply_markdown_cap`, `_build_md_suffix_url` over E3-3's fragments.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
   HTML, length within cap) fail when the corresponding transform is disabled;
-  golden matching is used only for handcrafted fragments.
+  golden matching only for handcrafted fragments.
 - **E5-6.** `_append_tail_text` and the encoding-cookie helpers. *Verify:*
   boundary cases at exactly the limit, one under and one over; each fails if the
   comparison operator is flipped.
@@ -347,7 +386,7 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 | **E6-1** | MCP tool schema golden | PR | impl E0-2 | M |
 | **E6-2** | Extract and pin the `KINDLY_DIAG` frame codec | PR | impl E2-3 | M |
 | **E6-3** | `page_content` is always a string | PR | impl E0-2 | S |
-| **E6-4** | Import/declaration agreement extension | PR | merge E11-5 | S |
+| **E6-4** | Import/declaration agreement extension | PR | complete E11-5 | S |
 
 - **E6-1.** Normalized comparison asserting names, types, required-ness, defaults,
   description presence, and `outputSchema is None` (normative — §3).
@@ -374,7 +413,7 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
 | **E7-1** | Server over a real socket | PR | impl E3-4 | M |
-| **E7-2** | `_run_worker_command` parent-side lifecycle | PR | impl E2-3, impl E3-1, impl E3-4, merge E6-2 | L |
+| **E7-2** | `_run_worker_command` parent-side lifecycle | PR | impl E2-3, impl E3-1, impl E3-4, impl E6-2 | L |
 | **E7-3** | ChromiumPool | PR | impl E3-4, merge E4-6 | L |
 
 - **E7-1.** One canonical valid `initialize`, one security input varied per case,
@@ -382,7 +421,8 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
   control case catches a protocol regression that would otherwise look like a
   security result.
 - **E7-2.** Parent-side concerns only: spawn, stream, heartbeat, termination.
-  Depends on E6-2 so it is written against the final codec.
+  `impl E6-2` because it is written against the final codec, not merely merged
+  after it.
   *Verify:* clean run returns the child's **HTML** and parsed diagnostics; hanging
   child killed at the deadline; killed parent leaves no orphan; stderr garbage does
   not crash the parent; non-zero exit surfaces a readable error. Windows and Linux.
@@ -427,8 +467,8 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
 | **E9-1** | Sanitize diagnostics at the emit boundary | PR | impl E5-7 | L |
-| **E9-2** | Outbound URL validation tests | PR | complete X-1, impl E0-2 | M |
-| **E9-3** | Redirect and DNS-rebinding tests | PR | complete X-1, impl E3-4 | M |
+| **E9-2** | Outbound URL and address policy — enforce and test | PR | impl X-1, impl E0-2 | L |
+| **E9-3** | Redirect and DNS-rebinding policy — enforce and test | PR | impl X-1, impl E3-4 | M |
 
 - **E9-1.** **Production change**, shipped with its tests in one PR. One sanitizing
   step at the top of `Diagnostics.emit`, before the entry is appended to `entries`.
@@ -436,14 +476,24 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
   `get_content("https://user:token@host/x")` leaks the token in neither; each §7.1
   policy case has a test; a test pins that sanitizing only at the writer would
   fail, so nobody relocates it later.
-- **E9-2.** Table-driven over scheme (`file:`, `data:`, `ftp:`, `chrome:`) and
+- **E9-2.** **Scope depends on X-1's outcome, and the step is sized `L` because
+  the likely outcome includes production work.** There is no shared validation
+  seam today, so if X-1 chooses any restriction this step *implements* it — a
+  single choke point checking scheme and resolved address class — as well as
+  testing it. If X-1 chooses to allow a class of addresses, the step tests the
+  allowed behaviour and adds no enforcement.
+  *Verify:* table-driven over scheme (`file:`, `data:`, `ftp:`, `chrome:`) and
   address class (loopback, RFC1918, link-local, IPv6 ULA, `169.254.169.254`),
-  asserting whatever X-1 decided. *Verify:* each row fails if its branch of the
-  policy is removed; the test file cites the X-1 artefact so the expected
-  behaviour is traceable.
-- **E9-3.** A local server issuing a public→private redirect, and a hostname whose
-  resolution changes between validation and connect. *Verify:* both fail if the
-  check is applied only at the initial URL.
+  asserting whatever X-1 decided; each row fails if its branch of the policy is
+  removed; the test module cites the X-1 artefact so the expected behaviour is
+  traceable.
+- **E9-3.** Same conditional shape. The outbound clients follow redirects today,
+  so validation must be applied at **every hop and at the resolved address**, not
+  only the initial URL.
+  *Verify:* a local server issuing a public→private redirect behaves per policy;
+  using E3-4's resolver seam, a hostname resolving public at validation and
+  private at connect behaves per policy; both fail if the check is applied only to
+  the initial URL.
 
 ---
 
@@ -453,11 +503,14 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
 |---|---|---|---|---|
 | **E10-1** | Classification policy test | PR | impl E2-3, impl E0-4 | M |
 | **E10-2** | Non-zero coverage assertion tool, unit-tested | PR | impl E10-1 | M |
-| **E10-3** | Hermetic `coverage` job — reporting only | PR | impl E10-2, merge E4-2 | M |
-| **E10-4** | Observational L3 reporting, and the omitted-module assertion | PR | merge E10-3, merge E7-2, merge E4-7 | M |
-| **E10-5** | Diff-coverage gate | PR | impl E10-3 | M |
-| **E10-6** | Baseline bootstrap, ratchet and reset label | PR | impl E10-5 | L |
-| **E10-7** | Activate `coverage` in `ci-required` | PR | merge E10-4, merge E10-6 | S |
+| **E10-3** | Hermetic `coverage` job — reporting only | PR | impl E10-2, merge E4-3 | M |
+| **E10-4** | Worker observational coverage | PR | merge E7-2, merge E4-3 | M |
+| **E10-5** | Chromium observational coverage | PR | merge E4-8 | M |
+| **E10-6** | Wire the omitted-module assertion | PR | merge E10-3, merge E10-4, merge E10-5 | S |
+| **E10-7** | PR summary and delta reporting | PR | merge E10-6, complete X-5 | M |
+| **E10-8** | Diff-coverage gate | PR | merge E10-3 | M |
+| **E10-9** | Baseline bootstrap, ratchet and reset label | PR | merge E10-8 | L |
+| **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9 | S |
 
 - **E10-1.** Every `src/**/*.py` in the gating scope or in `omit`, exactly once.
   *Verify:* a module in neither fails; a module in both fails.
@@ -465,40 +518,52 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision h
   fixtures; not yet pointed at the real tree, so it merges green. *Verify:* a
   synthetic report with a zero-covered gating module fails; non-zero passes.
 - **E10-3.** The `coverage` job of §10.3 — pinned lane, source checkout,
-  `pip install --no-deps -e .`, running the hermetic selection. **Reporting only,
-  not in `ci-required`.** *Verify:* it produces `coverage.xml` and
-  `coverage.json`; the import-resolution assertion confirms the working tree is
-  measured, not an installed wheel.
-- **E10-4.** Publishes the `subsystem` and `chromium` HTML/JSON reports with
-  `if-no-files-found: error`, posts the per-module summary to the PR, and wires
-  E10-2's assertion against both the hermetic and observational reports.
-  *Verify:* the omitted-module assertion passes now that E7-3 covers
-  `chromium_pool.py`, and reverting E7-3 makes it fail — proving it is live rather
-  than vacuous.
-- **E10-5.** `diff-cover --fail-under=80` from the event base SHA via
+  `pip install --no-deps -e .`, hermetic selection. **Reporting only.**
+  *Verify:* produces `coverage.xml` and `coverage.json`; the import-resolution
+  assertion confirms the working tree is measured, not an installed wheel.
+- **E10-4.** `parallel = true` + `patch = subprocess` in the `subsystem` job,
+  local `coverage combine`, HTML/JSON artefact with `if-no-files-found: error`.
+  *Verify:* `worker_runner.py` shows non-zero coverage; a forcibly killed child
+  contributes nothing, and that limit is documented in the job output rather than
+  hidden by an exclusion.
+- **E10-5.** The same for the `chromium` job. *Verify:* `chromium_pool.py` shows
+  non-zero coverage.
+- **E10-6.** Points E10-2's checker at the real hermetic and observational
+  reports. *Verify:* it passes now that E7-3 covers `chromium_pool.py`, and
+  reverting E7-3 makes it fail — proving it is live rather than vacuous.
+- **E10-7.** Per-module summary posted to the PR, with a delta against the last
+  successful `main` run. *Verify:* the artefact lookup names the workflow and
+  branch it reads; a **missing or expired** previous artefact renders the summary
+  with deltas omitted rather than failing the job; the required
+  `actions: read` / `pull-requests: write` permissions are declared; on a fork PR,
+  where `pull-requests: write` is unavailable, the summary is written to the job
+  log instead of failing; the reviewer and cadence from X-5 are recorded in the
+  workflow.
+- **E10-8.** `diff-cover --fail-under=80` from the event base SHA via
   `--diff-file`, `fetch-depth: 0`. *Verify:* a PR adding an uncovered statement in
   the gating scope fails; one adding a covered statement passes; a PR touching
   only an omitted module is unaffected.
-- **E10-6.** *Verify:* bootstrap works with no baseline on the base SHA; a decrease
+- **E10-9.** *Verify:* bootstrap works with no baseline on the base SHA; a decrease
   fails; a decrease with the reset label passes; applying the label re-runs the
   check without a manual re-run; an unrecorded rise fails the equality check.
-- **E10-7.** *Verify:* `coverage` appears in `ci-required.needs` and the aggregate
-  is green on merge; making a control fail turns `ci-required` red.
+- **E10-10.** One line. *Verify:* `coverage` is in `ci-required.needs` and the
+  aggregate is green; making a control fail turns `ci-required` red.
 
 ---
 
 ### E11 — Async migration
 
-Batches own disjoint files; the validator enforces it. Sequenced after E1-6 and
-after the workflow is observable (E4-1) — **not** after branch protection, which is
-an external operation and would needlessly serialize this.
+Batches own disjoint files; the validator enforces uniqueness, existence and that
+no `unittest`-style file is left unclaimed. Sequenced after green and after the
+workflow is observable — **not** after branch protection, which is an external
+operation and would needlessly serialize this.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E11-1** | Convert the search-provider tests | PR | merge E1-6, merge E4-1 | M |
-| **E11-2** | Convert the content-loader tests | PR | merge E1-6, merge E4-1 | M |
-| **E11-3** | Convert the scrape tests | PR | merge E1-6, merge E4-1, merge E7-2 | M |
-| **E11-4** | Convert the server and resolver tests | PR | merge E1-6, merge E4-1 | M |
+| **E11-1** | Convert the search-provider tests | PR | complete E1-6, merge E4-1 | M |
+| **E11-2** | Convert the content-loader tests | PR | complete E1-6, merge E4-1 | M |
+| **E11-3** | Convert the scrape tests | PR | complete E1-6, merge E4-1, merge E7-2 | M |
+| **E11-4** | Convert the server and resolver tests | PR | complete E1-6, merge E4-1 | M |
 | **E11-5** | Migration complete | milestone | merge E11-1, merge E11-2, merge E11-3, merge E11-4 | S |
 
 **E11-1** —
@@ -525,32 +590,44 @@ under `tests/`; this unblocks E6-4.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-9, merge E5-1, merge E5-2, merge E5-3, merge E5-6, merge E5-7 | M |
+| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-11, merge E5-1, merge E5-2, merge E5-3, merge E5-4, merge E5-7 | M |
 
 Configuration and job ship together — a job without its configuration is a
-scheduled failure. It attaches to E4-9's nightly foundation and needs **neither
-live credentials nor the live jobs**. Scoped to the pure-logic modules (§3.2);
-Linux-only, since `mutmut` needs `fork()`.
+scheduled failure. It attaches to E4-11's nightly foundation and needs **neither
+live credentials nor the live jobs**.
+
+The dependency list matches §3.2's mutation scope exactly: the URL parsers (E5-1,
+E5-2), the environment resolvers (E5-3, E5-4) and diagnostics redaction (E5-7).
+E5-6's accumulators are **not** in that scope, so they are not a dependency.
+Installs from the `mutation` extra (E0-1); Linux-only, since `mutmut` needs
+`fork()`.
 *Verify:* completes within the nightly budget; surviving mutants publish as a
-review queue, not a gate.
+review queue, not a gate; the job is in `nightly-summary.needs`, and a failed or
+skipped mutation job makes the summary fail.
 
 ---
 
 ## 5. Validation
 
 The tables above are the source of truth. `scripts/check_plan_dag.py` parses the
-`Blocked by` cells, rejects loose syntax rather than interpreting it, and fails on
-undefined references, duplicate ids, wrong dependency kinds for external
-prerequisites, overlapping file ownership, and cycles:
+`Blocked by` cells and fails on:
+
+- loose syntax — ranges and wildcards are errors, not interpreted;
+- duplicate step ids;
+- references to undefined steps or prerequisites;
+- a dependency kind invalid for its target's Type (`merge` on a milestone,
+  `complete` on a PR);
+- table rows that look like steps but did not parse;
+- files claimed by two batches, claimed but absent from the tree, or
+  `unittest`-style and claimed by none;
+- cycles.
 
 ```
 $ python scripts/check_plan_dag.py
 ```
 
-`tests/test_plan_dag.py` covers the validator itself — ranges, wildcards,
-duplicates, unknown externals, cycles, steps downstream of a cycle,
-backward-numbered dependencies, chain depth and file-ownership collisions — and
-asserts the committed plan passes. Run both on every change to this file.
+`tests/test_plan_dag.py` covers each of those failure modes and asserts the
+committed plan passes. Run both on every change to this file.
 
 ---
 
@@ -567,16 +644,18 @@ Five engineers.
 | A | E2-1, E2-2 | E2-3, E2-4 |
 | B | E1-1, E1-2 | E1-3, E1-5 |
 | C | E3-1, E3-4 | E7-1, E7-2 |
-| D | E0-3, E4-1 | E0-4, E4-9 |
+| D | E0-3, E4-11 | E0-4, E4-1 |
 | E | E5-1, E5-2 | E6-1, E6-3 |
 
-E1-4 goes to engineer B as soon as A's E2-1 lands; E2-3 waits on it. Coverage work
-(E10-1) waits on E2-3 and is not day-one work. E3-2, E3-3, E3-5, E5-3, E5-6, E5-7,
-E8-4 are unassigned backlog.
+E1-4 goes to engineer B as soon as A's E2-1 lands; E2-3 waits on it. E4-1 is
+authored early but merges with E1-6, and E4-2 follows immediately — the gate is on
+within a day of green. Coverage work (E10-1) waits on E2-3. E3-2, E3-3, E3-5,
+E5-3, E5-6, E5-7, E8-4 are unassigned backlog.
 
-In parallel and off the critical path, the maintainer works **X-1** — the only
-prerequisite that stops steps being written — then X-2, X-3 and X-4.
+In parallel, the maintainer works **X-1** — the only prerequisite blocking steps
+from being *written*, and the one with the largest downstream scope, since E9-2
+may turn out to require production enforcement — then X-2, X-3, X-4 and X-5.
 
-**Protect E2-3.** One refactor unblocks the L3 worker stream, the codec extraction,
-the coverage classification and all of E10, and it reads like something that can
-wait.
+**Protect E2-3.** One refactor unblocks the L3 worker stream, the codec
+extraction, the coverage classification and all of E10, and it reads like
+something that can wait.

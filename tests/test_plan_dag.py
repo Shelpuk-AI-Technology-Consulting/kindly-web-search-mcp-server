@@ -80,23 +80,113 @@ def test_unknown_external_prerequisite_is_reported() -> None:
     ]
 
 
-def test_external_prerequisites_must_use_complete() -> None:
-    """Require `complete` for a non-PR prerequisite
+def test_merge_against_a_non_pr_target_is_rejected() -> None:
+    """Reject `merge` on a milestone, which has no PR to land
 
-    `impl` and `merge` describe code landing; an admin action or a product
-    decision has neither, and the distinction is what stops them being scheduled
-    as if they were PRs.
+    The kinds carry scheduling meaning, so a mislabelled one silently changes
+    what the plan claims can be parallelised.
+    """
+    rows = (
+        "| **E1-6** | Green | milestone | — | S |",
+        "| **E4-2** | Split jobs | PR | merge E1-6 | M |",
+    )
+    steps, externals = checker.parse_plan(plan(*rows))
+
+    assert checker.check_references(steps, externals) == [
+        "E4-2 declares 'merge E1-6', but E1-6 is a milestone and has no PR to "
+        "land; use 'complete'"
+    ]
+
+
+def test_complete_against_a_pr_target_is_rejected() -> None:
+    """Reject `complete` on a PR, which does have a merge to wait on"""
+    rows = (
+        "| **E2-1** | Protocol | PR | — | M |",
+        "| **E1-4** | Repair | PR | complete E2-1 | M |",
+    )
+    steps, externals = checker.parse_plan(plan(*rows))
+
+    assert checker.check_references(steps, externals) == [
+        "E1-4 declares 'complete E2-1', but E2-1 is a PR; use 'merge'"
+    ]
+
+
+def test_impl_against_an_external_prerequisite_is_allowed() -> None:
+    """Accept `impl` on a decision that must be made before authoring
+
+    X-1 is the outbound-policy decision: the security tests cannot be written
+    until it is made, which is exactly what `impl` means.
     """
     document = plan(
-        "| **E4-2** | Protection | operation | impl X-2 | S |",
-        externals="| **X-2** | Admin authority | E4-2 | admin |\n",
+        "| **E9-2** | Outbound tests | PR | impl X-1 | M |",
+        externals="| **X-1** | Outbound policy | E9-2 | maintainer |\n",
     )
     steps, externals = checker.parse_plan(document)
 
-    problems = checker.check_references(steps, externals)
+    assert checker.check_references(steps, externals) == []
 
-    assert problems == ["E4-2 declares 'impl X-2', but X-2 is an external "
-                        "prerequisite and must use 'complete'"]
+
+def test_merge_against_an_external_prerequisite_is_rejected() -> None:
+    """Reject `merge` on an external prerequisite, which never lands as a PR"""
+    document = plan(
+        "| **E4-5** | Protection | operation | merge X-2 | S |",
+        externals="| **X-2** | Admin authority | E4-5 | admin |\n",
+    )
+    steps, externals = checker.parse_plan(document)
+
+    assert checker.check_references(steps, externals) == [
+        "E4-5 declares 'merge X-2', but X-2 is a external and has no PR to land; "
+        "use 'complete'"
+    ]
+
+
+def test_malformed_step_row_is_reported_not_skipped() -> None:
+    """Report a row that looks like a step but is missing a column
+
+    Such a row silently fails the table regex and disappears from the graph --
+    the same class of defect as a mis-parsed dependency, where the validator
+    passes while the plan is wrong.
+    """
+    document = HEADER + "| **E0-1** | Deps | PR |\n"
+    steps, _ = checker.parse_plan(document)
+
+    problems = checker.check_row_syntax(document, set(steps))
+
+    assert problems == [
+        "row for E0-1 looks like a step but did not parse — check its columns"
+    ]
+
+
+def test_empty_files_declaration_is_rejected() -> None:
+    """Reject a Files: line that claims nothing, leaving a batch unowned"""
+    assert checker.check_file_ownership("Files:  \n") == [
+        "a Files: line declares no files"
+    ]
+
+
+def test_claimed_file_that_does_not_exist_is_reported(tmp_path) -> None:
+    """Reject a claim on a path that is not in the tree"""
+    (tmp_path / "tests").mkdir()
+
+    problems = checker.check_file_ownership("Files: `tests/test_gone.py`\n", tmp_path)
+
+    assert "claimed file tests/test_gone.py does not exist" in problems
+
+
+def test_unclaimed_unittest_file_is_reported(tmp_path) -> None:
+    """Reject leaving a unittest-style file out of every migration batch"""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_legacy.py").write_text(
+        "import unittest\n", encoding="utf-8"
+    )
+
+    assert checker.check_file_ownership("Files: `tests/test_legacy.py`\n", tmp_path) == []
+
+    problems = checker.check_file_ownership("Files: `tests/test_other.py`\n", tmp_path)
+    assert (
+        "unittest-style tests/test_legacy.py is claimed by no migration batch"
+        in problems
+    )
 
 
 def test_declared_external_prerequisite_resolves() -> None:
