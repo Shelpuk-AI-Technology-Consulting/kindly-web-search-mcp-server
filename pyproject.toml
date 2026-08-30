@@ -17,6 +17,11 @@ dependencies = [
     # `>=1.25`: oldest release verified against this server; stops a constrained
     # resolve from silently selecting an older, untested API.
     "mcp>=1.25,<2",
+    # `server.py` imports both directly to wrap the ASGI app in CORS middleware and
+    # serve it. They arrive transitively via `mcp` today, which is exactly the kind of
+    # undeclared dependency `tests/test_dependency_constraints.py` exists to catch.
+    "starlette",
+    "uvicorn",
     "pydantic",
     "httpx[socks]",
     "beautifulsoup4",

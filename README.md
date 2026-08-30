@@ -760,6 +760,41 @@ docker run --rm -p 8000:8000 \
 - Remote HTTP is typically **unauthenticated** and **unencrypted** by default; don’t expose this port publicly. Use VPN/firewall rules or a reverse proxy with TLS + auth.
 - Don’t bake API keys into the image; pass them via env vars at runtime.
 
+### Host and origin allowlists (`421` and `403` errors)
+
+The HTTP transports enforce DNS rebinding protection. Out of the box only loopback is
+accepted — `127.0.0.1`, `localhost` and `[::1]` — which covers `docker run -p 8000:8000`
+reached as `http://localhost:8000/mcp`, but not much else. Reach the server under any
+other name (a Compose service name, a LAN address, a reverse-proxy hostname) and you get:
+
+- `421 Invalid Host header` — the `Host` header isn’t in the allowlist.
+- `403 Invalid Origin header` — a browser-based client sent an `Origin` that isn’t.
+
+Widen the allowlist with two comma-separated variables:
+
+| Variable | Matches against | Example |
+|---|---|---|
+| `FASTMCP_ALLOWED_HOSTS` | the `Host` header | `kindly-web-search-mcp:*,localhost:*,127.0.0.1:*` |
+| `FASTMCP_ALLOWED_ORIGINS` | the `Origin` header (browser clients) | `http://localhost:*,https://app.example` |
+
+Syntax notes:
+
+- An entry is either an **exact** value or a `name:*` **port wildcard**. A bare `*` matches
+  nothing — `FASTMCP_ALLOWED_HOSTS=*` rejects every request.
+- `kindly-web-search-mcp:*` matches `kindly-web-search-mcp:8000` but **not** a portless
+  `Host: kindly-web-search-mcp`. List both if your client may omit the port.
+- Setting a variable **replaces** the loopback defaults for that header rather than adding
+  to them. Keep `localhost:*` and `127.0.0.1:*` in the list if you still want local access.
+- The two default independently. Setting only `FASTMCP_ALLOWED_HOSTS` keeps the loopback
+  origins, so browser clients on `http://localhost:<port>` keep working.
+- CORS is derived from `FASTMCP_ALLOWED_ORIGINS`, so an origin that passes preflight is
+  always one the server will also accept on the real request.
+
+Neither variable is a way to turn the protection off, and that is deliberate: this server
+is unauthenticated, and `get_content` will fetch any URL it is given from wherever it runs.
+An open allowlist lets any web page you happen to visit drive it against your own network
+and read the response. List the hosts you actually use.
+
 ### Docker-compose
 
 Add a subsection to `services:` in your `docker-compose.yml`. Setup variables as described above.
@@ -778,9 +813,14 @@ Add a subsection to `services:` in your `docker-compose.yml`. Setup variables as
       - FASTMCP_HOST=0.0.0.0
       - FASTMCP_PORT=8000
       - FASTMCP_TRANSPORT=http
+      # Other containers reach this one by its service name, which is not loopback.
+      # Without this you get `421 Invalid Host header`. See the section above.
+      - FASTMCP_ALLOWED_HOSTS=kindly-web-search-mcp:*,localhost:*,127.0.0.1:*
 ```
 
 `FASTMCP_TRANSPORT` can be `streamable-http` (or simply `http`) for Streamable HTTP, `sse` for SSE.
+It is read by every entry point, including `kindly-web-search-mcp-server start-mcp-server`.
+An unrecognised value logs a warning and falls back to stdio.
 
 Run with:
 
@@ -789,6 +829,11 @@ docker compose up -d
 ```
 
 Container will be built at the first run. To rebuild it, append `--build` to the command above.
+
+> **Warning:** `ports: - "8000:8000"` publishes the server on **all** host interfaces. As with
+> `docker run` above, remote HTTP here is **unauthenticated** and **unencrypted** — don’t expose
+> this port publicly. Bind it to loopback (`"127.0.0.1:8000:8000"`), keep it on an internal
+> Compose network, or put a reverse proxy with TLS + auth in front.
 
 ## Troubleshooting
 
