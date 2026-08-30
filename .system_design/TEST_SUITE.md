@@ -545,19 +545,36 @@ supplies, from wherever the server runs**. Nothing currently restricts:
 
 - Non-HTTP schemes — `file:`, `data:`, `ftp:`, `chrome:`.
 - Loopback, RFC1918, link-local, IPv6 unique-local, and cloud metadata addresses
-  (`169.254.169.254`).
+  (`169.254.169.254`), including IPv4-mapped IPv6 forms.
 - Redirects that begin public and land private.
 - DNS rebinding between validation and connection (TOCTOU).
+- **A hostname resolving to several addresses at once**, where validation may
+  inspect a public record while the connector selects a private one. This needs no
+  timing and is not rebinding.
+- **Subresources fetched by a permitted page.** Chromium loads images, scripts,
+  frames, stylesheets and `fetch()` targets on its own account. Restricting the
+  navigation URL while the loaded page reaches `169.254.169.254` is still SSRF, so
+  any enforcement mechanism has to mediate *every* request the browser makes, not
+  the one it was given.
 - Proxy interaction, where `KINDLY_CHROME_PROXY` may reach networks the host
-  cannot.
+  cannot — and where, with an HTTP `CONNECT` proxy, the **proxy** resolves the
+  hostname and the server never sees the destination address.
 
 **The policy is a product decision** (§13). Once stated, tests follow at three
 boundaries and the shape is the same either way:
 
-1. **URL validation** — L1, table-driven over scheme and address class.
+1. **URL validation** — L1, table-driven over scheme, address class, and
+   multi-record answers including mixed public/private and dual-family results.
 2. **Redirect handling** — L3, a local server issuing a public→private redirect.
 3. **Connection** — L3, a hostname whose resolution changes between validation
    and connect.
+4. **Browser-initiated requests** — L3, a permitted public page attempting a
+   private subresource by each route Chromium supports.
+
+The `httpx` and Chromium paths need separate mechanisms: `httpx` resolves in
+Python where the address is observable, while Chromium resolves and connects
+inside the browser process. Selecting the browser mechanism is part of §13.1's
+decision, not an implementation detail beneath it.
 
 ---
 

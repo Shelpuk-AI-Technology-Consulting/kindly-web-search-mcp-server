@@ -113,7 +113,7 @@ action).
 
 ## 2. Sequencing for parallelism
 
-<!-- totals: steps=77 authorable=49 pr_authorable=44 -->
+<!-- totals: steps=79 authorable=49 pr_authorable=45 -->
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
@@ -160,12 +160,12 @@ note recorded before any dependent step activates**.
 
 | ID | Prerequisite | Blocks | Owner |
 |---|---|---|---|
-| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1) — see the note below; it decides more than a yes/no. | E3-6, E9-2, E9-3, E9-4, E9-5, E9-6, E9-7 — **before authoring** | maintainer |
+| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1) — see the note below; it decides more than a yes/no. | E9-0, and through it E3-6 and E9-2…E9-7 — **before authoring** | maintainer |
 | **X-2** | Repository admin authority — branch protection, require a PR, no bypass actors | E4-2 | repo admin |
 | **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-7 | repo admin |
 | **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-13 | maintainer |
 | **X-5** | Observational coverage reviewer and cadence (TEST_SUITE §10.4 requires a named owner; unowned reporting decays into the signal nobody reads) | E10-7 | maintainer |
-| **X-6** | Owners for every row of TEST_SUITE §9's risk-to-test matrix. X-4 and X-5 name two; the column is otherwise blank, and TEST_SUITE §13.3 leaves it open | E13-1 | maintainer |
+| **X-6** | Owners for every row of TEST_SUITE §9's risk-to-test matrix. X-4 and X-5 name two; the column is otherwise blank, and TEST_SUITE §13.3 leaves it open | E13-2 | maintainer |
 
 **X-1 is the only prerequisite that blocks authoring**, and it blocks every step
 listed in its Blocks column — declared `impl` because neither the policy function
@@ -200,9 +200,14 @@ For decision 2 the candidates, each with a different cost:
 - Route browser traffic through a **local policy-enforcing proxy** that resolves
   and decides, and pin Chromium to it. This is the only candidate that also covers
   subresources, below.
-- Constrain Chromium's own resolution — a **host-resolver rule or equivalent**
-  pinning the browser to a validated address.
-- Any other mechanism pinning the browser's connections to validated addresses.
+- A **host-resolver rule or equivalent** pinning the browser to validated
+  addresses — but only **paired with per-request interception**. A rule covering
+  the top-level hostname cannot constrain a hostname the loaded page introduces,
+  so on its own it fails the subresource requirement below.
+- Any other mechanism mediating *every* browser request, not the first one.
+
+**X-1's acceptance rejects any architecture that mediates only top-level
+navigation.** That is the test the candidates are judged against.
 
 **Enforcement must cover every request the browser makes, not the navigation URL.**
 A permitted public page can reach a private address through an image, script,
@@ -214,17 +219,20 @@ E9-4, E9-6 and E9-7 then name the fixture and the observable proving the **actua
 browser connections** were controlled, not merely that a pre-navigation
 classification ran.
 
-**The restrictive branch needs materialising too.** The allow branch has an
-explicit procedure (E9-2); the restrictive one currently does not, and E9-4 is one
-`M` PR that could mean anything from a documented limitation to a new local proxy
-with its own process lifecycle, routing, resolver behaviour and authentication
-chaining. So X-1's artefact must also **rewrite the restrictive E9 branch into
-architecture-specific steps with their own dependencies, sizes and acceptance
-criteria** before implementation starts. A local enforcing proxy is several PRs,
-not one.
+**Both branches are materialised by E9-0, which is a PR.** X-1 is a decision;
+turning it into a plan is a reviewable change to this document and to
+`TEST_SUITE.md`, and it must land before any security step is authored. Otherwise
+every E9 step becomes authorable the moment X-1 is answered, and an engineer picks
+up E9-4 — a deliberately non-atomic placeholder that could mean a documented
+limitation or a local proxy with its own lifecycle, routing, resolver behaviour and
+authentication chaining. A local enforcing proxy is several PRs, not one.
 
 The other prerequisites block merge or activation, so the work they gate can be
-written first. X-3 in particular
+written first.
+
+**E13-2** writes X-6's answer into `TEST_SUITE.md` §9's Owner column. Without it
+X-6 could be "complete" with names in a ticket while the design that is supposed to
+be authoritative still shows a blank column, and E13-1 would pass. X-3 in particular
 no longer gates writing ChromiumPool tests: E4-6 builds and smoke-tests the image
 locally with no registry, and E7-3 merges against that.
 
@@ -362,7 +370,7 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 | **E3-3** | HTML corpus scaffolding and governance | PR | impl E0-2 | M |
 | **E3-4** | Anti-flake harness helpers | PR | impl E0-2 | M |
 | **E3-5** | `tests/package/` and its marker policy test | PR | impl E0-2 | S |
-| **E3-6** | Injectable DNS-resolution and transport seam | PR | impl X-1 | M |
+| **E3-6** | Injectable DNS-resolution and transport seam | PR | impl E9-0 | M |
 
 - **E3-1.** Emits known `KINDLY_DIAG` frames, can hang, can exit non-zero, can
   write garbage to stderr. *Verify:* a smoke test drives each mode. **Readiness is
@@ -684,14 +692,26 @@ separate steps.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
+| **E9-0** | Materialise the selected policy branch in both documents | PR | impl X-1 | M |
 | **E9-1** | Sanitize diagnostics at the emit boundary | PR | impl E5-7 | L |
-| **E9-2** | Shared outbound policy function | PR | impl X-1, impl E0-2 | M |
+| **E9-2** | Shared outbound policy function | PR | impl E9-0, impl E0-2 | M |
 | **E9-3** | Enforce on the `httpx` clients, including every redirect hop | PR | impl E9-2, impl E3-6 | M |
 | **E9-4** | Enforce on the Chromium fetch path | PR | impl E9-2, impl E3-6 | M |
 | **E9-5** | DNS-rebinding test on the `httpx` path | PR | impl E9-3 | M |
 | **E9-6** | Rebinding and redirect tests on the Chromium path | PR | impl E9-4 | M |
 | **E9-7** | Proxy policy test | PR | impl E9-4 | M |
 
+- **E9-0.** Amends `TEST_SUITE.md` §7.2 with the chosen policy and the selected
+  Chromium and proxy mechanisms, and rewrites this document's E9 branch to match:
+  under **allow**, delete E9-3, E9-4, E9-6 and E9-7, rewrite E9-5 to
+  `impl E9-2, impl E3-6` with characterization criteria, and drop E9-6 and E9-7
+  from E13-1; under **restrict**, replace E9-4 with architecture-specific steps
+  carrying their own dependencies, sizes and acceptance criteria. Either way it
+  updates the declared totals.
+  *Verify:* `python scripts/check_plan_dag.py` passes afterwards; no step still
+  declares a dependency on a deleted row; `TEST_SUITE.md` §7.2 and §13.1 record the
+  decision, so this plan traces to the design rather than asserting new design of
+  its own.
 - **E9-1.** **Production change**, shipped with its tests in one PR. One sanitizing
   step at the top of `Diagnostics.emit`, before the entry is appended to `entries`.
   *Verify:* both the returned `entries` and the emitted JSON are asserted;
@@ -782,7 +802,7 @@ separate steps.
 | **E10-8** | Diff-coverage gate | PR | merge E10-3 | M |
 | **E10-9** | Baseline bootstrap, ratchet and reset label | PR | merge E10-8 | L |
 | **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9, merge E4-10 | S |
-| **E10-11** | Revisit per-module coverage floors against measured data | decision | merge E10-3 | S |
+| **E10-11** | Revisit per-module coverage floors against measured data | PR | impl E10-3 | S |
 
 - **E10-1.** Every `src/**/*.py` in the gating scope or in `omit`, exactly once.
   *Verify:* a module in neither fails; a module in both fails.
@@ -833,9 +853,13 @@ separate steps.
   on the grounds that any number chosen earlier would be invented. E10-3 produces
   the first real measurement, so this is where that deferral is discharged rather
   than quietly forgotten.
-  *Verify:* a recorded decision citing the measured per-module figures.
+  `impl E10-3`, not `merge`: the decision cannot be made before the measurement
+  exists, so it is not authorable earlier. It is a **PR** because its artefact is a
+  repository change — an amendment to `TEST_SUITE.md` §13.4 recording the measured
+  per-module figures and the outcome, which closes that open item.
+  *Verify:* §13.4 no longer reads as deferred; the amendment cites the figures.
   **"Do not adopt floors" is a valid outcome** provided the evidence is recorded;
-  what is not valid is leaving §13.4 open indefinitely.
+  leaving §13.4 open indefinitely is not.
 
 ---
 
@@ -880,7 +904,8 @@ under `tests/`; this unblocks E6-4.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E13-1** | Suite complete | milestone | merge E10-10, merge E10-7, complete E10-11, complete X-6, merge E12-1, complete E11-5, merge E6-1, merge E6-3, merge E6-4, merge E4-13, merge E7-1, merge E8-2, merge E8-3, merge E2-4, merge E5-5, merge E5-6, merge E9-1, merge E9-5, merge E9-6, merge E9-7 | S |
+| **E13-1** | Suite complete | milestone | merge E10-10, merge E10-7, merge E10-11, merge E13-2, merge E12-1, complete E11-5, merge E6-1, merge E6-3, merge E6-4, merge E4-13, merge E7-1, merge E8-2, merge E8-3, merge E2-4, merge E5-5, merge E5-6, merge E9-1, merge E9-5, merge E9-6, merge E9-7 | S |
+| **E13-2** | Record the risk-matrix owners in `TEST_SUITE.md` | PR | complete X-6 | S |
 
 No diff. Exists because "every row is done" is otherwise something nobody checks:
 the validator reports what is *listed*, not what is *finished*, and the E9 branch
@@ -891,7 +916,7 @@ Its prerequisites are every terminal node, and
 this one** — so a future epic cannot be added and silently left out of
 "complete". The check found seventeen such steps when it was introduced.
 *Verify:* every step in this document is merged or complete; every external
-prerequisite X-1…X-5 is resolved with its rollback note recorded; `ci-required`
+prerequisite X-1…X-6 is resolved with its rollback note recorded; `ci-required`
 carries all of `fast`, `fast-extras`, `subsystem`, `chromium`, `package`, `types`
 and `coverage`; the nightly runs live and mutation jobs; `pytest` is green on both
 platforms.
@@ -971,9 +996,9 @@ E5-3, E5-6, E5-7, E8-4 are unassigned backlog. With `pr_authorable` steps open
 from day one (§2), the constraint on throughput is people, not the graph.
 
 In parallel, the maintainer works **X-1** — the only prerequisite blocking steps
-from being *written*, and by far the largest in downstream scope: a restrict
-policy turns E3-6, E9-3 and E9-4 into production enforcement across three separate
-network stacks. Then X-2, X-3, X-4 and X-5.
+from being *written*, and by far the largest in downstream scope: it decides three
+things (§3), and under a restrict policy E9-0 must re-plan the branch before any
+of it can start. Then X-2, X-3, X-4, X-5 and X-6.
 
 **Protect E2-3.** One refactor unblocks the L3 worker stream, the codec
 extraction, the coverage classification and all of E10, and it reads like
