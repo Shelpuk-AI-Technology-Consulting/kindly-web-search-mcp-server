@@ -1556,9 +1556,26 @@ needs.
 1. **Which URL schemes are fetchable?** `http` and `https` are the only ones the
    loaders are built for; `file:`, `data:`, `ftp:` and `chrome:` are reachable
    today and each has a different failure mode.
-2. **Are private-network addresses fetchable?** Plausibly yes — self-hosted
-   SearXNG and internal documentation are exactly what this server is pointed at,
-   and a blanket RFC1918 block would break those users.
+2. **Are private-network addresses fetchable, and by which caller?** The obvious
+   answer is "yes, or self-hosted SearXNG breaks" — but that conflates two paths
+   that are not the same:
+
+   - **Operator-configured** — `SEARXNG_BASE_URL`, and `KINDLY_CHROME_PROXY`. The
+     operator chose these; reaching a private address here is the intended
+     behaviour, and nothing an attacker influences.
+   - **Externally supplied** — the `url` argument to `get_content`, and the result
+     links `web_search` fans out to. These are attacker-influenceable, and they
+     are what SSRF means here.
+
+   They are different code paths (`search_searxng` versus
+   `resolve_page_content_markdown`), so they can hold different policies. A
+   restriction on externally supplied URLs does **not** break self-hosted SearXNG.
+   The plausible answer is therefore narrower and cheaper than "permit private
+   addresses everywhere": permit them where the operator configured them, refuse
+   them where a caller supplied them.
+
+   An answer must say which provenance each rule applies to. Saying only "private
+   addresses are allowed" leaves the actual exposure unaddressed.
 3. **If *either* dimension is restricted, how are Chromium's own connections
    enforced?** `httpx`
    resolves in Python where the address is observable. Chromium resolves and
@@ -1603,8 +1620,8 @@ proxy says nothing about Chromium with no proxy configured.
   spans a shared policy function, `httpx` enforcement across redirect hops,
   Chromium enforcement, and deterministic rebinding and proxy tests. The plan's
   **E9-0** exists to carry that re-planning and must land before any
-  **outbound-policy** step is authored — the plan's E3-6 and E9-2…E9-7. It does
-  not gate E9-1, the diagnostics sanitizer, which is independent of this decision.
+  **outbound-policy** step is authored — the plan's E9-2…E9-7. It does not gate
+  E3-6 or E9-1.
 
 **Blocks:** the outbound-policy work — the plan's E9-0, and through it E9-2…E9-7.
 It does **not** block the plan's E3-6, the resolver and transport seam, whose API
