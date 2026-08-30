@@ -611,10 +611,16 @@ conversion bug.
       _contract: WorkerProcess = FakeWorkerProcess()   # mypy checks this line
       ```
 
-      Two conditions or the check passes vacuously: the fake's members are fully
-      annotated, and the job runs with `disallow_any_explicit` /
-      `disallow_untyped_defs` on this surface. An unannotated member — or an
-      `AsyncMock` attribute, which types as `Any` — satisfies any Protocol at all.
+      Two conditions, or the check passes vacuously. The fake is a **concrete,
+      fully annotated class** — not `AsyncMock`, whose members infer as `Any` and
+      satisfy any Protocol at all. And the job enables **`disallow_any_expr`** on
+      this surface: `disallow_any_explicit` rejects only written-out `Any`
+      annotations and `disallow_untyped_defs` only unannotated definitions, so
+      neither catches an `Any` that arrives by inference.
+
+      A negative fixture proves the job is not vacuous: a deliberately
+      `Any`-typed double that mypy **must** reject, asserted in CI. A type-check
+      job that cannot fail is indistinguishable from no job.
    3. An explicit **runtime contract test** asserting each attribute exists, each
       method is callable, and each async method returns a coroutine — because
       `runtime_checkable` verifies presence only, not types or arity.
@@ -724,7 +730,7 @@ project is pure asyncio, so the marker is noise. Migration removes every
 | `pytest` | `>=9,<10` | Runner |
 | `pytest-asyncio` | `>=1.4,<2` | Async tests, `asyncio_mode = "auto"` |
 | `hypothesis` | `>=6.167,<7` | Properties in §3.1 |
-| `coverage` | `>=7,<8` | Branch coverage and the committed baseline (§10.4) |
+| `coverage` | `>=7.10,<8` | Branch coverage and the committed baseline; 7.10 is the floor because `patch = subprocess` does not exist below it (§10.4) |
 | `diff-cover` | `>=10.4,<11` | Diff coverage on changed lines; 10.4 is the floor because `--branch-coverage` does not exist below it (§10.4) |
 | `mutmut` | `>=3,<4` | L1 validation; **needs `fork()` — Linux/WSL only** |
 | `ruff` | `>=0.6,<1` | Lint |
@@ -752,10 +758,47 @@ version; Dependabot may propose, never auto-merge.
 | `live-extraction` (nightly) | `-m "live and extraction"` | — | Linux container |
 | `mutation` (nightly) | `mutmut run` over the §3.2 scope | — | Linux |
 | `types` | `mypy` over the Protocol-carrying modules | Python 3.13 | Linux |
+| `coverage` | pinned lane; runs the three controls of §10.4 | Python 3.13, pinned | Linux |
 | `ci-required` | aggregation only — no tests | — | Linux |
 
-`fast`, `fast-extras`, `subsystem`, `chromium` and `package` run on every push
-and PR.
+`fast`, `fast-extras`, `subsystem`, `chromium`, `package`, `types` and `coverage`
+run on every push and PR.
+
+**The `coverage` job is where §10.4's controls actually execute**, and it is a
+required check. Without it named here, a literal implementation of this document
+would produce all-green required checks having run none of them. It cannot be
+folded into `fast`: `fast` is a *compatibility matrix* over Python and `mcp`
+versions from a source checkout, while the ratchet needs exactly one pinned
+environment.
+
+The job:
+
+1. Installs from `requirements-ratchet.txt` on Python 3.13, from a **source
+   checkout** — not a wheel. The `[paths]` mapping of §10.4 exists for the
+   artefacts it *consumes* from `package` and `chromium`, which do install wheels.
+2. Runs the hermetic selection itself
+   (`--ignore=tests/package -m "not live and not subsystem and not chromium and not package"`)
+   under `coverage run`, producing **`coverage-hermetic`** — the baseline product.
+3. `needs: [fast, subsystem, chromium, package]` and downloads the `.coverage`
+   data each of those uploads as an artefact, then `coverage combine`s them with
+   its own run into **`coverage-combined`** — the diff-coverage product.
+4. Runs all three controls: module presence and diff coverage against
+   `coverage-combined`, the baseline ratchet against `coverage-hermetic`.
+
+**Workflow triggers must be complete.** Specifying `types` on `pull_request`
+*replaces* the defaults rather than extending them, so listing only the label
+events would stop the workflow running when a PR is opened at all — worst on a
+fork PR, whose head branch produces no upstream `push` run:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+```
+
+Add `ready_for_review` if draft PRs are filtered out.
 
 **One stable required check.** Requiring every matrix-generated check by name is
 brittle: adding a Python or `mcp` axis renames the checks and silently drops the
@@ -774,7 +817,7 @@ default and inspect results itself:
 ```yaml
 ci-required:
   if: ${{ always() }}          # without this the job is skipped, not failed
-  needs: [fast, fast-extras, subsystem, chromium, package, types]
+  needs: [fast, fast-extras, subsystem, chromium, package, types, coverage]
   runs-on: ubuntu-latest
   steps:
     - name: Fail unless every dependency succeeded
@@ -784,7 +827,8 @@ ci-required:
         needs.subsystem.result != 'success' ||
         needs.chromium.result != 'success' ||
         needs.package.result != 'success' ||
-        needs.types.result != 'success'
+        needs.types.result != 'success' ||
+        needs.coverage.result != 'success'
       run: exit 1
 ```
 
@@ -991,14 +1035,39 @@ double-count and `diff-cover` finds no coverage for any changed line and reports
 nothing — passing silently. `relative_files = true` is what keeps the mapping
 working across a Windows and Linux combine.
 
-Two assertions enforce it after combining:
+Two assertions enforce it, against `coverage-combined`:
 
-- Every `.py` file under `src/kindly_web_search_mcp_server/` appears in
-  `coverage.json`, including files at zero. A new module that nothing imports
-  fails the build rather than vanishing.
-- A PR that changes executable Python lines may not produce a `diff-cover` report
-  with **zero** analyzed lines. Zero means the path mapping broke, not that the
-  change was safe.
+- Every `.py` file under `src/kindly_web_search_mcp_server/` appears in the
+  report, including files at zero. A new module that nothing imports fails the
+  build rather than vanishing.
+- **If the diff contains at least one changed line that the coverage report
+  represents as a statement**, `diff-cover` may not report zero analyzed lines.
+  Zero in that case means the path mapping broke, not that the change was safe.
+  The condition is necessary rather than pedantic: a PR editing only a literal on
+  a continuation line of a multi-line call legitimately has no represented
+  statement lines, and an unconditional guard would misdiagnose that as broken
+  wiring.
+
+**Two coverage products, and they are not interchangeable.**
+
+| Product | Built from | Feeds |
+|---|---|---|
+| `coverage-hermetic` | the `coverage` job's own pinned run of the L1/L2 selection | the baseline ratchet (control 3) |
+| `coverage-combined` | that run plus the `.coverage` artefacts of `fast`, `subsystem`, `chromium` and `package` | module presence (control 1) and diff coverage (control 2) |
+
+Diff coverage **must** use the combined product. Charging a change to
+`chromium_pool.py` against a lane that structurally cannot execute it would push
+authors to write the wrong test at the wrong layer to satisfy the gate — the exact
+pathology §2.1 exists to prevent.
+
+That means `subsystem` and `chromium` coverage **does** gate, through control 2.
+The earlier claim that it is "reported but does not gate" was too broad: it does
+not feed the *ratchet*, which is a different statement. The distinction is
+deliberate and rests on what each control is sensitive to. Control 2 asks a
+per-line yes/no question at an 80% threshold, which run-to-run branch jitter
+rarely flips. Control 3 compares an aggregate to two decimal places, where a
+single differently-taken branch changes the answer. Nondeterministic lanes are
+therefore safe in one and corrosive in the other.
 
 **2. Diff coverage — the PR gate.** `diff-cover --fail-under=80` over the changed
 lines of each PR.
@@ -1013,8 +1082,8 @@ above is what holds without it.
 
 Operationally:
 
-- The combined-coverage job emits `coverage.xml`; `diff-cover` consumes that, not
-  the console report.
+- The `coverage` job exports `coverage-combined` as `coverage.xml`; `diff-cover`
+  consumes that, not the console report.
 - **The diff comes from the same boundary as the baseline** — the event's base
   SHA, not `origin/main`:
 
@@ -1035,18 +1104,38 @@ Operationally:
   have to be renegotiated later to gain the option. Adopting the flag is a separate
   change that must be exercised first.
 
+**Instrumenting the worker subprocess.** §5.2 runs
+`python -m …scrape.nodriver_worker` as a real child, and running the *parent*
+under coverage does not instrument it — so without configuration the worker's own
+code reads as uncovered no matter how thoroughly the subsystem tests exercise it,
+and a PR touching it would be charged by control 2 for lines it cannot cover.
+
+The `subsystem` and `chromium` jobs therefore set `parallel = true` with
+`patch = subprocess` in `.coveragerc` and `coverage combine` the child data files
+before uploading their artefact. `patch = subprocess` requires **coverage.py
+7.10+**, so §10.2's `>=7,<8` bound is raised to `>=7.10,<8`. `COVERAGE_PROCESS_START`
+with a `.pth` hook is the alternative if the newer bound is unacceptable.
+
+**A forcibly killed child does not flush its coverage data.** The
+kill-at-the-deadline and terminate-the-process-tree tests of §5.2 will therefore
+contribute little or nothing for the worker, by construction. That is a real and
+irreducible limit: those tests exist to prove a process dies, and a dead process
+cannot report. Do not chase the resulting gap with a coverage exclusion that also
+hides genuinely untested code — measure it, note it, and let mutation testing and
+the real-child assertions carry the confidence there.
+
 **3. A committed baseline over the hermetic tests only.** Total branch coverage of
 the hermetic suite is written to `coverage-baseline.json`, committed, and may not
 decrease.
 
 **Scope: L1 and L2 only — `fast` on Linux, Python 3.13, pinned lane.** The
-`subsystem` and `chromium` jobs are deliberately excluded, and this is the change
-that makes exact comparison honest. Those jobs drive real processes, real
-timeouts, retries and a real browser; which branches execute can legitimately
-differ between runs on identical code, and a single such branch moves a two-decimal
-total. Ratcheting on a number that flickers teaches people to edit the baseline
-until CI passes, which destroys the control. Their coverage is still reported; it
-just does not gate.
+`subsystem` and `chromium` jobs are excluded **from this control**, which is what
+makes exact comparison honest. Those jobs drive real processes, real timeouts,
+retries and a real browser; which branches execute can legitimately differ between
+runs on identical code, and a single such branch moves a two-decimal total.
+Ratcheting on a number that flickers teaches people to edit the baseline until CI
+passes, which destroys the control. Their coverage still gates through control 2,
+where the per-line threshold is insensitive to that jitter.
 
 **Stability is an acceptance criterion, not an assumption.** Before check (b)
 below is switched on, run the pinned lane repeatedly on one commit and compare the
@@ -1063,11 +1152,30 @@ The checks:
   permitted only when the PR carries the `coverage-baseline-reset` label. CI reads
   the label from the event and applies it as a condition, so an authorized reset
   passes mechanically instead of being worked around. See the reset rule below.
-- **(b) `measured_head == head_baseline`** to two decimal places. Without it a
+- **(b) `measured_head == head_baseline`** exactly, under the definition below.
+  Without it a
   rise need never be recorded, and a later PR could give the gain back while still
   clearing a stale floor.
 - **(c) `measured_head >= head_baseline`**, implied by (b) but reported separately
   so a precision mismatch reads as such rather than as a regression.
+
+**The metric, defined to the machine.** "Two decimal places" is not a
+specification, and float equality is not a comparison anyone should rely on:
+
+- **Source of truth:** the integer totals in `coverage json` output —
+  `covered_lines`, `num_statements`, `covered_branches`, `num_branches`. Not
+  `percent_covered` (a binary float) and not `percent_covered_display` (a
+  presentation string).
+- **Definition:** coverage.py's combined statement-and-branch measure —
+  `(covered_lines + covered_branches) / (num_statements + num_branches)` — stated
+  explicitly because "branch coverage" is ambiguous between this and a
+  branches-only ratio.
+- **Comparison unit:** integer **basis points**, computed as
+  `(covered * 10000) // total`. Integer arithmetic throughout; no floats, no
+  rounding mode to argue about.
+- **`coverage-baseline.json` schema:** `{"basis_points": <int>, "covered": <int>,
+  "total": <int>, "generated_by": "<tool versions>"}`. The raw counts are stored
+  alongside the ratio so a reviewer can see *what* moved, not merely that it did.
 
 **Bootstrap and non-PR cases.**
 
@@ -1095,10 +1203,15 @@ mechanism:
   `coverage-baseline-reset` label; the workflow triggers on
   `pull_request: [labeled, unlabeled, synchronize]` so applying the label reruns
   the check rather than requiring a manual re-run.
-- The label is not self-service: `coverage-baseline.json` and
-  `requirements-ratchet.txt` are owned in `CODEOWNERS`, branch protection requires
-  code-owner review and dismisses stale approvals on new commits, and `CODEOWNERS`
-  itself is owned by the same people.
+- Authorization is on the **merge**, not on the label. `CODEOWNERS` governs who
+  must approve a change to `coverage-baseline.json` and `requirements-ratchet.txt`;
+  branch protection requires that code-owner review and dismisses stale approvals
+  on new commits; `CODEOWNERS` is owned by the same people. It does **not** control
+  who may apply a label — anyone with write access can. The label is a signal that
+  unblocks the check; the code-owner approval is what actually authorizes the
+  reset. If label application must itself be restricted, the workflow has to verify
+  the actor's team membership explicitly, which is additional machinery this design
+  does not currently require.
 - The PR must state what changed in the measurement and why the drop is not a loss
   of testing. The default expectation remains that the author recovers the
   difference.
