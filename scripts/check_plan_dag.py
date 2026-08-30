@@ -42,8 +42,12 @@ STEP_ROW = re.compile(
 )
 #: ``| **X-1** | Prerequisite | … ``
 EXTERNAL_ROW = re.compile(r"^\|\s*\*\*(?P<id>X-\d+)\*\*\s*\|", re.M)
+#: ``| `ci-required.needs` | E4-1, E4-3, E4-5 |`` in the contended-region table.
+MUTATION_ROW = re.compile(
+    r"^\|\s*`(?P<region>[a-z][\w.-]*)`\s*\|(?P<steps>[^|]*)\|", re.M
+)
 #: ``Files: tests/a.py, tests/b.py``
-FILES_LINE = re.compile(r"^Files:\s*(?P<files>.+)$", re.M)
+FILES_LINE = re.compile(r"^\s*Files:\s*(?P<files>.+)$", re.M)
 #: Framework use, not `unittest.mock`, which pytest-native tests use freely.
 #: Matched at line start so the string quoted inside a test is not evidence.
 UNITTEST_FRAMEWORK = re.compile(
@@ -261,6 +265,53 @@ def longest_chain(steps: dict[str, dict], ordered: list[str]) -> tuple[int, list
     return depth[end] + 1, list(reversed(chain))
 
 
+def check_mutation_order(text: str, steps: dict[str, dict]) -> list[str]:
+    """Require steps mutating one contended region to be totally ordered.
+
+    Two PRs editing the same ``needs`` list in parallel conflict, and the worse
+    outcome is a silent one -- a rebase that drops a dependency added by the other.
+    The plan promises these are chained; this makes the graph enforce it rather
+    than the prose assert it.
+
+    Args:
+        text: Full Markdown source of the implementation plan.
+        steps: Parsed step table.
+
+    Returns:
+        Human-readable problems, empty when each region's steps form a chain.
+    """
+    ancestors: dict[str, set[str]] = {}
+
+    def resolve(step_id: str) -> set[str]:
+        """Collect every step reachable backwards from ``step_id``."""
+        if step_id in ancestors:
+            return ancestors[step_id]
+        ancestors[step_id] = set()
+        found: set[str] = set()
+        for _, dep in steps.get(step_id, {}).get("deps", []):
+            if dep in steps:
+                found.add(dep)
+                found |= resolve(dep)
+        ancestors[step_id] = found
+        return found
+
+    problems = []
+    for match in MUTATION_ROW.finditer(text):
+        region = match.group("region")
+        listed = re.findall(r"E\d+-\d+[ab]?", match.group("steps"))
+        unknown = [s for s in listed if s not in steps]
+        problems += [f"{region} lists undefined step {s}" for s in unknown]
+
+        known = [s for s in listed if s in steps]
+        for earlier, later in zip(known, known[1:]):
+            if earlier not in resolve(later):
+                problems.append(
+                    f"{later} mutates {region} but does not depend on {earlier}, "
+                    "so the two can land in parallel and drop each other's edit"
+                )
+    return problems
+
+
 def authorable_after(steps: dict[str, dict], completed: set[str]) -> set[str]:
     """List the steps that can be *written* once ``completed`` has landed.
 
@@ -367,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         check_references(steps, externals)
         + check_row_syntax(source, set(steps))
         + check_file_ownership(source, plan_path.resolve().parents[1])
+        + check_mutation_order(source, steps)
     )
 
     ordered, stuck = topological_order(steps)

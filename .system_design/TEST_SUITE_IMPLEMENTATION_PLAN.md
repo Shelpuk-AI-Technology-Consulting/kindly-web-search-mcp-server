@@ -43,10 +43,21 @@ branch.
 Steps that add jobs edit the same workflow, and the graph says several can proceed
 in parallel. To keep that true mechanically, **each job is defined in its own
 reusable workflow file** under `.github/workflows/`, and `ci.yml` does nothing but
-call them and declare `ci-required.needs`. The `needs` list is then the only
-contended region; steps touching it are one line and are chained with `merge`
-dependencies where they would otherwise collide. The same applies to
-`nightly-summary.needs`.
+call them and declare `ci-required.needs`. The `needs` lists are then the only
+contended regions, and the steps mutating each are **totally ordered** — declared
+here and checked by `scripts/check_plan_dag.py`, which fails if any listed step
+does not depend on the one before it. Prose promising serialization is not
+serialization; two PRs editing one `needs` list in parallel conflict, and the
+worse outcome is a rebase that silently drops the other's edit.
+
+| Region | Mutated by, in order |
+|---|---|
+| `ci-required.needs` | E4-1, E4-3, E4-4, E4-5, E4-10, E4-11, E10-10 |
+| `nightly-summary.needs` | E4-12, E4-13, E12-1 |
+
+Job *definitions* live in separate files and are not contended, so E4-9 can create
+the `chromium` job in parallel with anything; only its activation (E4-10) is in the
+chain.
 
 ### 1.4 Red and green ship together
 
@@ -319,10 +330,19 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 | **E4-7** | Publish the image to the registry | PR | merge E4-6, complete X-3 | M |
 | **E4-8** | Record and validate the image digest | PR | merge E4-7 | S |
 | **E4-9** | Add the `chromium` job, reporting only | PR | merge E7-3, merge E4-8 | S |
-| **E4-10** | Activate the `chromium` job | PR | merge E4-9 | S |
-| **E4-11** | Add and activate the `package` job | PR | merge E8-1, merge E4-5 | S |
+| **E4-10** | Activate the `chromium` job | PR | merge E4-9, merge E4-5 | S |
+| **E4-11** | Add and activate the `package` job | PR | merge E8-1, merge E4-10 | S |
 | **E4-12** | Nightly workflow foundation | PR | impl E0-3 | S |
-| **E4-13** | Add the live jobs to the nightly | PR | merge E8-4, merge E4-12, complete X-4 | M |
+| **E4-13** | Add the live jobs to the nightly | PR | merge E8-4, merge E8-5, merge E4-8, merge E4-12, complete X-4 | M |
+
+**Every marker-selected job carries a `--min-selected` floor.** That is stated
+once here rather than repeated per step, and it applies to the broad job,
+`fast`, `subsystem`, `fast-extras`, `types`, `chromium`, `package`, both live jobs
+and the hermetic coverage selection. A floor is committed alongside the workflow
+and **updated in the same PR whenever tests are deliberately added to or removed
+from that selection**; a job whose selector silently stops matching is otherwise
+green while running nothing. Each job's acceptance includes: a deliberately
+typo'd selector fails the job.
 
 - **E4-1.** §10.3's complete trigger list; one job selecting
   `--ignore=tests/package -m "not live and not chromium and not package"` on both
@@ -368,7 +388,7 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 - **E4-10.** One line. *Verify:* `chromium` is in `ci-required.needs` and the
   aggregate is green.
 - **E4-11.** `tests/package -m package`, Python 3.13 × mcp {min, max}, created and
-  activated together. `merge E4-5` sequences its `ci-required.needs` edit behind
+  activated together. `merge E4-10` sequences its `ci-required.needs` edit behind
   the previous one, per §1.3. *Verify:* green against E8-1's tests and present in
   the aggregator.
 - **E4-12.** A `schedule`-triggered workflow with `workflow_dispatch` and a
@@ -376,7 +396,8 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
   work attach independently. *Verify:* a manual dispatch runs and the summary
   reports zero jobs without failing.
 - **E4-13.** `live-serper` and `live-extraction`, each with its **own** credential
-  criteria — they are not the same case.
+  criteria — they are not the same case. `merge E4-8` because `live-extraction`
+  needs a browser and therefore the runtime image.
   *Verify:* removing `SERPER_API_KEY` makes **`live-serper`** fail before
   collection, while **`live-extraction` still runs**, since it needs a browser and
   no provider credential; `KINDLY_RUN_LIVE_TESTS=1` is set in both job envs; the
@@ -524,7 +545,8 @@ duplicating tests or touching the same files.
 | **E8-1** | Wheel build, install, import-resolution harness | PR | impl E3-5 | M |
 | **E8-2** | MCP session over stdio and Streamable HTTP | PR | impl E8-1, impl E3-2 | L |
 | **E8-3** | Deterministic `get_content` case | PR | impl E8-1 | S |
-| **E8-4** | Live canaries through the public surface | PR | impl E0-2 | M |
+| **E8-4** | Serper canary through the public surface | PR | impl E0-2 | M |
+| **E8-5** | Extraction canary with real thresholds | PR | impl E0-2 | M |
 
 - **E8-1.** *Verify:* asserts the server module's `__file__` is under the venv's
   `site-packages` and **not** the checkout; the assertion fails if run from the
@@ -538,17 +560,29 @@ duplicating tests or touching the same files.
   `arxiv.org/pdf/….pdf`, which is why the host is pinned.
 - **E8-4.** Serper canary via `search_web` or the `web_search` tool — **not**
   `urllib` as `test_serper_live.py` does today. Standardize on
-  `KINDLY_RUN_LIVE_TESTS`. *Verify:* the canary asserts the reported provider,
-  proving it exercised `PROVIDERS` selection; one gate variable across the suite.
+  `KINDLY_RUN_LIVE_TESTS`. This step **owns `tests/test_serper_live.py` and
+  completes its pytest migration**, so E11-1 does not also claim it; both steps
+  would otherwise rewrite the same file in parallel.
+  Files: `tests/test_serper_live.py`
+  *Verify:* the canary asserts the reported provider, proving it exercised
+  `PROVIDERS` selection; one gate variable across the suite; the file no longer
+  imports `unittest` or `urllib.request`.
+- **E8-5.** `tests/test_live_fetch_urls.py` currently asserts only that
+  `page_content` lacks `"TimeoutError"` — it would pass on an empty page or on the
+  deterministic failure note. TEST_SUITE §6.2 requires real thresholds.
+  *Verify:* non-empty; above a minimum length; contains an expected anchor phrase;
+  **is not** the "Could not retrieve content" note; each assertion fails when fed
+  a stubbed response violating it. Needs a browser, which is why E4-13 depends on
+  the runtime image.
 
 ---
 
 ### E9 — Security
 
 **X-1's artefact selects one of two subplans**, and the plan cannot be more
-specific until it does. Under an **allow** policy, E9-3 and E9-4 are dropped and
-E9-2 and E9-5 become characterization tests recording the permitted behaviour.
-Under a **restrict** policy all five steps stand, and the enforcement is not one
+specific until it does. Under an **allow** policy, E9-3, E9-4, E9-6 and E9-7 are
+dropped and E9-2 and E9-5 become characterization tests recording the permitted
+behaviour. Under a **restrict** policy all seven steps stand, and the enforcement is not one
 change: routing validates the submitted URL, the `httpx` clients follow redirects
 internally, Chromium has its own networking stack, and DNS must be checked close
 enough to connection to prevent rebinding. Those are separate seams and get
@@ -560,7 +594,9 @@ separate steps.
 | **E9-2** | Shared outbound policy function | PR | impl X-1, impl E0-2 | M |
 | **E9-3** | Enforce on the `httpx` clients, including every redirect hop | PR | impl E9-2, impl E3-6 | M |
 | **E9-4** | Enforce on the Chromium fetch path | PR | impl E9-2, impl E3-6 | M |
-| **E9-5** | Deterministic DNS-rebinding tests | PR | impl E9-2, impl E3-6 | M |
+| **E9-5** | DNS-rebinding test on the `httpx` path | PR | impl E9-3 | M |
+| **E9-6** | Rebinding and redirect tests on the Chromium path | PR | impl E9-4 | M |
+| **E9-7** | Proxy policy test | PR | impl E9-4 | M |
 
 - **E9-1.** **Production change**, shipped with its tests in one PR. One sanitizing
   step at the top of `Diagnostics.emit`, before the entry is appended to `entries`.
@@ -575,6 +611,12 @@ separate steps.
   address class (loopback, RFC1918, link-local, IPv6 ULA, `169.254.169.254`),
   asserting whatever X-1 decided; each row fails if its branch is removed; the
   module cites the X-1 artefact so the expected behaviour is traceable.
+  **This PR also materialises the chosen subplan in this document**: under an allow
+  policy it deletes the E9-3, E9-4, E9-6 and E9-7 rows and their prose, and
+  `scripts/check_plan_dag.py` must pass afterwards. Otherwise the step count,
+  chain length and completion state reported by the validator stay wrong from the
+  moment X-1 is decided — a conditional branch that only prose knows about is not
+  in the source of truth.
 - **E9-3.** Applies E9-2 at the `httpx` boundary. **Redirects are the hard part**:
   the clients follow them internally today, so the check must run on each hop, not
   only the submitted URL. *Verify:* a local server issuing a public→private
@@ -585,8 +627,22 @@ separate steps.
   a private address behaves per policy; disabling the check in the worker makes it
   fail.
 - **E9-5.** Uses E3-6's resolver seam so the race is scripted rather than real.
+  Depends on **E9-3**, not merely on the policy function: a rebinding test that
+  only exercises `E9-2` would pass while the `httpx` connection path enforces
+  nothing.
   *Verify:* a hostname resolving public at validation and private at connect
   behaves per policy; the test is deterministic across 50 consecutive runs.
+- **E9-6.** The same for Chromium, which E9-5 cannot cover — it is a different
+  networking stack — plus the redirect case E9-4 does not itself test.
+  *Verify:* a Chromium fetch following a public→private redirect behaves per
+  policy; a rebinding hostname behaves per policy; both fail if E9-4's check is
+  removed.
+- **E9-7.** `KINDLY_CHROME_PROXY` routes Chromium's traffic through a proxy that
+  may reach networks the host cannot, so host-side address validation can be
+  bypassed entirely by configuration. Whatever X-1 decided has to hold here too.
+  *Verify:* with a proxy configured, a request to a private address behaves per
+  policy; the test fails if the policy is checked only against the directly
+  resolved address.
 
 ---
 
@@ -603,7 +659,7 @@ separate steps.
 | **E10-7** | Job-summary and delta reporting | PR | merge E10-6, complete X-5 | M |
 | **E10-8** | Diff-coverage gate | PR | merge E10-3 | M |
 | **E10-9** | Baseline bootstrap, ratchet and reset label | PR | merge E10-8 | L |
-| **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9 | S |
+| **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9, merge E4-11 | S |
 
 - **E10-1.** Every `src/**/*.py` in the gating scope or in `omit`, exactly once.
   *Verify:* a module in neither fails; a module in both fails.
@@ -669,7 +725,9 @@ operation and would needlessly serialize this.
 | **E11-5** | Migration complete | milestone | merge E11-1, merge E11-2, merge E11-3, merge E11-4 | S |
 
 **E11-1** —
-Files: `tests/test_searxng_unit.py`, `tests/test_serper_unit.py`, `tests/test_serper_live.py`, `tests/test_sofya_unit.py`, `tests/test_tavily_unit.py`
+Files: `tests/test_searxng_unit.py`, `tests/test_serper_unit.py`, `tests/test_sofya_unit.py`, `tests/test_tavily_unit.py`
+
+`tests/test_serper_live.py` is deliberately absent: E8-4 rewrites and migrates it.
 
 **E11-2** —
 Files: `tests/test_arxiv.py`, `tests/test_github_discussions.py`, `tests/test_github_issues.py`, `tests/test_stackexchange_api_client.py`, `tests/test_stackexchange_markdown.py`, `tests/test_stackexchange_parsing.py`
@@ -688,11 +746,28 @@ under `tests/`; this unblocks E6-4.
 
 ---
 
+### E13 — Completion
+
+| ID | Step | Type | Blocked by | Size |
+|---|---|---|---|---|
+| **E13-1** | Suite complete | milestone | merge E10-10, merge E12-1, complete E11-5, merge E6-4, merge E4-13, merge E7-1, merge E9-1 | S |
+
+No diff. Exists because "every row is done" is otherwise something nobody checks:
+the validator reports what is *listed*, not what is *finished*, and the E9 branch
+changes which rows are applicable.
+*Verify:* every step in this document is merged or complete; every external
+prerequisite X-1…X-5 is resolved with its rollback note recorded; `ci-required`
+carries all of `fast`, `fast-extras`, `subsystem`, `chromium`, `package`, `types`
+and `coverage`; the nightly runs live and mutation jobs; `pytest` is green on both
+platforms.
+
+---
+
 ### E12 — Mutation testing
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-12, merge E5-1, merge E5-2, merge E5-3, merge E5-4, merge E5-7 | M |
+| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-13, merge E5-1, merge E5-2, merge E5-3, merge E5-4, merge E5-7 | M |
 
 Configuration and job ship together — a job without its configuration is a
 scheduled failure. It attaches to E4-12's nightly foundation and needs **neither

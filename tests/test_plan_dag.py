@@ -289,6 +289,59 @@ def test_distinct_files_across_batches_are_accepted() -> None:
     assert checker.check_file_ownership(document) == []
 
 
+def test_unordered_mutation_of_one_region_is_rejected() -> None:
+    """Reject two steps editing one `needs` list without an ordering
+
+    Parallel PRs on the same aggregator list conflict, and the worse outcome is a
+    rebase that silently drops the other's edit.
+    """
+    document = plan(
+        "| **E4-4** | Extras | PR | — | S |",
+        "| **E4-5** | Types | PR | — | S |",
+    ) + "| `ci-required.needs` | E4-4, E4-5 |\n"
+    steps, _ = checker.parse_plan(document)
+
+    assert checker.check_mutation_order(document, steps) == [
+        "E4-5 mutates ci-required.needs but does not depend on E4-4, so the two "
+        "can land in parallel and drop each other's edit"
+    ]
+
+
+def test_ordered_mutation_of_one_region_is_accepted() -> None:
+    """Accept a chain where each mutating step depends on the previous one"""
+    document = plan(
+        "| **E4-4** | Extras | PR | — | S |",
+        "| **E4-5** | Types | PR | merge E4-4 | S |",
+    ) + "| `ci-required.needs` | E4-4, E4-5 |\n"
+    steps, _ = checker.parse_plan(document)
+
+    assert checker.check_mutation_order(document, steps) == []
+
+
+def test_mutation_order_accepts_a_transitive_chain() -> None:
+    """Accept ordering established through an intermediate step"""
+    document = plan(
+        "| **E4-3** | Split | PR | — | M |",
+        "| **E4-4** | Extras | PR | merge E4-3 | S |",
+        "| **E4-5** | Types | PR | merge E4-4 | S |",
+    ) + "| `ci-required.needs` | E4-3, E4-5 |\n"
+    steps, _ = checker.parse_plan(document)
+
+    assert checker.check_mutation_order(document, steps) == []
+
+
+def test_mutation_region_listing_an_unknown_step_is_rejected() -> None:
+    """Reject a contended-region row naming a step that does not exist"""
+    document = plan("| **E4-4** | Extras | PR | — | S |") + (
+        "| `ci-required.needs` | E4-4, E9-9 |\n"
+    )
+    steps, _ = checker.parse_plan(document)
+
+    assert "ci-required.needs lists undefined step E9-9" in checker.check_mutation_order(
+        document, steps
+    )
+
+
 def test_real_plan_is_valid() -> None:
     """Keep the committed plan passing its own validator"""
     assert checker.main([str(checker.DEFAULT_PLAN)]) == 0
