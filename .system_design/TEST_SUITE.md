@@ -1,27 +1,23 @@
 # Test suite design — Kindly Web Search MCP Server
 
 **Status:** To Be. Describes the target test suite, not the one that exists today.
-**Revision:** 2 — revised after review (see §13 for what was deferred and why), and
-extended to use the `SERPER_API_KEY` Actions secret now configured on the
-repository (§6, §10.3).
 
-**Measurement environment.** Every number below was measured on:
-Windows 10 Pro 19045 · CPython 3.13 · `mcp` 1.25.0 · `starlette` 0.50.0 ·
-`uvicorn` 0.40.0 · `pytest` 9.1.1 · repo at `b3581ca`. Results that were *derived
-from source rather than executed* are labelled as such. Reproducing the baseline
-on Linux is a task in §8, not an assumption in §1.
+**Measurement environment.** Every number here was measured on Windows 10 Pro
+19045 · CPython 3.13 · `mcp` 1.25.0 · `starlette` 0.50.0 · `uvicorn` 0.40.0 ·
+`pytest` 9.1.1 · repo at `b3581ca`. Anything derived from source rather than
+executed is labelled as such.
 
 ---
 
-## 1. Why this document exists
+## 1. Purpose and baseline
 
-The suite has 27 test files (~3,857 lines) against ~6,849 lines of source, and no
-stated strategy behind them. There is no `[tool.pytest.ini_options]` block, no
-registered markers, no CI at all (`.github/` does not exist), no coverage
-measurement, and two different environment gates for live tests.
+The suite has 27 test files (~3,857 lines) against ~6,849 lines of source with no
+stated strategy: no `[tool.pytest.ini_options]`, no registered markers, no CI
+(`.github/` does not exist), no coverage measurement, and two different
+environment gates for live tests.
 
-That would be ordinary technical debt. The reason to write this down now is that
-the suite has a permanently red baseline that everyone has learned to read past.
+The reason to write this down is that the suite has a permanently red baseline
+everyone has learned to read past.
 
 ### 1.1 The baseline, measured
 
@@ -29,113 +25,93 @@ On the environment above: **11 failed, 169 passed, 3 skipped, 9 subtests passed.
 
 | Tests | Failure | Cause |
 |---|---|---|
-| 7 of 10 in `test_nodriver_worker_sandbox.py` | `TypeError: _fetch_html() missing 5 required keyword-only arguments: 'reuse_browser', 'remote_host', 'remote_port', 'user_data_dir', 'overall_timeout_seconds'` | `_fetch_html` grew five required arguments; the callers in the tests were never updated |
-| 3 of 18 in `test_universal_html_loader.py` | `AttributeError: '_FakeProc' object has no attribute 'stdout'` | `fetch_html_via_nodriver` now streams `proc.stdout`; the test's fake process never grew one |
-| 1 in `test_server.py` | `AssertionError: 3 != 1` | patches `server.os.name` to assert a Windows concurrency cap that was removed from `_resolve_web_search_max_concurrency` |
+| 7 of 10 in `test_nodriver_worker_sandbox.py` | `TypeError: _fetch_html() missing 5 required keyword-only arguments: 'reuse_browser', 'remote_host', 'remote_port', 'user_data_dir', 'overall_timeout_seconds'` | `_fetch_html` grew five required arguments; the test callers were never updated |
+| 3 of 18 in `test_universal_html_loader.py` | `AttributeError: '_FakeProc' object has no attribute 'stdout'` | `fetch_html_via_nodriver` now streams `proc.stdout`; the fake process never grew one |
+| 1 in `test_server.py` | `AssertionError: 3 != 1` | patches `server.os.name` to assert a Windows concurrency cap removed from `_resolve_web_search_max_concurrency` |
 
-**The count is platform-dependent, and Windows reports the smaller number.**
-`test_nodriver_worker_sandbox.py` contains **eight** stale `_fetch_html` callers,
-not seven. The eighth, `test_forces_sandbox_off_when_running_as_root`, skips on
-Windows because `os.geteuid` does not exist there
-(`test_nodriver_worker_sandbox.py:199`). On POSIX it should fail like the rest,
-giving **12 failures rather than 11**. *That POSIX figure is derived from reading
-the source; it has not been executed.* Measuring it is a task in §8.
-
-The lesson for this document is the general one: a per-OS baseline must be
-recorded from real runs on each supported platform before it is quoted anywhere.
+**The count is platform-dependent and Windows reports the smaller number.**
+`test_nodriver_worker_sandbox.py` contains **eight** stale `_fetch_html` callers.
+The eighth, `test_forces_sandbox_off_when_running_as_root`, skips on Windows
+because `os.geteuid` does not exist there (`test_nodriver_worker_sandbox.py:199`),
+so POSIX should show **12** failures. *That POSIX figure is read from source, not
+executed;* §8 makes measuring it a task. Baselines are quoted per platform, from
+real runs, or not quoted.
 
 ### 1.2 What is actually uncovered
 
-Eleven red tests do not mean `scrape/` is untested. Most of the package's tests
-pass and assert real behaviour. The uncovered surface is specific:
+Most of `scrape/` passes and asserts real behaviour. The uncovered surface is
+specific:
 
-**Uncovered — the worker lifecycle, both sides of the process boundary:**
-
-- `nodriver_worker._fetch_html` (~480 lines) and the helpers it drives:
+- `nodriver_worker._fetch_html` (~480 lines) and the lifecycle it drives —
   `_launch_chromium`, `_wait_for_devtools_ready`, `_terminate_process`, and the
-  connect-retry loop. All 8 stale sandbox tests target this entry point.
-- `universal_html.fetch_html_via_nodriver` and the parent-side streaming path:
+  connect-retry loop. The 8 stale sandbox tests target this.
+- `universal_html.fetch_html_via_nodriver` and the parent-side streaming path —
   `_read_stdout_stream`, `_read_stderr_stream`, `_consume_stderr_line`,
   `_emit_worker_heartbeat`, `_terminate_process_tree`. The 3 stale loader tests
   target this.
 - **All of `scrape/chromium_pool.py`** (372 lines) — no test file references it.
 
-**Covered and working, not to be disturbed:**
+Working and not to be disturbed: 15 of 18 tests in
+`test_universal_html_loader.py` cover the Markdown-suffix probe path end to end,
+and `test_worker_launch_args_redaction.py` covers proxy-credential redaction in
+`_build_chromium_launch_args` by testing that function directly.
 
-- 15 of 18 tests in `test_universal_html_loader.py` cover the Markdown-suffix
-  probe path end to end — `_build_md_suffix_url`, `_probe_markdown_suffix`,
-  `_probe_markdown_accept_blanket`, allowlist behaviour, oversize capping, error
-  swallowing, and `load_url_as_markdown` routing including the PDF skip.
-- `test_worker_launch_args_redaction.py` covers proxy-credential redaction in
-  `_build_chromium_launch_args`, testing that **pure function directly**. This is
-  the pattern §3.1 and §8 ask the repaired sandbox tests to follow.
+### 1.3 Existing tests worth preserving verbatim
 
-**Not a `scrape/` problem at all:** the concurrency failure is in `server.py`.
-Revision 1 of this document folded it into a claim about `scrape/`; that was
-wrong.
-
-### 1.3 What is already good
-
-Three things are worth preserving verbatim:
-
-- `test_provider_registry_consistency.py` holds `PROVIDERS` in sync with the
-  README, `.env.example` and the `web_search` tool docstring. It exists because
-  two providers were once added without updating all five copies, and a
-  SerpBase-only install was told no provider was configured while search worked.
-- `test_dependency_constraints.py` guards the dependency bounds that reach users,
-  because the documented `uvx --from git+…` install re-resolves from PyPI on every
-  start and ignores `uv.lock`.
-- `test_tool_descriptions.py` asserts the tool docstrings stay agent-oriented.
+- `test_provider_registry_consistency.py` — holds `PROVIDERS` in sync with the
+  README, `.env.example` and the `web_search` docstring. It exists because two
+  providers were once added without updating all five copies.
+- `test_dependency_constraints.py` — guards the bounds that reach users, since
+  the documented `uvx --from git+…` install re-resolves from PyPI and ignores
+  `uv.lock`.
+- `test_tool_descriptions.py` — keeps the tool docstrings agent-oriented.
 
 ---
 
-## 2. The layer model, applied to this system
+## 2. Layer model
 
 ```
 L4  Product      MCP client ─► server ─► provider ─► resolver ─► Chromium ─► Markdown
                  proves:  a real client gets a correct outcome from a real install
-                 covers:  MCP session from an installed wheel · live provider and
-                          extraction canaries
-                 speed:   seconds–minutes · a handful
+                 covers:  MCP session from an installed wheel · live canaries
 
 L3  Subsystem    [server + uvicorn]  [worker + real process]  [pool + real Chromium]
                  proves:  one component and its real infrastructure wire up
-                 covers:  transport/CORS over a real socket · process lifecycle,
-                          timeout and cleanup · ChromiumPool slots and shutdown
-                 speed:   ~100ms–seconds · dozens
+                 covers:  transport over a real socket · process lifecycle and
+                          cleanup · retry orchestration · ChromiumPool
 
-L2  Contract     MCP tool schema ⇄ clients · parent ⇄ worker frame format ·
-                 registry ⇄ README/.env.example · declared deps ⇄ imports
+L2  Contract     MCP tool schema ⇄ clients · parent ⇄ worker frames ·
+                 registry ⇄ docs · declared deps ⇄ imports
                  proves:  two parties that change separately still agree
-                 speed:   fast and hermetic, like a unit test
 
 L1  Component    URL parsers · Markdown transforms · env resolvers · launch-arg
                  builders · diagnostics redaction · text accumulators
                  proves:  a unit's logic is right for every input that matters
-                 speed:   milliseconds · hundreds · the base of everything
 ```
 
 ### 2.1 The allocation rule
 
 **Prove each behaviour at the lowest layer that can prove it.**
 
-| Claim | Layer | Why not higher |
-|---|---|---|
-| `FASTMCP_ALLOWED_HOSTS=" a , ,b "` parses to `["a","b"]` | L1 | A pure string function needs no server |
-| `--no-sandbox` is passed when sandbox is disabled | L1 | `_build_chromium_launch_args` is pure; going through `_fetch_html` is what broke |
-| Renaming `num_results` breaks every MCP client | L2 | Reading the generated schema is enough |
-| A killed worker leaves no orphaned Chromium | L3 | Needs a real process tree |
-| A client can install the wheel and call `web_search` | L4 | The claim *is* the whole path |
+| Claim | Layer |
+|---|---|
+| `FASTMCP_ALLOWED_HOSTS=" a , ,b "` parses to `["a","b"]` | L1 |
+| `--no-sandbox` is passed when sandbox is disabled | L1 |
+| A failed browser connect is retried and the attempt terminated | L3 — orchestration, not resolution |
+| Renaming `num_results` breaks every MCP client | L2 |
+| A killed worker leaves no orphaned Chromium | L3 |
+| A client can install the wheel and call `web_search` | L4 |
 
-**The corollary that this codebase got wrong.** Eight sandbox tests assert
-worker-*internal* decisions — sandbox flags, root handling, executable discovery,
-retry counts, profile cleanup — by driving `_fetch_html`, an ~480-line coroutine
-that launches a browser. Those assertions are about pure functions
-(`_build_chromium_launch_args`, `_resolve_sandbox_enabled`,
-`_resolve_browser_executable_path`, `_resolve_start_retry_attempts`). Routing them
-through the largest function in the module is why a signature change five
-arguments wide silently disabled all of them. **Testing above the layer that owns
-the claim is what created the outage.**
+**The corollary this codebase got wrong.** Eight sandbox tests assert
+worker-internal *flag* decisions by driving `_fetch_html`, an ~480-line coroutine
+that launches a browser. Routing a flag assertion through the largest function in
+the module is why a five-argument signature change silently disabled all of them.
+
+**The corollary that limits the fix.** Those same eight tests also assert
+*orchestration* — that a failed connect is retried and the failed attempt
+terminated. That claim genuinely lives in `_fetch_html` and cannot move down.
+Splitting them is the work; deleting the orchestration half would trade one gap
+for another.
 
 ---
 
@@ -148,80 +124,89 @@ the claim is what created the outage.**
 `_resolve_start_retry_attempts`, `_resolve_snap_backoff_multiplier`,
 `_is_snap_browser`, `_is_retryable_browser_connect_error`.
 
-These are pure and already have a working precedent:
-`test_worker_launch_args_redaction.py` tests `_build_chromium_launch_args`
-directly and passes. The repaired sandbox assertions belong here, in that style —
-not behind `_fetch_html`.
+These are **deterministic but not pure**: `_resolve_sandbox_enabled` reads
+`os.geteuid()` and `KINDLY_NODRIVER_SANDBOX`;
+`_resolve_browser_executable_path` reads four environment variables and then
+probes `PATH` via `shutil.which`. Testing them therefore means controlling
+ambient state explicitly — `monkeypatch.setenv`/`delenv` for the variables,
+`monkeypatch.setattr(shutil, "which", …)` for PATH probing, and
+`monkeypatch.setattr(os, "geteuid", …)` for identity, with the `hasattr` branch
+covered by deleting the attribute. `test_worker_launch_args_redaction.py` is the
+working precedent for the style.
+
+Only **flag and default resolution** moves here. Retry and cleanup orchestration
+stays at L3 (§5.2).
 
 **URL parsers.** `parse_stackexchange_url`, `parse_github_issue_url`,
 `parse_github_discussion_url`, `parse_wikipedia_url`, `parse_arxiv_url`.
 
 `resolve_page_content_markdown` tries these in order and takes the first that does
-not raise, so the load-bearing property is not about any single parser:
+not raise, so the load-bearing property is:
 
 > **No URL may be accepted by two parsers.**
 
 An overlap is a silent mis-route with no error anywhere. Hypothesis finds this;
-examples do not. Secondary per-parser properties: an accepted URL round-trips to
-the same identifiers; a rejected URL raises that parser's own error type, never a
-bare `Exception`.
+examples do not.
+
+There is **no inverse serializer**, so "round-trip" is not a property this suite
+can state. The per-parser properties are instead:
+
+- *Identifier preservation* — for a generated URL built from known identifiers
+  (site, question id, owner/repo/number, article title, arXiv id), the parser
+  returns exactly those identifiers.
+- *Stable rejection* — a rejected URL raises that parser's own error type, never
+  a bare `Exception`, and rejection does not depend on trailing slashes, case in
+  the scheme, or query-string order.
 
 **Environment resolvers.** The `_resolve_*` families in `server.py`,
 `chromium_pool.py` and `nodriver_worker.py`, plus `_parse_port_range`,
-`_resolve_transport_security` and `_cors_origin_regex`. Table-driven
-`parametrize` over unset, blank, valid, malformed, zero, negative and
-out-of-range. This is where malformed operator input silently becomes a wrong
-default.
+`_resolve_transport_security` and `_cors_origin_regex`. Table-driven over unset,
+blank, valid, malformed, zero, negative and out-of-range.
 
 **Markdown transforms.** `html_to_markdown`, `sanitize_markdown`,
 `extract_content_as_markdown`, `_apply_markdown_cap`, `_build_md_suffix_url`,
-against the corpus governed by §3.3. This converts most extraction testing from
-non-reproducible live checks into deterministic millisecond tests.
+against the corpus in §3.3.
 
 **Text accumulators.** `_append_tail_text` and the encoding-cookie helpers in
-`nodriver_worker.py`. Pure, cheap to cover exhaustively, currently covered by
-nothing that runs.
+`nodriver_worker.py`.
 
 ### 3.2 Validation by mutation testing
 
-Line coverage proves a line ran, not that a test would fail if it broke. For the
-modules above, `mutmut` is the measure: it mutates the source and reports which
-mutants survive.
+Line coverage proves a line ran, not that a test would fail if it broke. `mutmut`
+mutates the source and reports surviving mutants.
 
-Scope it to the pure-logic modules (`utils/diagnostics.py`, the `*_url` parsers,
-the `_resolve_*` and launch-arg families). Mutating `scrape/` subprocess plumbing
-would burn hours on code L1 does not own.
+Scope: the logic modules above (`utils/diagnostics.py`, the `*_url` parsers, the
+`_resolve_*` and launch-arg families). Not `scrape/` plumbing, which L1 does not
+own.
 
 **Constraint, confirmed against mutmut's documentation:** mutmut requires `fork()`
-support, so on Windows it runs only under WSL. Since this repo is developed on
-Windows, mutation runs live in Linux CI, never in the local edit-test loop.
-Surviving mutants are a review queue, not a gate.
+support, so on Windows it runs only under WSL. Mutation runs live in Linux CI,
+never in the local edit-test loop. Surviving mutants are a review queue, not a
+gate.
 
 ### 3.3 HTML corpus governance
 
-The corpus lives in `tests/corpus/html/` and is the input to every extraction
-test. Without rules it rots into a liability, so:
+`tests/corpus/html/` is the input to every extraction test.
 
 - **Two tiers.** Small handcrafted fragments for individual transformations
-  (a table, a code block, nested lists, an entity edge case), plus a limited set
-  of sanitized real-page snapshots for whole-document behaviour. Handcrafted
-  fixtures carry the bulk of the assertions; snapshots exist to catch structural
-  surprises.
+  (a table, a code block, nested lists, an entity edge case) carry the bulk of
+  assertions; a limited set of sanitized real-page snapshots covers
+  whole-document behaviour.
 - **Provenance and licensing.** Each snapshot has a sidecar `.meta.json` naming
-  the source URL, capture date, and licence or rationale for inclusion. Do not
-  snapshot pages whose terms forbid redistribution; prefer permissively licensed
-  or project-owned pages.
+  source URL, capture date, and licence or rationale. Do not snapshot pages whose
+  terms forbid redistribution.
 - **Sanitization before commit.** Strip cookies, tokens, session identifiers,
-  personal data, analytics and third-party script bodies. A snapshot is a
-  committed artefact, so treat it as published.
-- **Size cap.** 200 KB per snapshot; trim to the region under test. Anything
-  larger is a sign the fixture should be a handcrafted fragment instead.
-- **Assertion style.** Structural assertions by default (headings preserved, code
-  fences intact, no raw HTML left, length within the cap). Golden-file matching
-  only for the small handcrafted fragments, where a diff is readable.
-- **Refresh.** Snapshots are refreshed only when a live canary (§6) fails and
-  shows the real page changed shape. Refresh is a reviewed commit that states
-  what changed, never an automatic overwrite.
+  personal data, analytics and third-party script bodies. A committed snapshot is
+  published.
+- **Size cap.** 200 KB per snapshot, trimmed to the region under test.
+- **Assertion style.** Structural by default (headings preserved, code fences
+  intact, no raw HTML left, length within cap). Golden-file matching only for the
+  small handcrafted fragments, where a diff is readable.
+- **When snapshots are added or refreshed.** Three triggers, all reviewed commits
+  stating what changed: a reported extraction regression (add the page that
+  broke); a deliberate extractor change (update the affected expectations in the
+  same PR); a live canary failure showing a real page changed shape. Never an
+  automatic overwrite.
 
 ---
 
@@ -231,30 +216,47 @@ test. Without rules it rots into a liability, so:
 
 The three in §1.3.
 
-### 4.2 The MCP tool schema
+### 4.2 The MCP tool surface
 
-The JSON Schema FastMCP generates from the `web_search` and `get_content`
-signatures is this server's public API. Renaming a parameter or changing a type
-breaks every client, and nothing currently notices. It is reachable in-process:
+Three distinct things are often conflated here. They need separate tests because
+only the first is what clients actually receive.
 
-```python
-tools = await mcp.list_tools()
-# web_search -> properties {'num_results', 'query'}, required ['query']
-# get_content -> properties {'url'},                 required ['url']
+**(a) The generated tool schema — what clients bind to.** Reachable via
+`await mcp.list_tools()`:
+
+```
+web_search  -> properties {'num_results', 'query'}, required ['query']
+get_content -> properties {'url'},                  required ['url']
 ```
 
-A naive golden file is wrong in both directions at once: it churns whenever an
-allowed SDK release (`mcp>=1.25,<2`) reorders keys or rewrites a generated
-description, and it pins only inputs while saying nothing about results. So:
+**`outputSchema` is `null` for both tools** (verified). Both are annotated
+`-> dict`, so FastMCP derives no result schema and clients receive none. A test
+asserting `WebSearchResponse` structure from `list_tools()` would assert
+something that does not exist.
 
-- **Normalize before comparing.** Sort keys, drop generated `title` fields, and
-  compare descriptions by presence rather than exact text.
-- **Assert semantics, not bytes.** Parameter names, JSON types, required-ness,
-  defaults, the declared result shape (`WebSearchResponse`, `GetContentResponse`)
-  and the error representation.
-- **Run against both ends of the supported range** — the minimum (`1.25.0`) and
-  the newest release the specifier allows — so a schema change introduced by an
-  SDK upgrade fails here rather than at a user.
+Assert here: parameter names, JSON types, required-ness, defaults, descriptions
+present (not their exact text), and — as a deliberate, reviewed fact —
+`outputSchema is None`. That last assertion is what will fail the day someone
+changes the annotations, which is the point.
+
+**(b) The Pydantic models — an internal shape.** `WebSearchResponse`,
+`GetContentResponse` and `WebSearchResult` get their own `model_json_schema()`
+tests. These are not exposed to clients today; testing them separately keeps that
+distinction visible.
+
+**(c) Runtime result validation.** Call each tool and validate the returned
+`dict` against the corresponding model. This is what actually ties (a) and (b)
+together at present.
+
+**Comparison hygiene for (a).** Normalize before comparing — sort keys, drop
+generated `title` fields, compare descriptions by presence — because the allowed
+SDK range (`mcp>=1.25,<2`) may reorder keys or rewrite generated text in a minor
+release. Run against the minimum (`1.25.0`) and the newest allowed release
+(§10.3).
+
+**Note for the owner:** annotating the tools with their response models would
+give clients a real `outputSchema`. That is a production API change with client
+impact, not a test change, and is listed in §13.
 
 ### 4.3 The parent ⇄ worker frame format
 
@@ -264,17 +266,16 @@ description, and it pins only inputs while saying nothing about results. So:
 KINDLY_DIAG {"stage": "...", "msg": "...", ...}
 ```
 
-**Test the live path, not the dead one.** `_split_worker_diagnostics`
-(`universal_html.py:123`) parses a whole captured stderr string and **has no
-callers anywhere in `src/` or `tests/`** — the production path streams instead,
-through `_read_stderr_stream` → `_consume_stderr_line`. A contract test aimed at
-`_split_worker_diagnostics` would exercise dead code. (That function is also a
-dead-code removal candidate; flagged here, not deleted by this document.)
+**Test the live path.** `_split_worker_diagnostics` (`universal_html.py:123`)
+parses a whole captured stderr string and **has no callers in `src/` or
+`tests/`**; production streams through `_read_stderr_stream` →
+`_consume_stderr_line`. That dead function is a removal candidate, flagged here
+rather than deleted by this document.
 
-Because the two sides ship from the same wheel this is an **internal protocol**,
-not an agreement between independently versioned parties. It still earns a
-contract test: the two sides are edited independently, and the format is the only
-thing holding them together.
+Both sides ship from the same wheel, so this is an **internal protocol**, not an
+agreement between independently versioned parties. It still earns a contract test
+because the two sides are edited independently and the format is all that holds
+them together.
 
 Extract the frame encoder and decoder into one place and test both directions:
 
@@ -282,148 +283,168 @@ Extract the frame encoder and decoder into one place and test both directions:
 - Streaming consumption handles fragmentation: a frame split across chunk
   boundaries, several frames in one chunk, CRLF endings, EOF with no trailing
   newline, and a multi-byte character split across chunks.
-- Malformed payloads are sampled and capped without raising, and non-`KINDLY_DIAG`
+- Malformed payloads are sampled and capped without raising; non-`KINDLY_DIAG`
   lines survive as human-readable stderr.
 - An oversized line is truncated rather than buffered without limit.
 
-**This contract would not have prevented the current outage.** The stale
-five-argument calls and the missing `_FakeProc.stdout` are unrelated to the frame
-format. It is worth having on its own merits; revision 1 credited it with a
-prevention it does not deliver.
-
 ### 4.4 Response-model invariants
 
-`page_content` is promised to be **always a string** by both the tool docstring
-and `models.py`, on every failure path — that promise is what lets clients skip
-null handling. `resolve_page_content_markdown` can return `None`, and both tools
-convert it. Assert the promise across each branch: timeout, handler exception,
-unsupported type, empty provider result.
+`page_content` is promised **always a string** by the tool docstring and
+`models.py`, on every failure path. `resolve_page_content_markdown` can return
+`None` and both tools convert it. Assert across each branch: timeout, handler
+exception, unsupported type, empty provider result.
 
 ### 4.5 Import/declaration agreement
 
-`tests/test_searxng_unit.py` imports `anyio`, which is declared nowhere. **The fix
-is to remove the import, not to declare the dependency** — see §10.1; migrating to
-pytest-native async removes every `anyio.run` wrapper in the suite. The
-declaration guard should then assert that test-only imports stay within the
-declared `dev` extra, so the next undeclared import is caught rather than
-retro-fitted.
+`tests/test_searxng_unit.py` imports `anyio`, declared nowhere. The fix is to
+remove the import during the async migration (§10.1), not to declare the
+dependency. The guard should then assert test-only imports stay within the
+declared `dev` extra.
 
 ---
 
-## 5. L3 — Subsystem tests against real infrastructure
+## 5. L3 — Subsystem tests
 
-Dozens of tests, not hundreds. Split by what infrastructure they actually need,
-because that determines where they can run (§10.3).
+Split by the infrastructure actually required, because that determines where they
+can run.
 
 ### 5.1 Server over a real socket — portable
 
-Start the server on an ephemeral port and drive it with `httpx`. Runs on Windows
-and Linux; needs no browser.
+Start the server on an ephemeral port and drive it with `httpx`. No browser, so
+this runs on Windows and Linux.
 
-| Configuration | Request | Expected |
+**Define one canonical valid request and vary exactly one security input per
+case.** A bare `POST /mcp` is not a valid MCP request: Streamable HTTP requires
+`Content-Type: application/json`, `Accept: application/json, text/event-stream`
+and a JSON-RPC body, and a protocol-level `400`/`406` is easily mistaken for the
+expected `403`/`421`. The fixture is a single well-formed `initialize` request;
+each case overrides one header.
+
+| Configuration | Varied input | Expected |
 |---|---|---|
-| default | `POST /mcp`, `Origin: https://evil.example` | `403` |
-| default | `POST /mcp`, non-loopback `Host` | `421` |
-| default | preflight from a foreign origin | no `Access-Control-Allow-Origin` |
-| default | preflight + `POST` from `http://localhost:3000` | `200`, origin echoed |
-| `FASTMCP_ALLOWED_HOSTS` set | `POST /mcp` by service name | `200` |
+| default | `Origin: https://evil.example` | `403` |
+| default | non-loopback `Host` | `421` |
+| default | preflight, foreign origin | no `Access-Control-Allow-Origin` |
+| default | preflight + `POST`, `http://localhost:3000` | `200`, origin echoed |
+| `FASTMCP_ALLOWED_HOSTS` set | `Host` = service name | `200` |
 | `FASTMCP_ALLOWED_HOSTS` set | loopback origin | `200` |
 | `FASTMCP_ALLOWED_HOSTS` set | foreign origin | `403` |
 | `--sse` | `GET /sse` / `GET /mcp` | stream held open / `404` |
 
-### 5.2 Worker process lifecycle — portable
+A control case with no overrides must return `200`, so a protocol regression
+fails visibly rather than masquerading as a security result.
 
-Spawn, stream, heartbeat, timeout and process-tree termination, using a **real
-child process**: a small fixture script that emits known frames on demand and can
-be told to hang. No Chromium, so this runs on both OSes — which is the point,
-since process handling is where Windows and POSIX differ most.
+### 5.2 Worker process lifecycle and orchestration — portable
 
-Cases: a clean run returns the child's **HTML** output and parsed diagnostics
+Two groups, both needing the seam in §11.2, neither needing Chromium.
+
+**Lifecycle**, against a real fixture child that emits known frames on demand and
+can be told to hang: a clean run returns the child's **HTML** output
 (`fetch_html_via_nodriver` returns rendered HTML — Markdown conversion happens
-later, in `load_url_as_markdown`); a hanging child is killed at the deadline; a
-killed parent leaves no orphaned child; a child writing garbage to stderr does not
-crash the parent; a child exiting non-zero surfaces a readable error.
+later in `load_url_as_markdown`) plus parsed diagnostics; a hanging child is
+killed at the deadline; a killed parent leaves no orphaned child; garbage on
+stderr does not crash the parent; a non-zero exit surfaces a readable error.
 
-These tests **complement** the L1 argument tests in §3.1 rather than replacing
-them. A generic fixture child cannot assert which Chromium flags were chosen; a
-pure function test cannot assert that a process tree died. Both are needed.
+**Orchestration**, preserved from the stale sandbox tests: a retryable connect
+error is retried up to the configured attempts; each failed attempt is
+terminated before the next; a non-retryable error is not retried; the profile
+directory is cleaned up with `ignore_cleanup_errors`. These use narrow doubles
+around `_fetch_html`, built from the real interface (autospec) so a signature
+change fails loudly.
+
+These complement the L1 flag tests of §3.1 — a fixture child cannot assert which
+Chromium flags were chosen, and a resolver test cannot assert a process tree
+died.
 
 ### 5.3 Chromium-specific — Linux container
 
-`ChromiumPool`: slot acquisition and release, reuse when enabled
+`ChromiumPool`: slot acquisition and release, reuse
 (`KINDLY_NODRIVER_REUSE_BROWSER`), pool sizing
 (`KINDLY_NODRIVER_BROWSER_POOL_SIZE`), port allocation within
 `KINDLY_NODRIVER_PORT_RANGE`, acquire timeout under contention
-(`KINDLY_NODRIVER_ACQUIRE_TIMEOUT_SECONDS`), concurrent acquisition, and shutdown.
-Plus one real end-to-end fetch through `_fetch_html` against a locally served
-page.
+(`KINDLY_NODRIVER_ACQUIRE_TIMEOUT_SECONDS`), concurrent acquisition, shutdown.
+Plus one real fetch through `_fetch_html` against a locally served page.
 
 ### 5.4 Anti-flake and cleanup requirements
 
-Tests that deliberately hang or kill process trees are the likeliest source of
-flake and of leaked resources. Every test in §5.2 and §5.3 must:
+Every test in §5.2 and §5.3 must:
 
-- Use a **readiness handshake**, never a sleep — wait for a known line on stdout
-  or a port to accept a connection, with a timeout.
-- Allocate **ephemeral ports** and **isolated profile directories** per test; no
-  fixed ports, no shared user-data dir.
-- Carry a **per-test timeout** shorter than the job timeout, so a hang fails
-  legibly instead of stalling CI.
+- Use a **readiness handshake**, never a sleep — wait for a known line or an
+  accepting port, with a timeout.
+- Allocate **ephemeral ports** and **isolated profile directories** per test.
+- Carry a **per-test timeout** shorter than the job timeout.
 - Clean up in `finally`, keyed on **the PIDs this test spawned**. "No live
-  browsers" means those specific children and their descendants are gone —
-  never a scan for processes named `chrome`, which is vulnerable to PID reuse and
-  would kill a developer's own browser.
-- Capture and attach child stdout/stderr on failure; a dead child with no output
-  is undiagnosable.
+  browsers" means those children and their descendants are gone — never a scan
+  for processes named `chrome`, which is vulnerable to PID reuse and would kill a
+  developer's own browser.
+- Capture and attach child stdout/stderr on failure.
 
 ---
 
 ## 6. L4 — Product tests
 
-**Deterministic MCP session — every PR, not nightly.** Build the wheel, install
-it, and drive the real console entrypoint (`kindly-web-search-mcp-server
-start-mcp-server` and `mcp-web-search --http`) with the SDK's own client:
-`initialize` → `tools/list` → `tools/call`, with a stubbed provider. Because it is
-deterministic it belongs in the per-PR gate, and running it from an installed
-wheel also covers the packaging and entrypoint path that nothing else touches.
+### 6.1 Deterministic MCP session — every PR
 
-Being stubbed, it proves transport, packaging and protocol conformance — **not**
-the provider → resolver → Chromium path. That is a separate, separately named
-canary:
+Build the wheel, install it, and drive the real console entrypoints
+(`kindly-web-search-mcp-server start-mcp-server`, `mcp-web-search --http`) with
+the SDK's own client: `initialize` → `tools/list` → `tools/call`. Being
+deterministic it belongs in the per-PR gate, and running from an installed wheel
+covers packaging and entrypoints, which nothing else touches.
 
-**Live canaries — nightly, gated.** One real query per configured provider
-(shape and non-emptiness only, never exact content), and `get_content` against a
-small fixed URL list with thresholded assertions: non-empty, above a minimum
-length, contains an expected anchor phrase, and is not the deterministic failure
-note. Real pages change, so an equality assertion here is a flake generator. A
-canary failure is the trigger to refresh the corpus (§3.3).
+**Stubbing across a process boundary.** The server runs in a separate process, so
+`monkeypatch` cannot reach it and there is no provider-injection API. The
+mechanism is **configuration, not patching**: stand up a local HTTP server that
+implements the SearXNG response contract, and start the child with
+`SEARXNG_BASE_URL` pointing at it and `SERPER_API_KEY`, `SERPBASE_API_KEY` and
+`TAVILY_API_KEY` cleared, so SearXNG wins provider selection. `search_searxng` is
+configured entirely by URL, which makes it the natural seam.
 
-**One gate, not two.** Live tests are split today across `KINDLY_RUN_LIVE_TESTS`
+**Do not add a production "test provider" hook.** An unrestricted injection point
+in shipped code is a larger risk than the test is worth, on a server that is
+already unauthenticated.
+
+Stubbed, this proves transport, packaging and protocol conformance — **not** the
+provider → resolver → Chromium path. That is §6.2.
+
+### 6.2 Live canaries — nightly, gated
+
+**Provider canary.** One real query per credentialed provider, asserting shape and
+non-emptiness, never exact content. It must run through the **public routing
+surface** — at minimum `search_web`, preferably the `web_search` tool — so it
+exercises `PROVIDERS` selection and the tool wrapper. The existing
+`test_serper_live.py` calls Serper directly with `urllib.request` and therefore
+proves only that the vendor is up; it does not cover routing and must be
+rewritten or supplemented.
+
+**Extraction canary.** `get_content` against a small fixed URL list, thresholded:
+non-empty, above a minimum length, contains an expected anchor phrase, is not the
+deterministic failure note. Real pages change, so equality assertions here
+generate flakes. A failure is the trigger to refresh the corpus (§3.3).
+
+### 6.3 Gating
+
+**One gate.** Live tests are split today across `KINDLY_RUN_LIVE_TESTS`
 (`test_live_fetch_urls.py`) and `RUN_LIVE_TESTS` (`test_serper_live.py`).
-Standardize on **`KINDLY_RUN_LIVE_TESTS=1`** plus `@pytest.mark.live`.
+Standardize on **`KINDLY_RUN_LIVE_TESTS=1`** plus `@pytest.mark.live`. Every
+nightly job must set it explicitly in its `env:` block; selecting the marker
+alone leaves the tests skipping.
 
-**A skipped live suite is a failed live suite.** A nightly job where every test
-skips for want of a credential is green and worthless. Therefore: one CI matrix
-job per intended provider and capability; each **enabled** job **fails** if its
-required secret is absent rather than skipping; the run reports skip counts; and a
-named owner is alerted when the scheduled workflow fails (§10.3).
+**A skipped live suite is a failed live suite.** One CI job per credentialed
+provider or capability; each **enabled** job asserts its required secret is
+present before collection and fails if it is missing; the run reports skip
+counts; a named owner is alerted on scheduled-workflow failure.
 
-**Credentials available today.** `SERPER_API_KEY` exists as a GitHub Actions
-secret. That is enough to enable two of the live jobs immediately:
+**Credentials available today.** `SERPER_API_KEY` exists as a repository Actions
+secret, enabling two jobs now:
 
-- **`live-serper`** — the provider canary for Serper, which is also the default
-  and first-priority provider in `PROVIDERS`, so it exercises the routing path
-  most installs take. Enabled now; fails if the secret is missing.
-- **`live-extraction`** — the `get_content` quality canary. This needs a browser
-  but **no provider credential at all**, because it fetches a URL directly
-  without going through search. It can be enabled now regardless of secrets, on
-  the Linux Chromium image.
+- **`live-serper`** — Serper is first in `PROVIDERS`, so this canary covers the
+  routing path most installs take.
+- **`live-extraction`** — needs a browser but **no provider credential**, because
+  `get_content` fetches a URL without going through search.
 
-SerpBase, Tavily, SearXNG and Sofya stay **out of the matrix** until their
-credentials exist, rather than sitting in it failing every night. Adding a
-credential is what adds the job — that keeps "a red nightly means something
-broke" true from day one. The matrix should be data-driven off the provider list
-so that adding a secret is the only step required.
+SerpBase, Tavily, SearXNG and Sofya stay **out of the matrix** until credentials
+exist, rather than sitting in it skipping green. Adding a secret is what adds the
+job.
 
 ---
 
@@ -431,42 +452,40 @@ so that adding a secret is the only step required.
 
 ### 7.1 Diagnostics must be sanitized at the boundary
 
-Revision 1 stated the invariant *no secret survives into diagnostics* but only
-proposed testing `mask_env_values`. That proves a helper, not the invariant.
-
 `Diagnostics.emit` and `emit_diagnostic` (`utils/diagnostics.py:133,151`) apply
-**no redaction at all** — only JSON serialization and a line-length cap. Callers
-pass raw data: `server.py` emits `{"url": url}` and `{"detail": full_detail}`
-where the detail is unfiltered exception text. So `get_content("https://user:token@host/x")`
-places the credential verbatim in diagnostics.
+**no redaction** — only JSON serialization and a line-length cap. Callers pass
+raw data: `server.py` emits `{"url": url}` and `{"detail": full_detail}` where
+the detail is unfiltered exception text. So
+`get_content("https://user:token@host/x")` places the credential verbatim in
+diagnostics.
 
-This is an egress path, not merely a logging one: `Diagnostics.entries` is
-returned to the caller in `GetContentResponse.diagnostics` and
-`WebSearchResult.diagnostics`. Unredacted values go back over the MCP wire.
+This is an **egress** path, not merely logging: `Diagnostics.entries` is returned
+to the caller in `GetContentResponse.diagnostics` and
+`WebSearchResult.diagnostics`.
 
-**Design requirement:** sanitize inside the serialization boundary, so every
-emission is covered regardless of caller discipline. Test the **emitted JSON**
-end to end, not the helper.
+**Sanitize before the entry is appended to `entries`, not merely before the
+stderr write.** `emit` appends to `self.entries` and then calls
+`emit_diagnostic`; sanitizing only inside the writer would clean stderr while
+leaving the raw value in the MCP response — the worse of the two paths. One
+sanitizing step at the top of `emit`, covering both consumers, is the
+requirement.
 
-The policy must state, and tests must cover:
+Test the **emitted JSON and the returned `entries`**, not the helper. Policy must
+state, and tests must cover:
 
-- URL userinfo (`user:pass@`), in both raw and percent-encoded form.
-- Credential-bearing query parameters (`?token=`, `?api_key=`, `?sig=`) — name
-  list, and what happens to an unrecognized parameter name.
-- Request and response headers, notably `Authorization`, `Cookie`, `Set-Cookie`.
+- URL userinfo (`user:pass@`), raw and percent-encoded.
+- Credential-bearing query parameters (`?token=`, `?api_key=`, `?sig=`) — the
+  name list, and the behaviour for an unrecognized name.
+- Request and response headers: `Authorization`, `Cookie`, `Set-Cookie`.
 - Exception messages and tracebacks, which routinely embed the failing URL.
 - Page-content samples (`sample_data`), which can contain anything.
-- Low-entropy secret values, where substring matching produces false positives —
-  the policy should say whether it redacts by key name, by pattern, or both.
+- Low-entropy secret values, where substring matching yields false positives —
+  the policy must say whether it redacts by key name, by pattern, or both.
 
-### 7.2 Outbound request policy — undefined, untested
+### 7.2 Outbound request policy — undefined
 
 The server is unauthenticated and `get_content` fetches **any URL the caller
-supplies, from wherever the server runs**. Revision 1 covered inbound protections
-(DNS rebinding, CORS) and said nothing about outbound. That is the larger half of
-the exposure and the one PR #50 flagged as the reason inbound defaults mattered.
-
-Nothing in the code currently restricts:
+supplies, from wherever the server runs**. Nothing currently restricts:
 
 - Non-HTTP schemes — `file:`, `data:`, `ftp:`, `chrome:`.
 - Loopback, RFC1918, link-local, IPv6 unique-local, and cloud metadata addresses
@@ -476,12 +495,8 @@ Nothing in the code currently restricts:
 - Proxy interaction, where `KINDLY_CHROME_PROXY` may reach networks the host
   cannot.
 
-**This document cannot decide the policy** — see §13. Private-network fetching may
-well be intentional, since a self-hosted SearXNG and internal documentation are
-plausible targets. What is not acceptable is that it is neither stated nor tested.
-
-Once the policy is stated, tests follow at three boundaries, and the shape is the
-same whichever way the decision goes:
+**The policy is a product decision** (§13). Once stated, tests follow at three
+boundaries and the shape is the same either way:
 
 1. **URL validation** — L1, table-driven over scheme and address class.
 2. **Redirect handling** — L3, a local server issuing a public→private redirect.
@@ -490,88 +505,86 @@ same whichever way the decision goes:
 
 ---
 
-## 8. Restoring the baseline
+## 8. Workstreams, in order
 
-**This is the first workstream and it blocks the rest.**
+**A. Restore green.** Blocks everything else, and is done with *minimal* edits —
+no framework migration mixed in, so a failure means a stale test, not a
+conversion bug.
 
-1. **Measure the baseline on Linux** and record both platforms' numbers. The
-   POSIX figure in §1.1 is derived from source, not executed, and the design
-   should not rest on an unrun number.
-2. **Repair the 8 stale sandbox tests at the right layer.** Their assertions —
-   sandbox flags, root handling, executable discovery, retry counts, profile
-   cleanup — belong as L1 tests against `_build_chromium_launch_args`,
-   `_resolve_sandbox_enabled`, `_resolve_browser_executable_path` and
-   `_resolve_start_retry_attempts`, in the style of the passing
-   `test_worker_launch_args_redaction.py`. Where an assertion genuinely needs the
-   coroutine, use an autospecced double so a signature change fails loudly
-   instead of silently. Do **not** replace them with a real-process test: a
-   generic child cannot assert which flags Chromium received.
-3. **Repair the 3 stale loader tests.** They assert command arguments and
-   environment propagation, which a real child process also cannot verify. Fix
-   the fake by building it from the real `asyncio.subprocess.Process` interface —
-   a shared fixture builder or an autospecced double — so it cannot drift again.
-4. **Rewrite the concurrency test OS-neutral; do not delete it.** Only the
-   Windows-specific expected default is obsolete. The same method still covers
-   explicit values, malformed input, zero and negative — real requirements with no
-   other home. Replace it with one parameterized test over defaulting,
-   validation, clamping and `num_results` limiting, with the `os.name` patching
-   removed.
-5. **Add the real-process lifecycle tests of §5.2** as new coverage, alongside the
-   repaired tests rather than instead of them.
-6. **Make green enforceable** — §10.3.
+1. Measure the baseline on Linux; record both platforms.
+2. Split the 8 stale sandbox tests: flag and default resolution moves to L1
+   (§3.1); retry and cleanup orchestration stays as narrow autospecced tests
+   around `_fetch_html` (§5.2).
+3. Repair the 3 stale loader tests. They assert command arguments and environment
+   propagation, which a real child cannot verify; rebuild the fake from the real
+   `asyncio.subprocess.Process` interface via a shared builder or autospec so it
+   cannot drift again.
+4. Rewrite the concurrency test OS-neutral. Only the Windows default is obsolete;
+   its explicit-value, malformed, zero and negative cases are real requirements
+   with no other home. One parameterized test over defaulting, validation,
+   clamping and `num_results` limiting, with the `os.name` patching removed.
+
+**B. Add the production seams** in §11 — the test design depends on them.
+
+**C. New coverage,** in risk order (§9): security (§7), then the untested worker
+lifecycle and `ChromiumPool`, then contracts, then providers and loaders.
+
+**D. Async migration.** Convert `IsolatedAsyncioTestCase` and `anyio.run`
+wrappers to pytest-native async, file by file, **after** A. Mixing a broad
+mechanical conversion into baseline restoration would blend framework failures
+with stale-test repairs and make both harder to judge.
+
+**E. CI and enforcement** (§10.3), including branch protection.
 
 ---
 
 ## 9. Risk-to-test matrix
 
-Revision 1 specified parsers, diagnostics and Chromium in detail and left most of
-the product unaddressed. Every source subsystem and public behaviour gets a row,
-a layer and a CI job. **Owner is deliberately blank** — see §13.
+The **Today** column describes *test coverage*, not implementation status.
+**Owner** is intentionally blank (§13).
 
 | Subsystem / behaviour | Today | Target layer | CI job | Owner |
 |---|---|---|---|---|
-| Provider routing, strict order, no fallback | good (`test_search_router.py`) | L1 | push | |
-| Serper / SerpBase / Tavily / SearXNG / Sofya parsing | partial — unit tests exist per provider | L1 | push | |
-| Provider errors: 401, 429, malformed JSON, timeout, empty | **gap** | L1 (`httpx.MockTransport`) | push | |
-| Provider registry ⇄ docs | good | L2 | push | |
-| StackExchange / GitHub issues / GitHub discussions / Wikipedia loaders | partial — parsing covered, failure paths thin | L1 + L2 | push | |
-| arXiv + PDF extraction | partial | L1 | push | |
-| Optional `pdf-advanced` extras present *and* absent | **gap** | L2 | push (both installs) | |
-| Resolver routing and per-handler fallback | partial | L1 | push | |
-| Markdown transforms | partial | L1 + corpus | push | |
-| URL parser mutual exclusivity | **gap** | L1 property | push | |
-| Env resolvers across all three modules | partial | L1 | push | |
-| Diagnostics redaction at the emit boundary | **gap** (§7.1) | L1 + L2 | push | |
-| Outbound URL policy | **gap, undefined** (§7.2) | L1 + L3 | push + PR | |
-| Inbound transport security, CORS, SSE | good (PR #50) | L1 + L3 | push + PR | |
-| MCP tool schema stability | **gap** | L2 | push | |
-| Parent ⇄ worker frame format | **gap** | L2 | push | |
-| Worker process lifecycle and cleanup | **gap — stale** | L3 portable | PR | |
-| ChromiumPool | **gap — no tests** | L3 Chromium | PR | |
-| CLI entrypoints and `--` forwarding | good (`test_uvx_cli.py`) | L1 | push | |
-| Wheel build, install, console entrypoints | **gap** | L4 | PR | |
-| Documented `uvx --from git+…` path | **gap** | L4 | nightly | |
-| Dependency bounds | good | L2 | push | |
-| Tool-call cancellation and partial results | **gap** | L3 | PR | |
-| Output size limits and truncation | partial | L1 | push | |
-| Live Serper reachability | gated | L4 | `live-serper` (secret available) | |
-| Live SerpBase / Tavily / SearXNG / Sofya | gated | L4 | not enabled — no credential yet | |
-| Live extraction quality | gated | L4 | `live-extraction` (no secret needed) | |
+| Provider routing, strict order, no fallback | covered | L1 | `fast` | |
+| Serper / SerpBase / Tavily / SearXNG / Sofya parsing | partial | L1 | `fast` | |
+| Provider errors: 401, 429, malformed JSON, timeout, empty | gap | L1 (`httpx.MockTransport`) | `fast` | |
+| Provider registry ⇄ docs | covered | L2 | `fast` | |
+| StackExchange / GitHub issues / GitHub discussions / Wikipedia | partial — parsing covered, failure paths thin | L1 + L2 | `fast` | |
+| arXiv + PDF extraction | partial | L1 | `fast` | |
+| `pdf-advanced` extras present *and* absent | gap | L2 | `fast` (both installs) | |
+| Resolver routing and per-handler fallback | partial | L1 | `fast` | |
+| Markdown transforms | partial | L1 + corpus | `fast` | |
+| URL parser mutual exclusivity | gap | L1 property | `fast` | |
+| Env resolvers across all three modules | partial | L1 | `fast` | |
+| Diagnostics redaction at the emit boundary | gap (§7.1) | L1 + L2 | `fast` | |
+| Outbound URL policy | gap, undefined (§7.2) | L1 + L3 | `fast` + `subsystem` | |
+| Inbound transport security, CORS, SSE | implemented in PR #50; **automated L3 gap** | L1 + L3 | `fast` + `subsystem` | |
+| MCP tool schema stability | gap | L2 | `fast` | |
+| Parent ⇄ worker frame format | gap | L2 | `fast` | |
+| Worker lifecycle and cleanup | gap — stale | L3 portable | `subsystem` | |
+| Worker retry/termination orchestration | gap — stale | L3 portable | `subsystem` | |
+| ChromiumPool | gap — no tests | L3 Chromium | `chromium` | |
+| CLI entrypoints and `--` forwarding | covered | L1 | `fast` | |
+| Wheel build, install, console entrypoints | gap | L4 | `package` | |
+| Documented `uvx --from git+…` path | gap | L4 | nightly | |
+| Dependency bounds | covered | L2 | `fast` | |
+| Tool-call cancellation and partial results | gap | L3 | `subsystem` | |
+| Output size limits and truncation | partial | L1 | `fast` | |
+| Live Serper reachability via `search_web` | gap — existing test bypasses routing | L4 | `live-serper` | |
+| Live SerpBase / Tavily / SearXNG / Sofya | not enabled — no credential | L4 | — | |
+| Live extraction quality | gated | L4 | `live-extraction` | |
 
 ---
 
 ## 10. Tooling, configuration and CI
 
-### 10.1 Async direction — pick one
+### 10.1 Async direction
 
-The suite currently mixes `unittest.IsolatedAsyncioTestCase` with hand-rolled
-`anyio.run` wrappers. Adding `pytest-asyncio` on top of both would make three.
-
-**Standardize on `pytest-asyncio` with `asyncio_mode = "auto"`.** The project is
-pure asyncio, so the marker is noise. Migration removes every `anyio.run` wrapper
-and every `IsolatedAsyncioTestCase`, which is what lets `test_searxng_unit.py`
-stop importing `anyio` (§4.5) rather than the project declaring a dependency it
-does not otherwise want.
+The suite mixes `unittest.IsolatedAsyncioTestCase` with hand-rolled `anyio.run`
+wrappers. **Standardize on `pytest-asyncio` with `asyncio_mode = "auto"`** — the
+project is pure asyncio, so the marker is noise. Migration removes every
+`anyio.run` wrapper, which is what lets `test_searxng_unit.py` stop importing
+`anyio` (§4.5). Sequenced as workstream D, not during baseline restoration.
 
 ### 10.2 Dependencies and version policy
 
@@ -580,93 +593,116 @@ does not otherwise want.
 | `pytest` | `>=9,<10` | Runner |
 | `pytest-asyncio` | `>=1.4,<2` | Async tests, `asyncio_mode = "auto"` |
 | `hypothesis` | `>=6.167,<7` | Properties in §3.1 |
-| `coverage` | `>=7,<8` | Signal and diff gate (§10.4) |
+| `coverage` | `>=7,<8` | Branch coverage and the ratchet (§10.4) |
+| `diff-cover` | `>=9,<10` | Diff coverage on changed lines |
 | `mutmut` | `>=3,<4` | L1 validation; **needs `fork()` — Linux/WSL only** |
 | `ruff` | `>=0.6,<1` | Lint |
 | `packaging` | `>=24` | Dependency guard |
 
-Bounds, not "current". Upper bounds exist because this project has twice been
-broken by an unbounded dependency, which is why `test_dependency_constraints.py`
-exists. **Update policy:** bounds are raised deliberately in a PR that runs the
-full suite against the new version; Dependabot may propose, never auto-merge.
-Where a runtime dependency has a supported range — `mcp>=1.25,<2` — CI tests the
-**minimum and the newest allowed**, since testing only one end leaves the other
-unverified for users.
+Bounds, not "current": this project has twice been broken by an unbounded
+dependency, which is why `test_dependency_constraints.py` exists. **Update
+policy:** bounds are raised in a PR that runs the full suite against the new
+version; Dependabot may propose, never auto-merge.
 
 **No HTTP-mocking library.** `httpx.MockTransport` is already the pattern in
-`test_searxng_unit.py:57`, is built into a dependency the project already has, and
-covers every case here.
+`test_searxng_unit.py:57` and covers every case here.
 
 ### 10.3 CI
 
-There is no CI. This is the first pipeline.
+| Job | Selection | Matrix | Platform |
+|---|---|---|---|
+| `fast` | `-m "not live and not subsystem and not chromium and not package"` | Python 3.13, 3.14 × mcp {min, max} | Windows + Linux |
+| `fast-extras` | same, with `pdf-advanced` installed | Python 3.13 only | Linux |
+| `subsystem` | `-m "subsystem and not chromium and not live"` | Python 3.13 | Windows + Linux |
+| `chromium` | `-m "chromium and not live"` | Python 3.13 | Linux container |
+| `package` | `-m package`, wheel build + install (§6.1) | Python 3.13 | Linux |
+| `live-serper` (nightly) | `-m "live and serper"` | — | Linux |
+| `live-extraction` (nightly) | `-m "live and extraction"` | — | Linux container |
+| `mutation` (nightly) | `mutmut run` over the §3.2 scope | — | Linux |
 
-| Job | Selection | Platform |
-|---|---|---|
-| `fast` | `-m "not live and not subsystem and not chromium"` | Windows **and** Linux |
-| `subsystem` | `-m "subsystem and not chromium"` | Windows **and** Linux |
-| `chromium` | `-m chromium` | Linux container |
-| `package` | wheel build + install + §6 deterministic session | Linux |
-| `live-serper` (nightly) | `-m "live and serper"`, needs `SERPER_API_KEY` | Linux |
-| `live-extraction` (nightly) | `-m "live and extraction"`, needs a browser, no secret | Linux container |
-| `mutation` (nightly) | `mutmut run` over the §3.2 scope | Linux |
+`fast`, `fast-extras`, `subsystem`, `chromium` and `package` run on every push
+and PR.
 
-`fast`, `subsystem`, `chromium` and `package` run on every push and PR.
+**Matrix rationale and cost control.** `requires-python = ">=3.13"`, and
+`pdf-advanced` is constrained to `python_version < '3.14'`, so 3.13 and 3.14
+behave differently and both must be covered. `pdf-advanced` gets its own job
+rather than a matrix axis so the absent-extras path — the default install — is
+what the main matrix exercises. The `mcp` {min, max} axis applies only to `fast`,
+since §4.2's schema assertions are the only thing sensitive to SDK version;
+running it across every job would multiply cost for no signal. Windows is limited
+to `fast` and `subsystem`.
 
-**Secrets in CI.** `SERPER_API_KEY` is configured as a repository Actions secret,
-which is what enables `live-serper`. Two rules govern its use:
+**Marker exclusions must be explicit and mutually exclusive.** `live-extraction`
+needs a browser, so it would naturally carry `chromium` too — and the PR
+`chromium` job would then run a billable network test on every PR. Every job's
+selection therefore excludes `live` unless it is a live job, and `package` is
+excluded from `fast` so installed-wheel tests are never collected against the
+source checkout. Installed-wheel tests live in `tests/package/` as well as
+carrying the marker, so a mis-set marker cannot silently include them.
 
-- **Never expose it to untrusted code.** Secrets are not available to
-  `pull_request` runs from forks, and that is the correct default — PR #50 came
-  from a fork. The live jobs run on `schedule` and `workflow_dispatch` against
-  `main`, never on fork PRs. Do not "fix" a fork PR's missing secret by switching
-  to `pull_request_target`; that would run untrusted code with the key in scope.
-- **Fail loudly when it is missing on an enabled job.** `live-serper` asserts the
-  secret is present before collecting tests, so a rotated-and-not-updated key
-  produces a red nightly rather than a green skip.
+**Marker registration does not prove a marker is used.** `--strict-markers`
+rejects *unknown* marks applied to tests; it says nothing about a job selecting a
+marker no test carries. Verified: `pytest -m nonexistent_marker` on a populated
+file reports "7 deselected" and **exits 0**. A specialized job that selects a
+typo'd marker would therefore pass green while running nothing. Every
+marker-selected job must assert a **minimum collected count** — e.g. a
+`--collect-only` count check, or `pytest ... || [ $? -ne 5 ]` inverted to *fail*
+on zero — as an explicit step.
 
-The key is billable. Keep the nightly canary to one query per provider (§6);
-breadth belongs in the mocked L1 provider tests, which cost nothing.
+**Secrets.** `SERPER_API_KEY` is a repository Actions secret.
 
-**The Windows rationale now matches the allocation.** Revision 1 justified
-Windows by subprocess divergence while placing every subprocess test in a
-Linux-only tier, so Windows ran only tests with no subprocesses. Splitting L3
-into portable (§5.2) and Chromium-specific (§5.3) is what makes the claim true:
-the portable process-lifecycle tests run on both platforms, which is where
-`_terminate_process_tree` and `create_subprocess_exec` actually differ.
+- **Never expose it to untrusted code.** Secrets are withheld from `pull_request`
+  runs from forks, which get a read-only `GITHUB_TOKEN` — the correct default,
+  and relevant here because PR #50 came from a fork. Live jobs run on `schedule`
+  and `workflow_dispatch` against `main`, never on fork PRs. Do not "fix" this
+  with `pull_request_target`; that is the documented "pwn request" pattern.
+- **Fail loudly when missing.** `live-serper` asserts the secret is present
+  before collection, so a rotated-and-not-updated key gives a red nightly rather
+  than a green skip.
+- **The key is billable.** One query per provider per night (§6.2); breadth
+  belongs in the mocked L1 provider tests, which cost nothing.
 
-**Marker expressions must be explicit.** Marking a test does not exclude it from a
-plain `pytest` run. Each job names its `-m` expression, and `addopts` carries
-`--strict-markers` so a typo'd marker fails instead of silently matching nothing.
+**"Green" is a gate only when enforced.** A passing workflow is not a gate until
+`fast`, `fast-extras`, `subsystem`, `chromium` and `package` are **required
+checks** under branch protection on `main`.
 
-**"Green" is only a gate once it is enforced.** A passing workflow is not a gate
-until `fast`, `subsystem`, `chromium` and `package` are **required checks** under
-branch protection on `main`. Configuring that is part of this workstream, not an
-afterthought.
+### 10.4 Coverage
 
-### 10.4 On coverage
+No absolute percentage target: a percentage rewards executing lines and can be
+satisfied by deleting tests. The controls are:
 
-Revision 1 set no coverage control at all and justified it with an argument that
-does not hold: it claimed the stale tests "executed plenty of lines while
-asserting nothing". They did not — a `TypeError` on a missing keyword argument
-raises *before* `_fetch_html` runs, so coverage would have shown that function
-going dark. Coverage would have caught this.
+- **Branch coverage** (`branch = true`), reported every run.
+- **A no-regression ratchet**, operationally defined below.
+- **Diff coverage** on changed lines per PR, via `diff-cover`, which puts the
+  requirement where a reviewer can act on it.
+- **Mutation testing** (§3.2) where correctness is the product.
 
-The real objection is only to an absolute percentage target, which rewards
-executing lines and can be satisfied by deleting tests. The controls are
-therefore:
+**Ratchet definition.** Ambiguity here makes the control unenforceable, so:
 
-- **Branch coverage, reported on every run.**
-- **A no-regression ratchet:** total coverage may not fall between commits. This
-  is what stops a suite from going green by deletion, which `--strict-markers` and
-  a passing run do not.
-- **Diff coverage on changed lines** for every PR, which puts the requirement
-  where a reviewer can act on it.
-- **Mutation testing (§3.2)** for the modules where correctness is the product.
+- **Combination.** `coverage combine` over `fast` (Linux, Python 3.13, mcp max),
+  `subsystem` (Linux) and `chromium`. Windows and the matrix's other axes are
+  reported but excluded from the ratchet, so a platform-conditional branch cannot
+  ratchet the number up and then fail another job.
+- **Comparison.** Head is measured in the same workflow run as a fresh
+  measurement of the merge-base, not against a stored number, so both sides use
+  identical configuration and tool versions.
+- **Path normalization.** `[paths]` in `.coveragerc` maps Windows and Linux
+  checkouts to one root; without it combined data double-counts.
+- **Precision and tolerance.** Two decimal places; a drop of more than 0.10
+  percentage points fails. The tolerance absorbs measurement noise from
+  ordering, not real deletions.
+- **Exclusions.** `tests/` itself, `if TYPE_CHECKING:` blocks, and `__main__`
+  guards. Nothing else — in particular, no blanket exclusion of `scrape/`.
 
-No absolute per-module minimum is set — see §13.
+**What coverage would and would not have caught.** The stale tests raise
+`TypeError` before `_fetch_html`'s body runs, so a coverage *report* would show
+that function dark to anyone reading it. A global ratchet is a weaker instrument:
+losing eleven tests' worth of lines might or might not exceed a whole-project
+threshold. Coverage is a diagnostic that would have made this visible on
+inspection; the ratchet is what makes silent deletion fail. Neither replaces the
+other.
 
-### 10.5 First pytest configuration
+### 10.5 pytest configuration
 
 ```toml
 [tool.pytest.ini_options]
@@ -677,107 +713,129 @@ markers = [
     "live: hits the real network; needs KINDLY_RUN_LIVE_TESTS=1",
     "subsystem: needs a real socket or child process; portable",
     "chromium: needs a real browser; Linux container only",
+    "package: runs against an installed wheel, not the source tree",
     "serper: live test requiring SERPER_API_KEY",
-    "extraction: live content-extraction canary; browser but no credential",
+    "extraction: live content-extraction canary; browser, no credential",
     "slow: over a second",
 ]
 ```
 
-`serper` and `extraction` are registered because §10.3 selects on them
-(`-m "live and serper"`). Under `--strict-markers` an unregistered marker is an
-error, which is the behaviour we want — a job selecting a marker that nobody
-applied would otherwise run zero tests and pass.
+---
+
+## 11. Production seams this design requires
+
+This test design cannot be implemented against the code as it stands. Three
+changes are prerequisites, listed here so they are scheduled rather than
+improvised as monkeypatches during implementation.
+
+### 11.1 Provider selection must be reachable by configuration
+
+Needed by §6.1. No change to shipped code is required — `SEARXNG_BASE_URL` plus
+cleared higher-priority variables is sufficient, because `search_searxng` is
+configured entirely by URL. **The requirement is that this stays true**: any
+future provider-selection change must preserve a URL-configurable provider, or
+§6.1 loses its only cross-process seam. Recorded as a constraint, not a code
+change.
+
+### 11.2 The worker command must be injectable
+
+Needed by §5.2. `fetch_html_via_nodriver` hardcodes its child command
+(`universal_html.py:550`):
+
+```python
+base_cmd = [executable, "-m", "kindly_web_search_mcp_server.scrape.nodriver_worker", ...]
+```
+
+There is no way to point it at a fixture child. Extract the command construction
+into a builder used by production, and have the spawn path accept an
+already-built command. Tests then pass a fixture command through the real spawn,
+stream and termination code, while production keeps one builder that L1 can
+assert on directly.
+
+The alternative — monkeypatching `asyncio.create_subprocess_exec` — reproduces
+exactly the opaque coupling that let `_FakeProc` drift, and is ruled out.
+
+### 11.3 Tool result schemas are absent by construction
+
+Relevant to §4.2. Both tools are annotated `-> dict`, so `outputSchema` is
+`null` and clients receive no result contract. The tests in §4.2 pin the current
+state honestly. Giving clients a real schema means annotating the tools with
+their response models — a production API change with client impact, listed for
+decision in §13.
 
 ---
 
-## 11. Design decisions worth recording
+## 12. Design decisions worth recording
 
-**Assertions live at the layer that owns them (§2.1, §8).** The eight sandbox
-tests are the cautionary example: worker-internal flag decisions asserted through
-an ~480-line browser-launching coroutine, disabled wholesale by one signature
-change. Pure decisions get pure tests.
+**Assertions live at the layer that owns them, and split when a test spans two
+(§2.1, §8A).** The eight sandbox tests mix flag resolution with retry
+orchestration. Moving the whole file down would lose the orchestration; leaving
+it up preserves the coupling that broke it. Splitting is more work than either
+and is the only option that loses nothing.
 
-**Real child process *and* narrow doubles at L3 (§5.2, §8).** Revision 1 said
-"stop faking the subprocess" and proposed replacing every stale test with a real
-process. That was wrong: a generic fixture child cannot assert which Chromium
-flags or environment a call produced. The two are complementary — doubles for
-"what did we ask for", real processes for "what actually happened to the process
-tree". Note that a fixture child can itself drift from the real worker; it is a
-weaker guarantee than revision 1 claimed, not an absolute one.
+**Real child process *and* narrow doubles at L3 (§5.2).** A fixture child cannot
+assert which flags a call produced; a double cannot assert a process tree died.
+The two are complementary. A fixture child can itself drift from the real worker,
+so this is a stronger guarantee than a hand-written fake, not an absolute one.
 
-**Saved-HTML corpus instead of live extraction tests (§3.1, §3.3).** Extraction is
-the most tempting thing to test end-to-end and the worst — pages change, so
-assertions either weaken to uselessness or flake. Fixing the input moves most of
-it to L1. The cost is corpus staleness, which the §6 canaries exist to detect.
+**Saved-HTML corpus instead of live extraction tests (§3.1, §3.3).** Pages
+change, so live extraction assertions either weaken to uselessness or flake.
+Fixing the input moves most of it to L1; the §6.2 canaries detect corpus
+staleness.
 
-**Sanitization at the serialization boundary, not at call sites (§7.1).** Relying
-on every caller to redact is a policy that fails the first time someone adds an
-`emit`. One choke point is testable end to end.
+**Sanitization at the boundary, before `entries` is appended (§7.1).** Relying on
+call sites fails the first time someone adds an `emit`. Sanitizing only at the
+stderr writer would leave the MCP response — the more exposed path — raw.
 
-**No absolute coverage target, but a ratchet and diff coverage (§10.4).** Stated
-explicitly, with revision 1's incorrect rationale corrected, so nobody reinstates
-a percentage thinking the omission was an oversight.
+**Configuration, not a production hook, for cross-process stubbing (§6.1).** An
+injection point in shipped code is a permanent risk on an unauthenticated server;
+a local SearXNG-contract server is a test-only artefact.
+
+**No absolute coverage target, but a defined ratchet and diff coverage (§10.4).**
+Stated explicitly so the omission is not mistaken for an oversight.
 
 ---
 
-## 12. Open gaps
+## 13. Open decisions
 
-- **`.system_design/SYSTEM_DESIGN.md` does not exist.** This document describes how
-  to test a system whose "To Be" design was never written down, so component
-  boundaries are inferred from code rather than traced to a design. That inversion
-  should be closed, and §7.2's outbound policy is the first thing it should settle.
-- **No per-task requirements history.** There is no `.requirements/` directory, so
-  the §6 acceptance scenarios have no stated acceptance criteria to derive from and
-  are reverse-engineered from the tool docstrings.
+Four items need an answer from the maintainer; none can be settled by this
+document.
+
+1. **Outbound request policy (§7.2).** Is fetching private-network addresses
+   intentional? It plausibly is — self-hosted SearXNG and internal documentation
+   are exactly what this server is pointed at, and a blanket RFC1918 block would
+   break those users. The tests in §7.2 apply either way; what is not acceptable
+   is leaving it undefined on an unauthenticated server.
+2. **Tool result schemas (§11.3).** Annotate the tools with their response models
+   so clients receive an `outputSchema`, or keep `-> dict` and pin its absence?
+   This is an API change with client impact.
+3. **Owners in the risk matrix (§9).** Assigning maintainers is not this
+   document's call; the column is otherwise complete.
+4. **Per-module coverage minimums.** The ratchet and diff coverage are adopted
+   (§10.4); fixed per-module floors are not, because no coverage measurement
+   exists in this repo yet and any number chosen now would be invented. Revisit
+   once workstream A produces a measured baseline.
+
+Deferred with a reason: **versioning the `KINDLY_DIAG` frame format.** There is
+no version field today, so adding one is a wire-format change, not a test
+decision, and the two endpoints ship in the same wheel and cannot disagree by
+version in practice. If a version field is ever added, §4.3 gains an
+unknown-version case; until then there is nothing to test.
+
+---
+
+## 14. Open gaps
+
+- **`.system_design/SYSTEM_DESIGN.md` does not exist.** This document describes
+  testing a system whose "To Be" design was never written down, so component
+  boundaries are inferred from code. §13.1 is the first thing that design should
+  settle.
+- **No per-task requirements history.** `.requirements/` — the per-task
+  `<datetime>_<feature_name>/REQUIREMENTS.md` convention this project uses — does
+  not exist, so §6's acceptance scenarios are reverse-engineered from tool
+  docstrings rather than derived from stated acceptance criteria.
 - **`nodriver` and Chromium version drift** is untested at any layer. The worker
-  already carries compatibility shims (`_patch_nodriver_network_encoding`,
+  carries compatibility shims (`_patch_nodriver_network_encoding`,
   `_is_snap_browser`), which implies breakage has happened and will recur.
-- **`_split_worker_diagnostics` is dead code** (§4.3). Flagged for removal under a
-  separate change, not deleted here.
-
----
-
-## 13. Comments on deferred review feedback
-
-Revision 2 applied the review in full except for the four items below. Each is
-deferred for a stated reason rather than declined.
-
-**1. Versioning the `KINDLY_DIAG` frame format.** The review asked the parent ⇄
-worker contract test to cover "protocol-version handling". There is no version
-field in the format today, so this is a proposal to change the wire format, not a
-test-design decision — and adding one has real cost for a protocol whose two
-endpoints ship in the same wheel and can never disagree by version in practice.
-**Deferred to `SYSTEM_DESIGN.md`.** If a version field is added, §4.3 gains a case
-for an unknown version; until then there is nothing to test. Every other item in
-that review point — real encoder/decoder, fragmentation, CRLF, EOF without
-newline, Unicode split across chunks, oversized lines, malformed frames — is
-applied.
-
-**2. Absolute per-module coverage minimums.** The review suggested "minimums for
-critical modules" alongside the no-regression ratchet and diff coverage. The
-ratchet and diff coverage are adopted (§10.4); fixed per-module floors are not.
-Any number chosen today would be invented, since there is no coverage measurement
-in this repo at all and the baseline is unknown. A floor set above the true value
-blocks the first PR; set below it, it is decoration. **Revisit once §8 produces a
-measured baseline**, at which point a floor can be set from data rather than
-guessed.
-
-**3. Owners in the risk-to-test matrix.** The review asked for an owner per row.
-The column exists in §9 and is intentionally empty: assigning maintainers is not a
-call this document can make. **Needs the maintainer to fill in** — the matrix is
-otherwise complete and usable without it.
-
-**4. The outbound request policy itself.** §7.2 adopts the review's finding in
-full and specifies the tests, but deliberately does not decide whether fetching
-private-network addresses is permitted. It is plausibly intentional — a
-self-hosted SearXNG instance and internal documentation are exactly the sort of
-thing this server is pointed at, and a blanket RFC1918 block would break those
-users. **This is a product decision and needs an explicit answer**, after which
-§7.2's three test boundaries apply unchanged in either direction. What is not
-acceptable is leaving it undefined, which is the state today.
-
-One correction the review itself needs: it states that
-`test_nodriver_worker_sandbox.py` produces "seven failures on Windows but eight on
-POSIX". The Windows figure is confirmed by measurement; the POSIX figure is
-consistent with the source but has not been executed here, and §8 step 1 makes
-measuring it a task rather than an assumption.
+- **`_split_worker_diagnostics` is dead code** (§4.3), flagged for removal under
+  a separate change.
