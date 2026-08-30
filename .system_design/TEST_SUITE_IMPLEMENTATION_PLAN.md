@@ -23,23 +23,42 @@ incrementally on top of an already-enforced gate.
 Before E1-6 the repository has no CI, exactly as today. That is the honest
 position, and it is short.
 
-### 1.2 Infrastructure → tests → activation
+### 1.2 A job never becomes required before its tests exist
 
-Never activation first. A marker-selected job enabled before its tests exist is
-red by construction under `--min-selected`, and the tests that would fix it then
-cannot merge past the job they need to fix. So a new job is **added in
-reporting-only mode** in one step and **added to `ci-required.needs`** in another,
-whose only content is that one line.
+That is the actual invariant. A marker-selected job enabled before its tests exist
+is red by construction under `--min-selected`, and the tests that would fix it
+then cannot merge past the job they need to fix.
 
-### 1.3 Red and green ship together
+It does **not** follow that every job needs a separate activation step. Where the
+job's tests have already merged and its runtime is ordinary, creating it and
+adding it to `ci-required.needs` in one PR is safe and is what these steps do — a
+job that cannot pass simply does not merge. The add/activate split is reserved for
+jobs whose **CI runtime is unproven**, currently only `chromium`, where the
+container may behave differently than it does locally and landing it in
+reporting-only mode first is what allows that to be debugged without blocking the
+branch.
+
+### 1.3 Workflow files are a contended resource
+
+Steps that add jobs edit the same workflow, and the graph says several can proceed
+in parallel. To keep that true mechanically, **each job is defined in its own
+reusable workflow file** under `.github/workflows/`, and `ci.yml` does nothing but
+call them and declare `ci-required.needs`. The `needs` list is then the only
+contended region; steps touching it are one line and are chained with `merge`
+dependencies where they would otherwise collide. The same applies to
+`nightly-summary.needs`.
+
+### 1.4 Red and green ship together
 
 A test-only PR that fails cannot merge under the gate. A new assertion and the
 code satisfying it are one PR. Where a test must be seen failing first — and it
 must — that happens in the author's tree, evidenced in the PR description.
 
-### 1.4 Dependency kinds
+### 1.5 Dependency kinds
 
-Validated against the target's declared Type by `scripts/check_plan_dag.py`.
+Validated against the target's declared Type by `scripts/check_plan_dag.py`,
+which also uses them to compute what is authorable: only an unsatisfied `impl`
+dependency stops a step being written.
 
 | Kind | Meaning | Valid targets |
 |---|---|---|
@@ -50,13 +69,13 @@ Validated against the target's declared Type by `scripts/check_plan_dag.py`.
 A step blocked only by `merge` or `complete` can be written today. A step with any
 `impl` dependency cannot.
 
-### 1.5 Step types
+### 1.6 Step types
 
 `PR` (a reviewable change), `milestone` (a state assertion, no diff),
 `decision` (a recorded choice), `operation` (a repository or infrastructure
 action).
 
-### 1.6 Conventions
+### 1.7 Conventions
 
 - One PR per `PR` step. If it needs two, it is two steps.
 - Useful and correct on merge; no later step required to make it so.
@@ -69,15 +88,20 @@ action).
 ## 2. Sequencing for parallelism
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
-block, both S. Everything else fans out; the validator reports how many steps that
-is. Each stream starts on its own narrow dependency, not on a wave.
+block, both S. Everything else fans out. The validator computes what is
+*authorable* using §1.5's semantics — only an unsatisfied `impl` dependency stops
+a step being written — and reports **46 of the 72 steps authorable the moment E0-2
+lands**. A step waiting on `merge` or `complete` is written now and simply queued
+to land, which is the distinction that makes this plan distributable.
+
+Each stream starts on its own narrow dependency, not on a wave.
 
 | # | Stream | Starts after | Steps |
 |---|---|---|---|
 | 1 | Worker seam & protocol | E0-2 | E2-1, E2-2, E2-3, E2-4 |
 | 2 | Baseline restoration | E0-2 | E1-1, E1-2, E1-3, E1-5 |
-| 3 | Fixtures & corpus | E0-2 | E3-1 … E3-5 |
-| 4 | CI skeleton | E0-3 | E4-1, E4-11 |
+| 3 | Fixtures & corpus | E0-2 | E3-1, E3-2, E3-3, E3-4, E3-5 |
+| 4 | CI skeleton | E0-3 | E4-1, E4-12 |
 | 5 | L1 parsers | E0-1 | E5-1, E5-2 |
 | 6 | L1 resolvers & accumulators | E0-2 | E5-3, E5-6, E5-7 |
 | 7 | L2 contracts | E0-2 | E6-1, E6-3 |
@@ -97,15 +121,18 @@ note recorded before any dependent step activates**.
 
 | ID | Prerequisite | Blocks | Owner |
 |---|---|---|---|
-| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1). Is fetching private-network addresses intentional? Artefact: an approved amendment to §7.2 stating the policy, including whether enforcement is required and where. | E9-2, E9-3 — **before authoring** | maintainer |
+| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1). Is fetching private-network addresses intentional? Artefact: an approved amendment to §7.2 that states the policy **and selects one of E9's two subplans**, since a restrict policy turns four of those steps into production work. | E3-6, E9-2, E9-3, E9-4, E9-5 — **before authoring** | maintainer |
 | **X-2** | Repository admin authority — branch protection, require a PR, no bypass actors | E4-2 | repo admin |
-| **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-6 | repo admin |
-| **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-12 | maintainer |
+| **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-7 | repo admin |
+| **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-13 | maintainer |
 | **X-5** | Observational coverage reviewer and cadence (TEST_SUITE §10.4 requires a named owner; unowned reporting decays into the signal nobody reads) | E10-7 | maintainer |
 
-**X-1 is the only prerequisite that blocks authoring** — it is declared `impl`
-because the tests cannot be written until the policy exists. The rest block merge
-or activation, so the work they gate can be written first.
+**X-1 is the only prerequisite that blocks authoring**, and it blocks five steps
+rather than two — it is declared `impl` because neither the policy function nor
+the seam it attaches to can be written until the decision exists. The rest block
+merge or activation, so the work they gate can be written first. X-3 in particular
+no longer gates writing ChromiumPool tests: E4-6 builds and smoke-tests the image
+locally with no registry, and E7-3 merges against that.
 
 `outputSchema is None` is **normative for this implementation** (E6-1). If
 TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
@@ -157,15 +184,19 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 | **E1-6** | Suite green on both platforms | milestone | merge E1-1, merge E1-3, merge E1-4, merge E1-5 | S |
 
 - **E1-1.** §1.1 predicts 12 POSIX failures *from source, unmeasured*. Run it.
-  *Verify:* both per-OS numbers, **and the exact failing node ids**, committed
-  into §1.1. The node ids matter: a count cannot tell a fixed test from a swapped
-  one, and the list is what makes the remaining repairs checkable.
+  *Verify:* both per-OS numbers, **and the exact failing node ids**, committed to
+  `.system_design/BASELINE_FAILURES.md`. A count cannot tell a fixed test from a
+  swapped one; the ledger is what makes the remaining repairs checkable.
+  **E1-2 through E1-5 each delete exactly the node ids they repair from that
+  ledger and add none**, so it drains to empty as the repairs land rather than
+  sitting stale next to a green suite.
 - **E1-2.** Direct tests of `_build_chromium_launch_args`,
   `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
   `_resolve_start_retry_attempts` with §3.1's ambient-state seams.
   *Verify:* each fails when its resolver's default is inverted; `--no-sandbox`,
   root detection and executable discovery all survive; no new test calls
-  `_fetch_html`.
+  `_fetch_html`; the node ids it repairs are removed from the E1-1 ledger and no
+  new id is added.
 - **E1-3.** Sequenced after E1-2: both edit the same eight stale tests. E1-2
   removes the flag half; E1-3 rewrites what remains with autospec doubles around
   the browser-connect call. **These stay at this layer permanently** —
@@ -173,14 +204,18 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
   connect retry and profile cleanup; `_run_worker_command` is parent-side.
   *Verify:* retry-count, terminate-failed-attempt, non-retryable-not-retried and
   profile-cleanup pass; adding a required argument to the patched callable makes
-  them fail rather than silently pass.
+  them fail rather than silently pass; the ledger shrinks by exactly the ids
+  repaired.
 - **E1-4.** Rebuild `_FakeProc` as E2-1's typed fake.
   *Verify:* all three pass; deleting `stdout` from the fake fails both mypy and
-  the runtime conformance test.
+  the runtime conformance test; the ledger shrinks by exactly the ids repaired.
 - **E1-5.** *Verify:* passes on both platforms; each retained case (explicit,
-  malformed, zero, negative, `num_results` limit) fails if the clamp is removed.
-- **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, and the E1-1
-  node-id list is empty. CI enforcement begins here.
+  malformed, zero, negative, `num_results` limit) fails if the clamp is removed;
+  the ledger shrinks by exactly the id repaired.
+- **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, and
+  `BASELINE_FAILURES.md` lists no remaining ids — the two facts are checked
+  together, since either alone can be true while the other is not. CI enforcement
+  begins here.
 
 ---
 
@@ -233,6 +268,7 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 | **E3-3** | HTML corpus scaffolding and governance | PR | impl E0-2 | M |
 | **E3-4** | Anti-flake harness helpers | PR | impl E0-2 | M |
 | **E3-5** | `tests/package/` and its marker policy test | PR | impl E0-2 | S |
+| **E3-6** | Injectable DNS-resolution and transport seam | PR | impl X-1 | M |
 
 - **E3-1.** Emits known `KINDLY_DIAG` frames, can hang, can exit non-zero, can
   write garbage to stderr. *Verify:* a smoke test drives each mode. **Readiness is
@@ -252,13 +288,21 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
   at least three handcrafted fragments.
 - **E3-4.** §5.4: readiness handshake, ephemeral ports, isolated profile
   directories, PID-tree cleanup keyed on spawned PIDs, child log capture on
-  failure. **Includes an injectable DNS-resolution and transport seam**, which
-  E9-3 needs to simulate rebinding deterministically rather than racing real DNS.
+  failure. Test-only.
   *Verify:* a hanging fixture child is killed at the deadline and its PID tree is
-  gone; cleanup never matches processes by name; the resolver seam returns
-  scripted addresses on successive lookups of one hostname.
+  gone; cleanup never matches processes by name.
 - **E3-5.** *Verify:* a file added there without `@pytest.mark.package` fails the
   policy test; source-checkout jobs pass `--ignore=tests/package`.
+- **E3-6.** **Production change**, not a test helper. E9-5 must observe a hostname
+  resolving differently at validation and at connect, and that cannot be faked
+  from outside: the resolver and transport have to be injectable in the code that
+  performs the fetch. Scope depends on X-1 — under an allow policy this is a
+  narrow seam used only for characterization; under a restrict policy it is where
+  enforcement will attach.
+  *Verify:* the seam has an explicit API (a resolver callable and a transport
+  factory, both defaulting to today's behaviour); production behaviour is
+  unchanged with the defaults; a test can script successive lookups of one
+  hostname to return different addresses.
 
 ---
 
@@ -268,16 +312,17 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 |---|---|---|---|---|
 | **E4-1** | Workflow skeleton, broad job, `ci-required` | PR | impl E0-3, complete E1-6 | M |
 | **E4-2** | Enable branch protection | operation | complete X-2, merge E4-1 | S |
-| **E4-3** | Split into the normative `fast` and `subsystem` jobs | PR | merge E4-1 | M |
-| **E4-4** | Add the `fast-extras` job | PR | merge E4-3 | S |
-| **E4-5** | Add the `types` job | PR | merge E2-1, merge E4-1 | S |
-| **E4-6** | Build and publish the test-runtime image | PR | complete X-3 | L |
-| **E4-7** | Add the `chromium` job, reporting only | PR | merge E7-3, merge E4-6 | S |
-| **E4-8** | Activate the `chromium` job | PR | merge E4-7 | S |
-| **E4-9** | Add the `package` job, reporting only | PR | merge E8-1 | S |
-| **E4-10** | Activate the `package` job | PR | merge E4-9 | S |
-| **E4-11** | Nightly workflow foundation | PR | impl E0-3 | S |
-| **E4-12** | Add the live jobs to the nightly | PR | merge E8-4, complete X-4 | M |
+| **E4-3** | Split into the normative `fast` and `subsystem` jobs | PR | merge E4-1, complete E4-2 | M |
+| **E4-4** | Add and activate the `fast-extras` job | PR | merge E4-3 | S |
+| **E4-5** | Add and activate the `types` job | PR | merge E2-1, merge E4-4 | S |
+| **E4-6** | Define and locally smoke-test the runtime image | PR | impl E0-1 | M |
+| **E4-7** | Publish the image to the registry | PR | merge E4-6, complete X-3 | M |
+| **E4-8** | Record and validate the image digest | PR | merge E4-7 | S |
+| **E4-9** | Add the `chromium` job, reporting only | PR | merge E7-3, merge E4-8 | S |
+| **E4-10** | Activate the `chromium` job | PR | merge E4-9 | S |
+| **E4-11** | Add and activate the `package` job | PR | merge E8-1, merge E4-5 | S |
+| **E4-12** | Nightly workflow foundation | PR | impl E0-3 | S |
+| **E4-13** | Add the live jobs to the nightly | PR | merge E8-4, merge E4-12, complete X-4 | M |
 
 - **E4-1.** §10.3's complete trigger list; one job selecting
   `--ignore=tests/package -m "not live and not chromium and not package"` on both
@@ -286,9 +331,11 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
   Merges only once E1-6 lands, so it is green from its first run.
   *Verify:* a failing test makes `ci-required` red; a **skipped** dependency also
   makes it red; a fork PR triggers the workflow; the job is green on merge.
-- **E4-2.** No diff. *Verify:* a PR with a red `ci-required` cannot be merged,
-  including by an administrator; the rollback procedure is recorded in the ticket.
-  This is the minimum viable gate of §8B and it lands immediately after green.
+- **E4-2.** No diff to the repository. This is §8B's minimum viable gate and it
+  lands immediately after green — which is why E4-3 declares `complete E4-2`
+  rather than relying on prose ordering.
+  *Verify:* a PR with a red `ci-required` cannot be merged, including by an
+  administrator; the rollback procedure is recorded in the ticket.
 - **E4-3.** Narrow the broad job to `-m "not live and not subsystem and not
   chromium and not package"` over Python 3.13/3.14 × mcp {min, max}, and add
   `subsystem` selecting `-m "subsystem and not chromium and not live"` on both
@@ -296,26 +343,39 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
   *Verify:* every test that ran in E4-1's broad job runs in exactly one of the
   two; `--min-selected` floors are set from the counts observed in E4-1.
 - **E4-4.** The `fast` selector with `pdf-advanced` installed, Python 3.13 only.
-  *Verify:* a PDF-path test that skips without the extras runs here; it joins
-  `ci-required.needs`.
-- **E4-5.** *Verify:* the negative-fixture directory is excluded; green on merge;
-  introducing an `Any` on the Protocol surface makes it red.
-- **E4-6.** Python, Chromium, system deps, **no application code**, from a pinned
-  base digest with pinned package versions. Not wired into CI.
-  *Verify:* a manual workflow run pulls by digest, installs a wheel into it and
-  launches Chromium; the digest is recorded in the repository.
-- **E4-7.** Adds the job, **not** to `ci-required`. *Verify:* it runs E7-3's tests
-  with a real `--min-selected` and is green; the wheel-resolution assertion holds.
-- **E4-8.** One line. *Verify:* `chromium` is in `ci-required.needs` and the
+  Created and activated together: its tests already exist, so §1.2's split does
+  not apply. *Verify:* a PDF-path test that skips without the extras runs here;
+  `fast-extras` is in `ci-required.needs` and the aggregate is green.
+- **E4-5.** Likewise created and activated together — E2-1's code is already
+  merged. *Verify:* the negative-fixture directory is excluded; **`types` is in
+  `ci-required.needs`**; introducing an `Any` on the Protocol surface makes it red.
+- **E4-6.** The image definition — Python, Chromium, system deps, **no application
+  code** — from a pinned base digest with pinned package versions, built and smoke
+  tested **locally**. No registry, so it does not wait on X-3, and E7-3 can merge
+  against it.
+  *Verify:* `docker build` succeeds from the pinned base; a container from it
+  launches Chromium and runs a trivial fetch.
+- **E4-7.** Publish to the registry chosen in X-3, with credentials as Actions
+  secrets. *Verify:* the published manifest matches the local build; the fork-pull
+  decision from X-3 is recorded in the workflow.
+- **E4-8.** Record the digest in the repository and add the check that CI
+  references it by digest, never by tag. *Verify:* changing the tag without the
+  digest does not change what CI pulls; a mismatched digest fails the job.
+- **E4-9.** Adds the job, **not** to `ci-required`. This is the one place §1.2's
+  split applies: the container's CI runtime is unproven and may differ from the
+  local smoke test in E4-6. *Verify:* it runs E7-3's tests with a real
+  `--min-selected` and is green; the wheel-resolution assertion holds.
+- **E4-10.** One line. *Verify:* `chromium` is in `ci-required.needs` and the
   aggregate is green.
-- **E4-9.** `tests/package -m package`, Python 3.13 × mcp {min, max}, reporting
-  only. *Verify:* green against E8-1's tests.
-- **E4-10.** One line. *Verify:* as E4-8.
-- **E4-11.** A `schedule`-triggered workflow with `workflow_dispatch` and a
+- **E4-11.** `tests/package -m package`, Python 3.13 × mcp {min, max}, created and
+  activated together. `merge E4-5` sequences its `ci-required.needs` edit behind
+  the previous one, per §1.3. *Verify:* green against E8-1's tests and present in
+  the aggregator.
+- **E4-12.** A `schedule`-triggered workflow with `workflow_dispatch` and a
   `nightly-summary` aggregator, and **no jobs yet**. Exists so mutation and live
   work attach independently. *Verify:* a manual dispatch runs and the summary
   reports zero jobs without failing.
-- **E4-12.** `live-serper` and `live-extraction`, each with its **own** credential
+- **E4-13.** `live-serper` and `live-extraction`, each with its **own** credential
   criteria — they are not the same case.
   *Verify:* removing `SERPER_API_KEY` makes **`live-serper`** fail before
   collection, while **`live-extraction` still runs**, since it needs a browser and
@@ -353,15 +413,36 @@ duplicating tests or touching the same files.
   `_get_float_env`; and `chromium_pool.py`'s `_resolve_reuse_enabled`,
   `_resolve_pool_size`, `_resolve_acquire_timeout_seconds`, `_parse_port_range`,
   `_resolve_port_range`, `_pick_port`.
-  *Verify:* each parameterized over unset, blank, valid, malformed, zero, negative
-  and out-of-range; every case fails if its branch is removed.
+  *Verify:* grouped by behaviour, because one criterion does not fit all of them.
+  **Numeric env parsing** (`_get_int_env`, `_get_float_env`, `_resolve_pool_size`,
+  `_resolve_acquire_timeout_seconds`, `_resolve_tool_total_timeout_seconds`,
+  `_resolve_web_search_max_concurrency`, `_resolve_host_port`): unset, blank,
+  malformed, zero, negative, out-of-range. **Enum and boolean parsing**
+  (`_resolve_transport`, `_resolve_reuse_enabled`): unset, blank, each accepted
+  value, an unrecognised value. **Range parsing** (`_parse_port_range`,
+  `_resolve_port_range`): well-formed, inverted bounds, non-numeric, empty.
+  **Port selection** (`_pick_port`): a port inside the configured range, and
+  behaviour when every port in the range is occupied. **Pattern construction**
+  (`_resolve_transport_security`, `_cors_origin_regex`): the produced allowlist
+  and regex match the loopback set and reject a foreign origin. Every case fails
+  if its branch is removed.
 - **E5-4.** Owns the remaining `nodriver_worker.py` resolvers not covered by E1-2:
   `_resolve_user_agent`, `_detect_chrome_version`, `_resolve_retry_backoff_seconds`,
   `_resolve_devtools_ready_timeout_seconds`, `_resolve_worker_timeout_seconds`,
   `_resolve_worker_timeout_details`, `_resolve_snap_backoff_multiplier`,
   `_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`.
-  *Verify:* each fails when its default is inverted; no function is also tested by
-  E5-3 or E1-2.
+  *Verify:* grouped by behaviour. **Numeric env parsing**
+  (`_resolve_retry_backoff_seconds`, `_resolve_devtools_ready_timeout_seconds`,
+  `_resolve_worker_timeout_seconds`, `_resolve_snap_backoff_multiplier`): unset,
+  blank, malformed, zero, negative. **String and list normalisation**
+  (`_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`):
+  unset, blank, single value, comma-separated with surrounding whitespace,
+  duplicate entries. **Detection** (`_detect_chrome_version`, `_resolve_user_agent`):
+  a stubbed executable reporting a known version, an executable that fails to run,
+  and no executable at all — each returning a usable fallback rather than raising.
+  **Composite** (`_resolve_worker_timeout_details`): the returned tuple is
+  consistent with the individual resolvers it composes. No function here is also
+  tested by E5-3 or E1-2.
 - **E5-5.** `html_to_markdown`, `sanitize_markdown`, `extract_content_as_markdown`,
   `_apply_markdown_cap`, `_build_md_suffix_url` over E3-3's fragments.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
@@ -464,11 +545,22 @@ duplicating tests or touching the same files.
 
 ### E9 — Security
 
+**X-1's artefact selects one of two subplans**, and the plan cannot be more
+specific until it does. Under an **allow** policy, E9-3 and E9-4 are dropped and
+E9-2 and E9-5 become characterization tests recording the permitted behaviour.
+Under a **restrict** policy all five steps stand, and the enforcement is not one
+change: routing validates the submitted URL, the `httpx` clients follow redirects
+internally, Chromium has its own networking stack, and DNS must be checked close
+enough to connection to prevent rebinding. Those are separate seams and get
+separate steps.
+
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
 | **E9-1** | Sanitize diagnostics at the emit boundary | PR | impl E5-7 | L |
-| **E9-2** | Outbound URL and address policy — enforce and test | PR | impl X-1, impl E0-2 | L |
-| **E9-3** | Redirect and DNS-rebinding policy — enforce and test | PR | impl X-1, impl E3-4 | M |
+| **E9-2** | Shared outbound policy function | PR | impl X-1, impl E0-2 | M |
+| **E9-3** | Enforce on the `httpx` clients, including every redirect hop | PR | impl E9-2, impl E3-6 | M |
+| **E9-4** | Enforce on the Chromium fetch path | PR | impl E9-2, impl E3-6 | M |
+| **E9-5** | Deterministic DNS-rebinding tests | PR | impl E9-2, impl E3-6 | M |
 
 - **E9-1.** **Production change**, shipped with its tests in one PR. One sanitizing
   step at the top of `Diagnostics.emit`, before the entry is appended to `entries`.
@@ -476,24 +568,25 @@ duplicating tests or touching the same files.
   `get_content("https://user:token@host/x")` leaks the token in neither; each §7.1
   policy case has a test; a test pins that sanitizing only at the writer would
   fail, so nobody relocates it later.
-- **E9-2.** **Scope depends on X-1's outcome, and the step is sized `L` because
-  the likely outcome includes production work.** There is no shared validation
-  seam today, so if X-1 chooses any restriction this step *implements* it — a
-  single choke point checking scheme and resolved address class — as well as
-  testing it. If X-1 chooses to allow a class of addresses, the step tests the
-  allowed behaviour and adds no enforcement.
+- **E9-2.** One pure function classifying a URL — scheme, and the address class of
+  a *resolved* host — returning the policy decision X-1 recorded. No call sites
+  yet, so it merges green either way.
   *Verify:* table-driven over scheme (`file:`, `data:`, `ftp:`, `chrome:`) and
   address class (loopback, RFC1918, link-local, IPv6 ULA, `169.254.169.254`),
-  asserting whatever X-1 decided; each row fails if its branch of the policy is
-  removed; the test module cites the X-1 artefact so the expected behaviour is
-  traceable.
-- **E9-3.** Same conditional shape. The outbound clients follow redirects today,
-  so validation must be applied at **every hop and at the resolved address**, not
-  only the initial URL.
-  *Verify:* a local server issuing a public→private redirect behaves per policy;
-  using E3-4's resolver seam, a hostname resolving public at validation and
-  private at connect behaves per policy; both fail if the check is applied only to
-  the initial URL.
+  asserting whatever X-1 decided; each row fails if its branch is removed; the
+  module cites the X-1 artefact so the expected behaviour is traceable.
+- **E9-3.** Applies E9-2 at the `httpx` boundary. **Redirects are the hard part**:
+  the clients follow them internally today, so the check must run on each hop, not
+  only the submitted URL. *Verify:* a local server issuing a public→private
+  redirect behaves per policy; a chain of two redirects is checked at both; the
+  test fails if the check is applied only to the initial URL.
+- **E9-4.** Applies E9-2 on the Chromium path, which does not share the `httpx`
+  stack and therefore cannot inherit E9-3's enforcement. *Verify:* a page fetch to
+  a private address behaves per policy; disabling the check in the worker makes it
+  fail.
+- **E9-5.** Uses E3-6's resolver seam so the race is scripted rather than real.
+  *Verify:* a hostname resolving public at validation and private at connect
+  behaves per policy; the test is deterministic across 50 consecutive runs.
 
 ---
 
@@ -505,9 +598,9 @@ duplicating tests or touching the same files.
 | **E10-2** | Non-zero coverage assertion tool, unit-tested | PR | impl E10-1 | M |
 | **E10-3** | Hermetic `coverage` job — reporting only | PR | impl E10-2, merge E4-3 | M |
 | **E10-4** | Worker observational coverage | PR | merge E7-2, merge E4-3 | M |
-| **E10-5** | Chromium observational coverage | PR | merge E4-8 | M |
-| **E10-6** | Wire the omitted-module assertion | PR | merge E10-3, merge E10-4, merge E10-5 | S |
-| **E10-7** | PR summary and delta reporting | PR | merge E10-6, complete X-5 | M |
+| **E10-5** | Chromium observational coverage | PR | merge E4-10 | M |
+| **E10-6** | Install the assertion in each producing job | PR | merge E10-3, merge E10-4, merge E10-5 | M |
+| **E10-7** | Job-summary and delta reporting | PR | merge E10-6, complete X-5 | M |
 | **E10-8** | Diff-coverage gate | PR | merge E10-3 | M |
 | **E10-9** | Baseline bootstrap, ratchet and reset label | PR | merge E10-8 | L |
 | **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9 | S |
@@ -528,17 +621,26 @@ duplicating tests or touching the same files.
   hidden by an exclusion.
 - **E10-5.** The same for the `chromium` job. *Verify:* `chromium_pool.py` shows
   non-zero coverage.
-- **E10-6.** Points E10-2's checker at the real hermetic and observational
-  reports. *Verify:* it passes now that E7-3 covers `chromium_pool.py`, and
-  reverting E7-3 makes it fail — proving it is live rather than vacuous.
-- **E10-7.** Per-module summary posted to the PR, with a delta against the last
-  successful `main` run. *Verify:* the artefact lookup names the workflow and
-  branch it reads; a **missing or expired** previous artefact renders the summary
-  with deltas omitted rather than failing the job; the required
-  `actions: read` / `pull-requests: write` permissions are declared; on a fork PR,
-  where `pull-requests: write` is unavailable, the summary is written to the job
-  log instead of failing; the reviewer and cadence from X-5 are recorded in the
-  workflow.
+- **E10-6.** **Each job runs the checker against the report it produced, and only
+  that report** — TEST_SUITE §10.4 rejects cross-job coverage fan-in, so there is
+  no step that gathers the three. The module list is per job: `coverage` checks
+  the gating-scope modules, `subsystem` checks `worker_runner.py` and
+  `nodriver_worker.py`, `chromium` checks `chromium_pool.py`. One PR editing three
+  job definitions, hence `M` rather than `S`.
+  *Verify:* the `chromium` job's check passes now that E7-3 covers
+  `chromium_pool.py`, and reverting E7-3 makes that job fail — proving it is live
+  rather than vacuous; no job reads another job's artefact.
+- **E10-7.** Per-module summary written to **`$GITHUB_STEP_SUMMARY`**, with a
+  delta against the last successful `main` run. The job summary needs no
+  `pull-requests: write` — only `actions: read` to find the previous artefact —
+  which also means it behaves identically on fork PRs with no special case. A PR
+  *comment* would be a different design with its own fork and security
+  considerations; it is deliberately not what this step builds.
+  *Verify:* the artefact lookup names the workflow and branch it reads; a
+  **missing or expired** previous artefact renders the summary with deltas omitted
+  rather than failing the job; the workflow declares `actions: read` and no write
+  permission; the summary renders on a fork PR; the reviewer and cadence from X-5
+  are recorded in the workflow.
 - **E10-8.** `diff-cover --fail-under=80` from the event base SHA via
   `--diff-file`, `fetch-depth: 0`. *Verify:* a PR adding an uncovered statement in
   the gating scope fails; one adding a covered statement passes; a PR touching
@@ -590,10 +692,10 @@ under `tests/`; this unblocks E6-4.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-11, merge E5-1, merge E5-2, merge E5-3, merge E5-4, merge E5-7 | M |
+| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-12, merge E5-1, merge E5-2, merge E5-3, merge E5-4, merge E5-7 | M |
 
 Configuration and job ship together — a job without its configuration is a
-scheduled failure. It attaches to E4-11's nightly foundation and needs **neither
+scheduled failure. It attaches to E4-12's nightly foundation and needs **neither
 live credentials nor the live jobs**.
 
 The dependency list matches §3.2's mutation scope exactly: the URL parsers (E5-1,
@@ -644,17 +746,19 @@ Five engineers.
 | A | E2-1, E2-2 | E2-3, E2-4 |
 | B | E1-1, E1-2 | E1-3, E1-5 |
 | C | E3-1, E3-4 | E7-1, E7-2 |
-| D | E0-3, E4-11 | E0-4, E4-1 |
+| D | E0-3, E4-12 | E0-4, E4-1 |
 | E | E5-1, E5-2 | E6-1, E6-3 |
 
 E1-4 goes to engineer B as soon as A's E2-1 lands; E2-3 waits on it. E4-1 is
 authored early but merges with E1-6, and E4-2 follows immediately — the gate is on
 within a day of green. Coverage work (E10-1) waits on E2-3. E3-2, E3-3, E3-5,
-E5-3, E5-6, E5-7, E8-4 are unassigned backlog.
+E5-3, E5-6, E5-7, E8-4 are unassigned backlog — and with 46 steps authorable
+after E0-2, the constraint on throughput is people, not the graph.
 
 In parallel, the maintainer works **X-1** — the only prerequisite blocking steps
-from being *written*, and the one with the largest downstream scope, since E9-2
-may turn out to require production enforcement — then X-2, X-3, X-4 and X-5.
+from being *written*, and by far the largest in downstream scope: a restrict
+policy turns E3-6, E9-3 and E9-4 into production enforcement across three separate
+network stacks. Then X-2, X-3, X-4 and X-5.
 
 **Protect E2-3.** One refactor unblocks the L3 worker stream, the codec
 extraction, the coverage classification and all of E10, and it reads like

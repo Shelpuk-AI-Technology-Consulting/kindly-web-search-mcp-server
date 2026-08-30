@@ -44,8 +44,12 @@ STEP_ROW = re.compile(
 EXTERNAL_ROW = re.compile(r"^\|\s*\*\*(?P<id>X-\d+)\*\*\s*\|", re.M)
 #: ``Files: tests/a.py, tests/b.py``
 FILES_LINE = re.compile(r"^Files:\s*(?P<files>.+)$", re.M)
-#: A real import, not the string "import unittest" quoted inside a test.
-UNITTEST_IMPORT = re.compile(r"^(import unittest|from unittest)", re.M)
+#: Framework use, not `unittest.mock`, which pytest-native tests use freely.
+#: Matched at line start so the string quoted inside a test is not evidence.
+UNITTEST_FRAMEWORK = re.compile(
+    r"^import unittest\s*$|^from unittest import|unittest\.(TestCase|IsolatedAsyncioTestCase)",
+    re.M,
+)
 
 DEPENDENCY = re.compile(r"^(?P<kind>impl|merge|complete)\s+(?P<id>E\d+-\d+[ab]?|X-\d+)$")
 VALID_TYPES = {"PR", "milestone", "decision", "operation"}
@@ -257,6 +261,30 @@ def longest_chain(steps: dict[str, dict], ordered: list[str]) -> tuple[int, list
     return depth[end] + 1, list(reversed(chain))
 
 
+def authorable_after(steps: dict[str, dict], completed: set[str]) -> set[str]:
+    """List the steps that can be *written* once ``completed`` has landed.
+
+    Only unsatisfied ``impl`` dependencies stop authoring. A step waiting on a
+    ``merge`` or ``complete`` prerequisite can be written today and simply cannot
+    land yet -- which is the whole point of separating the kinds, and what an
+    earlier version of this function ignored by treating every dependency alike.
+
+    Args:
+        steps: Parsed step table.
+        completed: Ids treated as already delivered, including any resolved
+            external prerequisites.
+
+    Returns:
+        The step ids that are authorable and not themselves already completed.
+    """
+    return {
+        step_id
+        for step_id, record in steps.items()
+        if step_id not in completed
+        and all(dep in completed for kind, dep in record["deps"] if kind == "impl")
+    }
+
+
 def check_file_ownership(text: str, repo_root: Path | None = None) -> list[str]:
     """Check the batched steps' file claims are unique, real and complete.
 
@@ -305,7 +333,7 @@ def check_file_ownership(text: str, repo_root: Path | None = None) -> list[str]:
     unclaimed = sorted(
         f"tests/{path.name}"
         for path in tests_dir.glob("test_*.py")
-        if UNITTEST_IMPORT.search(path.read_text(encoding="utf-8"))
+        if UNITTEST_FRAMEWORK.search(path.read_text(encoding="utf-8"))
         and f"tests/{path.name}" not in claims
     )
     problems += [f"unittest-style {path} is claimed by no migration batch" for path in unclaimed]
@@ -351,11 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     depth, chain = longest_chain(steps, ordered)
-    startable = sorted(
-        s
-        for s, r in steps.items()
-        if all(d in {"E0-1", "E0-2"} for _, d in r["deps"]) and s not in {"E0-1", "E0-2"}
-    )
+    startable = sorted(authorable_after(steps, {"E0-1", "E0-2"}))
     print(f"OK: {len(steps)} steps, {len(externals)} external prerequisites, acyclic")
     print(f"    longest chain: {depth} steps — {' -> '.join(chain)}")
     print(f"    startable immediately after E0-2: {len(startable)}")
