@@ -417,12 +417,23 @@ Two tool calls, each deterministic by construction:
    wrapper, the transport and the installed entrypoint. It is explicitly a
    **routing, protocol and packaging smoke test** — it does not touch content
    resolution, and the document does not claim otherwise.
-2. **`get_content` on a URL ending `.pdf`.** `load_url_as_markdown` calls
-   `_is_probably_pdf_url` as its **first** statement and returns `None` before any
-   probe or browser launch, so the tool returns its deterministic "Could not
-   retrieve content" note with no network and no Chromium. This exercises the
-   second tool end to end, including the `None` → Markdown-note conversion that
-   §4.4 pins.
+2. **`get_content` on `https://example.invalid/package-smoke.pdf`.**
+   `load_url_as_markdown` calls `_is_probably_pdf_url` as its **first** statement
+   and returns `None` before any probe or browser launch, so the tool returns its
+   deterministic "Could not retrieve content" note with no network and no
+   Chromium. This exercises the second tool end to end, including the `None` →
+   Markdown-note conversion that §4.4 pins.
+
+   **The host matters, not just the `.pdf` suffix.** `get_content` runs the
+   specialized resolver chain first, and that chain is matched on URL shape, not
+   on extension. Verified: `parse_arxiv_url("https://arxiv.org/pdf/2401.12345.pdf")`
+   **accepts** and returns `2401.12345`, so an arXiv PDF routes to the arXiv
+   handler and makes network calls long before `load_url_as_markdown` is reached.
+   The fixture URL must therefore be on a host no specialized parser claims —
+   `example.invalid` is reserved by RFC 2606 and cannot resolve even if something
+   tried. A companion L1 test asserts every specialized parser rejects the exact
+   fixture URL, so the smoke test cannot silently start hitting the network if a
+   parser's matching widens later.
 
 Anything requiring real content resolution is a `chromium` or live job, not this
 one.
@@ -552,13 +563,24 @@ plan is built would let exactly that recur while B–D are in flight.
 
 The minimum viable gate is small and ships as soon as A lands:
 
-1. One workflow running the `fast` job on Linux and Windows, Python 3.13.
-2. The `ci-required` aggregation job (§10.3) as a **required check** under branch
-   protection on `main`.
+1. One workflow running **`-m "not live and not chromium and not package"`** on
+   Linux and Windows, Python 3.13.
+2. The `ci-required` aggregation job (§10.3) as the **required check** under
+   branch protection on `main`.
 
-That is enough to make a regression un-mergeable. Every later job — `fast-extras`,
-`subsystem`, `chromium`, `package`, the nightlies — is added to the same workflow
-and to `ci-required`'s `needs` as its tests come into existence.
+**The initial selection must include `subsystem`, not just `fast`.** Workstream A
+restores the worker retry, cleanup and streaming tests, and §5.2 places them at
+the subsystem layer — they need a real child process. A `fast`-only gate excludes
+`subsystem` by construction, so `ci-required` would go green while the exact
+tests this document exists because of sat unprotected. The initial selection
+therefore excludes only what the first runner genuinely cannot do: Chromium and
+the network. Those tests are portable by design (§5.2), so both platforms can run
+them from day one.
+
+Every later job — `fast-extras`, `chromium`, `package` — is added to the same
+workflow and to `ci-required`'s `needs` as its tests come into existence, and the
+broad selection is split into the named jobs of §10.3 at that point. The
+nightlies are **not** added to `ci-required` (§10.3).
 
 **C. Add the production seams** in §11 — the rest of the design depends on them.
 
@@ -662,9 +684,39 @@ and PR.
 **One stable required check.** Requiring every matrix-generated check by name is
 brittle: adding a Python or `mcp` axis renames the checks and silently drops the
 old names from branch protection. `ci-required` runs no tests, declares `needs`
-on every job that must pass, and fails if any dependency did not succeed. **It is
-the only required check** under branch protection, so the matrix can change
-without touching repository settings.
+on the PR jobs, and fails unless every one of them succeeded. **It is the only
+required check** under branch protection, so the matrix can change without
+touching repository settings.
+
+**`needs` alone is not enough, and getting this wrong is silent.** When an
+upstream job fails, GitHub *skips* its dependents rather than failing them —
+documented behaviour: "If a job fails, all jobs that need it are skipped unless
+the jobs use a conditional statement that causes the job to continue." A skipped
+required check does not report failure, so the aggregator must opt out of that
+default and inspect results itself:
+
+```yaml
+ci-required:
+  if: ${{ always() }}          # without this the job is skipped, not failed
+  needs: [fast, fast-extras, subsystem, chromium, package]
+  runs-on: ubuntu-latest
+  steps:
+    - name: Require every dependency to have succeeded
+      run: |
+        echo '${{ toJSON(needs) }}'
+        [ "$(echo '${{ toJSON(needs) }}' | jq -r '[.[].result] | unique | join(",")')" = "success" ]
+```
+
+Requiring `success` explicitly — rather than the looser
+`!contains(needs.*.result, 'failure')` — is deliberate: the loose form treats
+`skipped` as acceptable, which is exactly how a required job that quietly stopped
+running would go unnoticed.
+
+**Nightly jobs are not in `ci-required`.** They are `schedule`-triggered, so on a
+PR they are skipped by definition. Including them forces a choice between an
+aggregator that rejects skips (every PR red) and one that accepts them (a real
+accidental skip hidden). The nightlies get their own `nightly-summary` aggregator
+on the same pattern, which reports to the alert owner named in §6.3.
 
 **Matrix rationale and cost control.** `requires-python = ">=3.13"`, and
 `pdf-advanced` is constrained to `python_version < '3.14'`, so 3.13 and 3.14
@@ -722,9 +774,13 @@ exit code is preserved:
 
 ```python
 # tests/conftest.py
+import pytest
+
+
 def pytest_addoption(parser):
     parser.addoption("--min-selected", type=int, default=0,
                      help="Fail if fewer than N tests are selected.")
+
 
 def pytest_collection_finish(session):
     minimum = session.config.getoption("--min-selected")
@@ -746,6 +802,20 @@ under-selection fails at collection (exit 4, with the count in the message),
 while a genuine test failure keeps its own exit 1 — no shell arithmetic in
 between.
 
+**A floor detects loss, not omission, and needs a maintenance rule.** If forty
+tests match today and ten *new* tests are added without the marker, a minimum of
+forty still passes. So: the expected minima are committed alongside the workflow,
+and any deliberate addition or removal of tests in a marked area updates the
+count in the same PR, where a reviewer sees it. The count is a tripwire for
+accidental loss, not a census.
+
+**Prefer a policy test where ownership is structural.** For a directory with a
+single rule — every test under `tests/package/` carries `@pytest.mark.package` —
+a test that walks the directory and asserts the rule is strictly stronger than a
+count: it catches the newly-added unmarked test that a floor cannot see. Use
+counts only where membership is scattered across the tree and no such rule
+exists.
+
 **Secrets.** `SERPER_API_KEY` is a repository Actions secret.
 
 - **Never expose it to untrusted code.** Secrets are withheld from `pull_request`
@@ -760,8 +830,9 @@ between.
   belongs in the mocked L1 provider tests, which cost nothing.
 
 **"Green" is a gate only when enforced.** A passing workflow is not a gate until
-`fast`, `fast-extras`, `subsystem`, `chromium` and `package` are **required
-checks** under branch protection on `main`.
+`ci-required` — and only `ci-required`, per the paragraph above — is a **required
+check** under branch protection on `main`, with `fast`, `fast-extras`,
+`subsystem`, `chromium` and `package` in its `needs`.
 
 ### 10.4 Coverage
 
@@ -769,28 +840,56 @@ No absolute percentage target: a percentage rewards executing lines and can be
 satisfied by deleting tests. Two enforced controls, plus reporting.
 
 **1. Diff coverage — the PR gate.** `diff-cover --fail-under=80` over the changed
-lines of each PR. This is the control that does the work: it is unambiguous,
-needs no historical comparison, and puts the requirement where a reviewer can act
-on it. New code is covered or the PR is red.
+lines of each PR. This is the control that does the work: unambiguous, no
+historical comparison needed, and it puts the requirement where a reviewer can
+act on it.
 
-**2. A committed baseline that may not decrease.** Total branch coverage is
-written to `coverage-baseline.txt`, committed. CI measures head once and fails if
-the measured total is **below** the committed number; when it is above, the job
-prints the new value for the author to commit.
+The promise is precise: **at least 80% of coverable changed lines must be
+covered** — not "new code is covered or the PR is red". A PR can legitimately land
+with an uncovered changed line.
 
-This is deliberately a stored baseline rather than a re-measured merge base. A
-fresh merge-base measurement means checking out, installing, running and
-combining three revisions per side — six runs — and immediately raises a question
-with no good answer: does the base revision run *its* tests or *head's*? Each
-choice measures something different and neither is what the control is for. A
-committed number sidesteps both. Lowering it requires editing a tracked file in
-the PR, which is visible in review — which is the actual goal, since silent
-erosion, not any particular percentage, is the risk.
+Operationally:
 
-There is **no tolerance band.** A tolerance is what turns a ratchet into a
-bounded-regression policy that compounds across PRs: twenty PRs each losing 0.09
-points lose nearly two points with every job green. Measurement is deterministic
-for a fixed job set, so no band is needed.
+- The combined-coverage job (below) emits `coverage.xml`; `diff-cover` consumes
+  that, not the console report.
+- `--compare-branch=origin/main`.
+- `actions/checkout` defaults to a shallow clone, where `origin/main` does not
+  exist and `diff-cover` cannot compute a diff. The job sets `fetch-depth: 0`, or
+  fetches `main` explicitly before running.
+- Branch coverage is on, so a changed line with only one branch taken counts as
+  partially covered and does not satisfy the gate.
+
+**2. A committed baseline, ratcheted.** Total branch coverage is written to
+`coverage-baseline.json`, committed. Three checks, and all three are needed —
+any one alone leaves a hole:
+
+1. `head_baseline >= base_baseline`, where the base value is read from the PR's
+   base revision (`git show origin/main:coverage-baseline.json`). This is the
+   ratchet: lowering the committed number in the same PR that lowers coverage
+   now **fails CI**, rather than merely being visible in review.
+2. `measured_head == head_baseline` to the documented precision. Without this, a
+   coverage *rise* need never be recorded, and a later PR could silently give the
+   gain back while still clearing the stale floor.
+3. `measured_head >= head_baseline` is implied by (2) but stated separately so a
+   precision mismatch reports as such rather than as a regression.
+
+Read the number from `coverage json` output, not by parsing the formatted console
+report — the text report is a presentation format and its rounding is not a
+contract.
+
+**Precision.** Two decimal places on the percentage, taken from the JSON totals.
+
+This is deliberately a stored-and-compared baseline rather than a re-measured
+merge base. Re-measuring means checking out, installing, running and combining
+three revisions per side — six runs — and raises a question with no good answer:
+does the base revision run *its* tests or *head's*? Each measures something
+different and neither is what the control is for. Comparing two committed numbers
+gives a true non-decreasing guarantee at the cost of one `git show`.
+
+There is **no tolerance band.** A tolerance turns a ratchet into a
+bounded-regression policy that compounds: twenty PRs each losing 0.09 points lose
+nearly two points with every job green. Measurement is deterministic for a fixed
+job set, so no band is needed.
 
 **Measurement definition.** `coverage combine` over `fast` (Linux, Python 3.13,
 `mcp` max), `subsystem` (Linux) and `chromium` — one fixed set, so a
