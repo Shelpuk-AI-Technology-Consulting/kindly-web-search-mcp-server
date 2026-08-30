@@ -538,55 +538,89 @@ state, and tests must cover:
 - Low-entropy secret values, where substring matching yields false positives —
   the policy must say whether it redacts by key name, by pattern, or both.
 
-### 7.2 Outbound request policy — undefined
+### 7.2 Outbound request policy
 
-The server is unauthenticated and `get_content` fetches **any URL the caller
-supplies, from wherever the server runs**. Nothing currently restricts:
+**Decided 2026-08-31.** The server is unauthenticated and `get_content` fetches
+whatever URL a caller supplies, so the policy is stated here rather than left to
+implementation.
 
-- Non-HTTP schemes — `file:`, `data:`, `ftp:`, `chrome:`.
-- Loopback, RFC1918, link-local, IPv6 unique-local, and cloud metadata addresses
-  (`169.254.169.254`), including IPv4-mapped IPv6 forms.
-- Redirects that begin public and land private.
-- DNS rebinding between validation and connection (TOCTOU).
-- **A hostname resolving to several addresses at once**, where validation may
-  inspect a public record while the connector selects a private one. This needs no
-  timing and is not rebinding.
-- **Subresources fetched by a permitted page.** Chromium loads images, scripts,
-  frames, stylesheets and `fetch()` targets on its own account. Restricting the
-  navigation URL while the loaded page reaches `169.254.169.254` is still SSRF, so
-  any enforcement mechanism has to mediate *every* request the browser makes, not
-  the one it was given.
-- Proxy interaction, where `KINDLY_CHROME_PROXY` may reach networks the host
-  cannot — and where, with an HTTP `CONNECT` proxy, the **proxy** resolves the
-  hostname and the server never sees the destination address.
+**Scheme.** `http` and `https` only. `file:`, `data:`, `ftp:` and `chrome:` are
+refused. They are reachable today by accident — no loader handles them — and each
+has its own failure mode.
 
-**The policy is a product decision** (§13). Once stated, tests follow at **five**
-boundaries, and they exist whatever the policy says:
+**Address, by provenance.** The two are different code paths and hold different
+policies:
+
+| Provenance | Policy |
+|---|---|
+| **Externally supplied** — `get_content`'s `url`, and the links `web_search` fans out to | **Public addresses only.** Loopback, RFC1918, link-local, IPv6 unique-local, cloud metadata (`169.254.169.254`) and their IPv4-mapped IPv6 forms are refused. |
+| **Operator-configured** — `SEARXNG_BASE_URL`, `KINDLY_CHROME_PROXY` | **Unrestricted.** The operator chose these; reaching a private address here is the intended behaviour and nothing an attacker influences. |
+
+Restricting the externally-supplied path does **not** break a self-hosted SearXNG
+deployment, because that runs through `search_searxng` against an
+operator-configured URL rather than through the resolver.
+
+**A hostname resolving to several addresses** must have *every* returned record
+permitted. Pinning to one validated address would be stronger, but the connectors
+do not expose that control; requiring all records is enforceable with what exists.
+
+**Enforcement mechanism, by stack.** These differ because the stacks differ:
+
+- **`httpx`** — enforced. Resolution happens in Python, so the address is
+  observable and the check runs at validation, at every redirect hop, and against
+  the resolved address set. E3-6's seam is what makes this possible.
+- **Chromium** — **pre-navigation only**. The scheme and the resolved address of
+  the URL handed to the browser are checked before navigation. Chromium then
+  resolves and connects inside its own process, so two cases are **not** enforced:
+
+  1. **DNS rebinding** — the browser re-resolves, and may reach an address the
+     check never saw.
+  2. **Subresources** — a permitted public page can request a private address
+     through an image, script, frame, stylesheet or `fetch`, and the server never
+     sees that URL.
+
+**These two gaps are accepted, not overlooked.** Closing them needs a local
+policy-enforcing proxy that mediates every browser request — a component the
+project would own and maintain. That was judged disproportionate for a server
+whose realistic exposure is a caller naming a private address directly, which
+pre-navigation checking does stop. §7.3 records the trigger for revisiting.
+
+**Upstream proxy — a trusted boundary.** With `KINDLY_CHROME_PROXY` set to an HTTP
+`CONNECT` proxy, the **proxy** resolves the hostname and the server never sees the
+destination address. Address policy therefore cannot be enforced through it. The
+proxy is operator-configured, so this is where the guarantee stops rather than an
+attacker-controlled path, and it is documented as such.
+
+**Tests at five boundaries.** Enforcement is now settled, but the tests are not
+conditional on it — the two accepted gaps need characterizing precisely because
+they are gaps:
 
 1. **URL validation** — L1, table-driven over scheme, address class, and
    multi-record answers including mixed public/private and dual-family results.
-2. **Redirect handling** — L3, a local server issuing a public→private redirect.
-3. **Connection** — L3, a hostname whose resolution changes between validation
-   and connect.
+2. **Redirect handling** — L3, a local server issuing a public→private redirect;
+   enforced on the `httpx` path.
+3. **Connection** — L3, a hostname whose resolution changes between validation and
+   connect; **enforced** for `httpx`, **characterized as a known gap** for
+   Chromium.
 4. **Browser-initiated requests** — L3, a permitted public page attempting a
-   private subresource by each route Chromium supports.
+   private subresource. **Characterized as a known gap**: the test records that the
+   request succeeds today, so that if a policy proxy is ever added the test flips
+   and someone notices.
 5. **Upstream proxy** — L3, a request whose hostname a configured `CONNECT` proxy
-   resolves on the server's behalf. This is its own boundary, not a facet of the
-   others: the four above all assume the server can see the destination address,
-   and this is the case where it cannot.
+   resolves. **Characterized**, pinning where the guarantee ends.
 
-**Enforcement is conditional; these tests are not.** A policy permitting
-everything removes the need for production enforcement, not the need to know how
-the server behaves at each boundary. In that case the five tests become
-*conformance* tests asserting each route is permitted and recording where a
-guarantee stops. Deleting them would leave redirect handling, Chromium navigation
-and subresources, Chromium DNS behaviour and proxy behaviour with no characterization
-at all, which is not a lighter test suite but an unmeasured one.
+A characterization test asserting a gap is not an endorsement of it. It is what
+stops the gap being rediscovered, and what makes closing it observable.
 
-The `httpx` and Chromium paths need separate mechanisms: `httpx` resolves in
-Python where the address is observable, while Chromium resolves and connects
-inside the browser process. Selecting the browser mechanism is part of §13.1's
-decision, not an implementation detail beneath it.
+### 7.3 Revisiting the accepted gaps
+
+The Chromium subresource and rebinding gaps are accepted on the basis that this
+server runs where its operator can see it. **Revisit if any of these becomes
+true:** the server is exposed beyond loopback or a trusted network; it gains
+authentication and therefore multi-tenant use; or a prompt-injection path is found
+that reliably steers `get_content` at attacker-chosen pages. Any of those changes
+the exposure that justified the trade, and the answer is the local
+policy-enforcing proxy of §13.1's candidate list.
 
 ---
 
@@ -1540,96 +1574,35 @@ the plan is stale.
 blocks at the place they apply, naming what was raised and why it was not taken.
 A judgement that lives only in a review thread is invisible to the next reader.
 
-### 13.1 Outbound request policy — X-1
+### 13.1 Outbound request policy — RESOLVED 2026-08-31
 
-**The largest open item, and it is four decisions rather than one.** Answering
-only the first leaves the browser path unenforced, which is why this keeps
-resurfacing in review.
+**The policy is stated in §7.2.** In summary: `http`/`https` only; public addresses
+only for externally-supplied URLs; unrestricted for operator-configured ones;
+`httpx` fully enforced; Chromium enforced pre-navigation with the rebinding and
+subresource gaps accepted and characterized; `KINDLY_CHROME_PROXY` a documented
+trusted boundary.
 
-**Decisions 1 and 2 are independent dimensions, not one switch.** Treating them as
-a single allow/restrict choice cannot express what may well be the right answer —
-*permit private HTTP(S) so self-hosted SearXNG and intranet docs keep working,
-while refusing `file:`, `data:`, `ftp:` and `chrome:` outright*. Under a single
-switch, "allow" would delete the enforcement steps that a scheme restriction still
-needs.
+**What made this decidable** was separating two things that had been conflated:
 
-1. **Which URL schemes are fetchable?** `http` and `https` are the only ones the
-   loaders are built for; `file:`, `data:`, `ftp:` and `chrome:` are reachable
-   today and each has a different failure mode.
-2. **Are private-network addresses fetchable, and by which caller?** The obvious
-   answer is "yes, or self-hosted SearXNG breaks" — but that conflates two paths
-   that are not the same:
+- **Scheme and address are independent dimensions.** A single allow/restrict switch
+  could not express the answer that was actually wanted — refuse exotic schemes,
+  restrict addresses by provenance.
+- **Provenance matters more than the address class.** "Private addresses must be
+  allowed or self-hosted SearXNG breaks" was true of the *operator-configured*
+  path and irrelevant to the *externally-supplied* one. Those are different code
+  paths, so a restriction on the second costs the first nothing. That observation
+  is what turned a decision that looked expensive into a cheap one.
 
-   - **Operator-configured** — `SEARXNG_BASE_URL`, and `KINDLY_CHROME_PROXY`. The
-     operator chose these; reaching a private address here is the intended
-     behaviour, and nothing an attacker influences.
-   - **Externally supplied** — the `url` argument to `get_content`, and the result
-     links `web_search` fans out to. These are attacker-influenceable, and they
-     are what SSRF means here.
+**Deliberately not chosen:** the local policy-enforcing proxy. It is the only
+mechanism that would close the Chromium subresource and rebinding gaps, and it was
+judged disproportionate for this server's exposure. §7.3 records the conditions
+that should reopen it.
 
-   They are different code paths (`search_searxng` versus
-   `resolve_page_content_markdown`), so they can hold different policies. A
-   restriction on externally supplied URLs does **not** break self-hosted SearXNG.
-   The plausible answer is therefore narrower and cheaper than "permit private
-   addresses everywhere": permit them where the operator configured them, refuse
-   them where a caller supplied them.
-
-   An answer must say which provenance each rule applies to. Saying only "private
-   addresses are allowed" leaves the actual exposure unaddressed.
-3. **If *either* dimension is restricted, how are Chromium's own connections
-   enforced?** `httpx`
-   resolves in Python where the address is observable. Chromium resolves and
-   connects *inside the browser process*, so a Python-side seam proves nothing
-   about what it contacted. Candidates: a **local policy-enforcing proxy** that
-   resolves and decides; a **host-resolver rule paired with per-request
-   interception**; or another mechanism mediating every browser request.
-4. **What happens to an upstream proxy?** `KINDLY_CHROME_PROXY` is passed to
-   Chromium verbatim (`nodriver_worker.py`, `_build_chromium_launch_args`). With
-   an HTTP `CONNECT` proxy the **proxy** resolves the hostname and the server never
-   sees the destination address, so host-side validation is bypassed by
-   configuration alone. Prohibit it under a restrictive policy, treat it as a
-   trusted boundary whose limit is documented, or chain it through something that
-   enforces.
-
-Decisions 3 and 4 are independent of each other too. Disallowing or trusting the
-proxy says nothing about Chromium with no proxy configured.
-
-> **Deferred: enumerating further policy dimensions.** Scheme and address class are
-> separated above because both are concretely reachable today and pull in opposite
-> directions — the plausible answer permits private HTTP(S) while refusing
-> `file:`/`data:`. Other dimensions could be carved out in the same way: redirect
-> depth, non-standard ports, request method, response size. They are **not**
-> enumerated here, because each one that is speculative adds a branch E9-0 must
-> materialise and a column the answer must fill, for a restriction nobody has asked
-> for. If X-1's author needs one, adding it is a paragraph here and a case in
-> §7.2 — the structure supports it; the guess does not belong in it.
-
-**An answer must:**
-
-- State the policy **per dimension** — schemes and address classes separately —
-  and, if either restricts anything, name the mechanisms for 3 and 4. Enforcement
-  is needed whenever *any* dimension restricts *anything*; only a policy permitting
-  every listed scheme **and** every listed address class removes the need for it.
-- **Mediate every request the browser makes, not the navigation URL.** A permitted
-  public page can reach a private address through an image, script, frame,
-  stylesheet or `fetch`. An architecture that passes top-level navigation and
-  cannot constrain subresources does not satisfy this decision (§7.2).
-- Say whether *every* address a hostname resolves to must be permitted, or whether
-  the connection is pinned to one validated address (§7.2).
-- Re-plan the implementation branch. A restrictive policy is not one change: it
-  spans a shared policy function, `httpx` enforcement across redirect hops,
-  Chromium enforcement, and deterministic rebinding and proxy tests. The plan's
-  **E9-0** exists to carry that re-planning and must land before any
-  **outbound-policy** step is authored — the plan's E9-2…E9-7. It does not gate
-  E3-6 or E9-1.
-
-**Blocks:** the outbound-policy work — the plan's E9-0, and through it E9-2…E9-7.
-It does **not** block the plan's E3-6, the resolver and transport seam, whose API
-is the same whichever way this is decided; nor E9-1, the diagnostics sanitizer.
-Nothing else in the plan waits on it.
-
-**Not deciding is itself a position**, and a poor one: the server is
-unauthenticated and `get_content` fetches whatever URL it is given.
+> **Deferred: further policy dimensions.** Redirect depth, non-standard ports,
+> request method and response size could each be carved out as dimensions in the
+> same way. They are not, because no restriction on them has been asked for and
+> each speculative one adds a column an answer must fill. Adding one later is a
+> paragraph here and a case in §7.2.
 
 ### 13.2 Tool result schemas — no external prerequisite
 

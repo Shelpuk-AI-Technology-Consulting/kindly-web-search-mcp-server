@@ -118,7 +118,7 @@ action).
 
 ## 2. Sequencing for parallelism
 
-<!-- totals: steps=79 authorable=50 pr_authorable=46 -->
+<!-- totals: steps=78 authorable=51 pr_authorable=47 -->
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
@@ -165,40 +165,19 @@ note recorded before any dependent step activates**.
 
 | ID | Prerequisite | Blocks | Owner |
 |---|---|---|---|
-| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1) — see the note below; it decides more than a yes/no. | E9-0, and through it E9-2…E9-7 — **before authoring**. Not E3-6, whose API is policy-independent. | maintainer |
 | **X-2** | Repository admin authority — branch protection, require a PR, no bypass actors | E4-2 | repo admin |
 | **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-7 | repo admin |
 | **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-13 | maintainer |
 | **X-5** | Observational coverage reviewer and cadence (TEST_SUITE §10.4 requires a named owner; unowned reporting decays into the signal nobody reads) | E10-7 | maintainer |
 | **X-6** | Owners for every row of TEST_SUITE §9's risk-to-test matrix. X-4 and X-5 name two; the column is otherwise blank, and TEST_SUITE §13.3 leaves it open | E13-2 | maintainer |
 
-**X-1 is the only prerequisite that blocks authoring**, and it blocks every step
-listed in its Blocks column — declared `impl` because neither the policy function
-nor the seams it attaches to can be written until the decision exists.
+**X-1 is answered** (TEST_SUITE §13.1, decided 2026-08-31), so nothing in this
+plan is blocked from being *written* any more. E9-0 — the step that existed to
+materialise the chosen branch — is complete, and the E9 steps are now concrete
+rather than conditional.
 
-**What X-1 decides is stated in TEST_SUITE §13.1, and only there.** This document
-deliberately does not summarise it — not even the number of parts. An earlier
-revision said "three decisions" two paragraphs after warning against restating the
-decision here, and was wrong within a round of §13.1 growing a fourth. Restating is
-how the two drift; the count is as restateable as anything else.
-
-Two scheduling consequences belong here rather than in §13.1:
-
-- **E9-0 must land before any outbound-policy step is authored** — E9-2…E9-7.
-  **Not E3-6**, whose API is policy-independent (§E3-6). It does **not** gate E9-1, the diagnostics sanitizer, which the graph
-  correctly leaves independent of X-1; reading this as "all security work" would
-  serialize a stream that is deliberately parallel. X-1 is a decision;
-  turning it into a plan is a reviewable change to both documents. Without that
-  gate every E9 step becomes authorable the moment X-1 is answered, and an
-  engineer picks up E9-4 — a deliberately non-atomic placeholder that could mean a
-  documented limitation or a local proxy with its own lifecycle, routing, resolver
-  behaviour and authentication chaining.
-- **A restrictive answer is several PRs, not one.** E9-0 replaces E9-4 with
-  architecture-specific steps carrying their own dependencies, sizes and
-  acceptance criteria.
-
-The other prerequisites block merge or activation, so the work they gate can be
-written first.
+The remaining prerequisites block merge or activation only, so the work they gate
+can be written first.
 
 **E13-2** writes X-6's answer into `TEST_SUITE.md` §9's Owner column. Without it
 X-6 could be "complete" with names in a ticket while the design that is supposed
@@ -659,182 +638,77 @@ duplicating tests or touching the same files.
 
 ### E9 — Security
 
-**X-1's artefact selects the subplan**, and the plan cannot be more specific until
-it does. The branch is **not** a single allow/restrict switch: TEST_SUITE §13.1
-decides schemes and address classes as separate dimensions, and enforcement is
-needed whenever *either* restricts anything.
+**X-1 is answered** (TEST_SUITE §7.2, decided 2026-08-31), so this epic is no
+longer conditional: `http`/`https` only, public addresses only for
+externally-supplied URLs, `httpx` fully enforced, Chromium enforced pre-navigation
+with two gaps accepted and characterized, and the upstream proxy a documented
+trusted boundary.
 
-**Two things vary independently: whether a step's *enforcement* is needed, and
-whether its *tests* are.** The tests are always needed — TEST_SUITE §7.2's four
-boundaries exist whatever the policy says, because "we permit everything" is a
-behaviour worth characterizing and a deleted test measures nothing. Only the
-production enforcement is conditional, and it is conditional **per dimension**,
-not on a single restricted/unrestricted flag.
-
-| Step | Production change required when | Tests |
-|---|---|---|
-| E3-6 resolver and transport seam | **always** — see below | — |
-| E9-2 policy function | any scheme **or** address restriction | always |
-| E9-3 `httpx` validation and redirect hops | any scheme **or** address restriction | always |
-| E9-4 Chromium navigation and subresources | any scheme **or** address restriction | always |
-| E9-5 `httpx` rebinding and mixed-address | address restriction only | always |
-| E9-6 Chromium rebinding | address restriction only | always |
-| E9-7 proxy policy | address restriction only | always |
-
-**E3-6 is unconditional, and that is deliberate.** An earlier revision listed it as
-address-restriction-only, which made the address-permitting branch impossible to
-build: E9-5's rebinding test is unconditional, E3-6 is the mechanism that makes it
-deterministic, and E3-6's own rationale is that the behaviour cannot be observed
-from outside. Dropping the seam while keeping the test that requires it is a
-contradiction. The seam is small — a resolver callable and a transport factory,
-both defaulting to today's behaviour — and it exists for testability, exactly like
-`_run_worker_command` (§11.2). Its justification does not depend on the policy.
-
-**E9-2 is conditional, because a classifier nobody calls is not useful on merge.**
-If no dimension is restricted there is nothing to classify: the conformance tests
-assert routes are permitted, they do not consult a policy. Shipping a tested but
-unreferenced production function would satisfy §1.7's letter and break its intent,
-so E9-0 drops the production function in that case and folds its cases into the
-boundary tests.
-
-The distinction is load-bearing. Permitting private addresses while refusing
-`file:`, `data:`, `ftp:` and `chrome:` needs scheme enforcement on both stacks but
-**no** rebinding seam, no mixed-address handling, and no proxy policy — a
-`CONNECT` proxy reaching a private address is not a violation if private addresses
-are permitted. Collapsing that into "anything restricted" would have bought the
-maximal security implementation for a scheme restriction.
-
-Where enforcement is not required, the step's tests remain as **conformance
-tests**: each route is exercised and asserted permitted, and where a guarantee
-stops — a `CONNECT` proxy resolving on the server's behalf — that limit is recorded
-rather than silently untested.
-
-**E9-4 is a placeholder, not a specification.** E9-0 expands or replaces it with
-architecture-specific steps.
-
-> **Deferred: enumerating every dimension combination.** Two dimensions give four
-> combinations today, and each further dimension doubles them. This table gives
-> E9-0 the *rule* — enforcement follows the dimension that requires it, tests are
-> unconditional — rather than a materialised branch per combination, which would
-> go stale the moment §13.1 gains a dimension and which nobody would read. E9-0
-> applies the rule to whatever X-1 actually decided.
+Two consequences shape the steps below. **The `httpx` and Chromium paths get
+different treatment** — Python resolution is observable, browser resolution is not.
+And **the two accepted gaps still get tests**, because a gap nobody characterized
+is one that gets rediscovered, and because a test asserting today's behaviour is
+what flips if a policy proxy is ever added.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E9-0** | Materialise the selected policy branch in both documents | PR | impl X-1 | M |
 | **E9-1** | Sanitize diagnostics at the emit boundary | PR | impl E5-7 | L |
-| **E9-2** | Shared outbound policy function | PR | impl E9-0, impl E0-2 | M |
+| **E9-2** | Outbound policy function — scheme, address class, provenance | PR | impl E0-2 | M |
 | **E9-3** | Enforce on the `httpx` clients, including every redirect hop | PR | impl E9-2, impl E3-6 | M |
-| **E9-4** | Enforce on the Chromium fetch path | PR | impl E9-2, impl E3-6 | M |
-| **E9-5** | DNS-rebinding test on the `httpx` path | PR | impl E9-3 | M |
-| **E9-6** | Rebinding and redirect tests on the Chromium path | PR | impl E9-4 | M |
-| **E9-7** | Proxy policy test | PR | impl E9-4 | M |
+| **E9-4** | Pre-navigation enforcement on the Chromium path | PR | impl E9-2 | M |
+| **E9-5** | `httpx` rebinding and multi-address enforcement | PR | impl E9-3 | M |
+| **E9-6** | Characterize the Chromium rebinding and subresource gaps | PR | impl E9-4, impl E3-6 | M |
+| **E9-7** | Characterize the `CONNECT`-proxy boundary | PR | impl E9-4 | M |
 
-- **E9-0.** Amends `TEST_SUITE.md` §7.2 with the chosen policy **per dimension**
-  and the selected Chromium and proxy mechanisms, and rewrites this document's E9
-  branch to match.
-
-  It applies the table above **per dimension**, not as a single branch:
-
-  - For each step whose dimension X-1 did not restrict, strip the production
-    change and rewrite the step as a **conformance test** asserting the route is
-    permitted, or recording where a guarantee stops. Do not delete it — a deleted
-    boundary test leaves that route uncharacterized.
-  - **E3-6 survives regardless.** It is the mechanism the retained rebinding tests
-    need, not an enforcement step.
-  - **E9-2's production function is dropped if nothing is restricted**, its cases
-    folding into the boundary tests, since a classifier with no caller is not
-    useful on merge.
-  - Where enforcement *is* required, expand or replace E9-4 with
-    architecture-specific steps carrying their own dependencies, sizes and
-    acceptance criteria.
-
-  Either way it updates the declared totals.
-  *Verify:* the four **semantic** checks below, then the syntactic ones. A rewrite
-  can pass a DAG check while having quietly lost a boundary or kept enforcement
-  nobody asked for, so the syntactic checks are necessary and not sufficient.
-
-  1. **Every restricted dimension maps to surviving enforcement steps.** For each
-     dimension X-1 restricted, name the steps that enforce it; none may be missing.
-  2. **Every §7.2 boundary maps to a surviving test.** All five — URL validation,
-     redirects, connection, browser-initiated requests, upstream proxy — are still
-     covered by some step, as enforcement or as conformance.
-  3. **No production enforcement survives for an unrestricted dimension.** The
-     converse of check 1, and the one that catches a rewrite defaulting to the
-     maximal implementation.
-  4. **Every retained rebinding test names its deterministic fixture mechanism**,
-     and that mechanism exists in the plan — E3-6 or whatever replaces it.
-
-  Then: `python scripts/check_plan_dag.py` passes; no step declares a dependency on
-  a deleted row; `TEST_SUITE.md` §7.2 and §13.1 record the decision, so this plan
-  traces to the design rather than asserting new design of its own.
 - **E9-1.** **Production change**, shipped with its tests in one PR. One sanitizing
   step at the top of `Diagnostics.emit`, before the entry is appended to `entries`.
+  Independent of the outbound policy.
   *Verify:* both the returned `entries` and the emitted JSON are asserted;
   `get_content("https://user:token@host/x")` leaks the token in neither; each §7.1
   policy case has a test; a test pins that sanitizing only at the writer would
   fail, so nobody relocates it later.
 - **E9-2.** One pure function classifying a URL — scheme, and the address class of
-  a *resolved* host — returning the policy decision X-1 recorded. No call sites
-  yet, so it merges green either way.
-  **A hostname resolves to a set, not an address.** The policy must say whether
-  *every* returned record must be permitted or whether the connection is pinned to
-  one validated address — a name returning both a public and a private A record
-  otherwise passes validation on the public one while the connector picks the
-  private one, with no timing involved and no rebinding required.
-  *Verify:* table-driven over scheme (`file:`, `data:`, `ftp:`, `chrome:`) and
-  address class (loopback, RFC1918, link-local, IPv6 ULA, `169.254.169.254`),
-  plus **mixed public/private record sets**, **IPv4 and IPv6 answers for one
-  name**, and **IPv4-mapped IPv6** (`::ffff:169.254.169.254`), asserting whatever
-  X-1 decided; each row fails if its branch is removed; the module cites the X-1
-  artefact so the expected behaviour is traceable.
-  Materialising the branch is **E9-0's** job, not this step's. E9-2 owns the
-  policy function and its tests, nothing more. Otherwise the step count,
-  chain length and completion state reported by the validator stay wrong from the
-  moment X-1 is decided — a conditional branch that only prose knows about is not
-  in the source of truth.
-- **E9-3.** Applies E9-2 at the `httpx` boundary. **Redirects are the hard part**:
-  the clients follow them internally today, so the check must run on each hop, not
-  only the submitted URL. *Verify:* a local server issuing a public→private
-  redirect behaves per policy; a chain of two redirects is checked at both; the
-  test fails if the check is applied only to the initial URL.
-- **E9-4.** Applies E9-2 on the Chromium path, which does not share the `httpx`
-  stack and therefore cannot inherit E9-3's enforcement. **Implements whichever
-  architecture X-1 selected** (§3); this step cannot be scoped before that choice.
-  *Verify:* the observable is the **connection**, not the classification — a
-  fixture recording the address actually contacted, such as the local
-  policy-enforcing proxy, or a listener on the private address asserting it was
-  never reached. A test asserting only a pre-navigation decision is explicitly
-  insufficient. **Subresources are in scope:** a fixture serves a *permitted*
-  public page that attempts a private request via `<img>`, `<script>`, `<iframe>`,
-  a stylesheet `url()` and `fetch()`, and the private listener must record **zero**
-  connections. A mechanism passing the navigation test while failing this one has
-  not implemented the policy.
+  every address a host resolves to — plus the **provenance** distinction §7.2
+  draws: externally-supplied URLs are restricted, operator-configured ones are not.
+  No call sites yet, so it merges green.
+  *Verify:* table-driven over scheme (`file:`, `data:`, `ftp:`, `chrome:` refused;
+  `http`/`https` permitted) and address class (loopback, RFC1918, link-local,
+  IPv6 ULA, `169.254.169.254`, IPv4-mapped IPv6), plus **mixed public/private
+  record sets** — which must be refused, since §7.2 requires *every* record to be
+  permitted — and dual-family answers; and both provenances for each. Each row
+  fails if its branch is removed.
+- **E9-3.** Applies E9-2 at the `httpx` boundary, using E3-6's seam so the resolved
+  address set is observable. **Redirects are the hard part**: the clients follow
+  them internally, so the check runs on each hop, not only the submitted URL.
+  *Verify:* a local server issuing a public→private redirect is refused; a chain of
+  two redirects is checked at both; an operator-configured URL to a private address
+  is permitted; the test fails if the check is applied only to the initial URL.
+- **E9-4.** Applies E9-2 to the URL handed to Chromium, **before navigation**. That
+  is the whole mechanism — §7.2 accepts that the browser's own resolution and
+  subresource requests are not mediated.
+  *Verify:* `get_content` on a private address is refused before any browser
+  starts, asserted by observing that no Chromium process is created; a public URL
+  proceeds; an operator-configured URL is unaffected.
 - **E9-5.** Uses E3-6's resolver seam so the race is scripted rather than real.
-  Depends on **E9-3**, not merely on the policy function: a rebinding test that
-  only exercises `E9-2` would pass while the `httpx` connection path enforces
-  nothing.
-  *Verify:* a hostname resolving public at validation and private at connect
-  behaves per policy; a hostname returning a **mixed record set** in one answer
-  behaves per policy, which is the case needing no timing at all; the tests are
-  deterministic across 50 consecutive runs.
-- **E9-6.** The same for Chromium, which E9-5 cannot cover — it is a different
-  networking stack — plus the redirect case E9-4 does not itself test. E3-6's
-  Python resolver seam does **not** reach here; the fixture must control what the
-  browser resolves, via the mechanism X-1 selected.
-  *Verify:* a Chromium fetch following a public→private redirect behaves per
-  policy; a hostname whose resolution changes between validation and connect
-  behaves per policy; the address actually contacted is observed, not inferred;
-  both fail if E9-4's enforcement is removed.
-- **E9-7.** The hardest case. With an HTTP `CONNECT` proxy the **proxy** resolves
-  the hostname, so host-side address validation can be bypassed by configuration
-  alone and the application never sees the destination address. Whatever X-1
-  decided has to hold here, and under a "trusted boundary" choice this step
-  instead pins and documents that limit.
-  *Verify:* with a proxy configured, a request whose hostname the proxy resolves
-  to a private address behaves per policy; the test uses a hostname, **not a
-  literal private URL**, since a literal address does not exercise the bypass; it
-  fails if the policy is checked only against the locally resolved address.
+  *Verify:* a hostname resolving public at validation and private at connect is
+  refused; a hostname returning a **mixed record set** in one answer is refused,
+  which is the case needing no timing at all; deterministic across 50 consecutive
+  runs.
+- **E9-6.** **Characterization, not enforcement.** §7.2 accepts these two gaps, and
+  this step pins them so they are visible and so closing them is observable.
+  *Verify:* a permitted public page whose subresource requests a private address —
+  by `<img>`, `<script>`, `<iframe>`, a stylesheet `url()` and `fetch()` — reaches
+  it, and the test says so explicitly, citing §7.2's acceptance; a Chromium
+  rebinding case likewise. **Each test carries a comment naming §7.3's revisit
+  triggers**, so whoever sees it failing after a policy proxy lands knows the
+  failure is the good outcome.
+- **E9-7.** **Characterization.** With `KINDLY_CHROME_PROXY` set to a `CONNECT`
+  proxy, the proxy resolves and the server cannot enforce address policy through
+  it.
+  *Verify:* a request whose hostname the proxy resolves to a private address
+  reaches it; the test uses a **hostname, not a literal private URL**, since a
+  literal address is caught by E9-4 and would not exercise the boundary; it cites
+  §7.2's trusted-boundary statement.
 
 ---
 
