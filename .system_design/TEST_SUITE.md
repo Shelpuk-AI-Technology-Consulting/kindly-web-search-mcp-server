@@ -598,10 +598,23 @@ conversion bug.
    So:
 
    1. Mark the Protocol `@runtime_checkable` — without it `isinstance` raises
-      `TypeError` rather than answering.
+      `TypeError` rather than answering. Use it for the **presence** check only.
    2. A **static type-check job** (§10.3) is what catches signature drift, which
       is the other half of the original outage: `_fetch_html` gaining five
       arguments is exactly the failure a runtime `isinstance` returns `True` for.
+
+      **Declaring a Protocol and a fake does not make mypy compare them.** The
+      conformance must be forced by an assignment the checker has to verify:
+
+      ```python
+      # tests/doubles/worker_process.py
+      _contract: WorkerProcess = FakeWorkerProcess()   # mypy checks this line
+      ```
+
+      Two conditions or the check passes vacuously: the fake's members are fully
+      annotated, and the job runs with `disallow_any_explicit` /
+      `disallow_untyped_defs` on this surface. An unannotated member — or an
+      `AsyncMock` attribute, which types as `Any` — satisfies any Protocol at all.
    3. An explicit **runtime contract test** asserting each attribute exists, each
       method is callable, and each async method returns a coroutine — because
       `runtime_checkable` verifies presence only, not types or arity.
@@ -795,6 +808,30 @@ aggregator that rejects skips (every PR red) and one that accepts them (a real
 accidental skip hidden). The nightlies get their own `nightly-summary` aggregator
 on the same pattern, which reports to the alert owner named in §6.3.
 
+**The `chromium` job needs a test-runtime image, not the shipped one.** The
+production `Dockerfile` starts `FROM python:3.13-slim` (a moving tag), installs
+`chromium` from Debian's rolling archive, and `COPY`s `src/` in before
+`pip install .`. Neither way of reusing it works: rebuilt per PR the browser and
+base layer float, so the environment is not controlled; reused by digest it
+contains a *previous* revision of the application and can go green **without ever
+executing the PR's code** — the dangerous failure, because it reads as a pass.
+
+So the job uses a **separate test-runtime image**, and the shipped `Dockerfile` is
+left alone:
+
+- It holds only Python, Chromium and system dependencies — **no application
+  code**. Nothing in it changes when the project does.
+- It is built from a pinned base digest with pinned Debian package versions (or an
+  archive snapshot), published once, and referenced from CI **by digest**.
+- CI installs the PR's wheel into it at run time (`pip install --no-deps` plus the
+  pinned requirements), so the application layer is always the current checkout
+  while the browser layer never moves.
+- The job asserts the imported package resolves to that freshly installed wheel,
+  as §6.1 requires. That assertion is what makes a green result impossible to
+  obtain against code baked into the image.
+
+Rebuilding the image is a deliberate PR that updates the recorded digest.
+
 **`types` is deliberately narrow.** It runs `mypy` over the modules that declare or
 implement the test-double Protocols (§8A step 3), not the whole tree. Repo-wide
 type checking on ~6,849 largely unannotated lines is its own project with its own
@@ -921,207 +958,176 @@ check** under branch protection on `main`, with `fast`, `fast-extras`,
 ### 10.4 Coverage
 
 No absolute percentage target: a percentage rewards executing lines and can be
-satisfied by deleting tests. Two enforced controls, plus reporting.
+satisfied by deleting tests. Three controls, each aimed at a failure the others
+cannot see.
 
-**1. Diff coverage — the PR gate.** `diff-cover --fail-under=80` over the changed
-lines of each PR. This is the control that does the work: unambiguous, no
-historical comparison needed, and it puts the requirement where a reviewer can
-act on it.
+**1. Every production module must appear in the report.** This is the control that
+would actually have caught this project's worst gap, and the first draft of this
+section did not have it.
 
-The promise is precise: **at least 80% of coverable changed lines must be
-covered** — not "new code is covered or the PR is red". A PR can legitimately land
-with an uncovered changed line.
+By default coverage.py reports only files it *observed being executed*. A module
+no test ever imports is absent from the report entirely — so
+`scrape/chromium_pool.py`, 372 lines with no test file, would contribute nothing
+and drag nothing down. It would be invisible rather than visibly at zero. Setting
+`source_pkgs` is what makes coverage.py report never-executed files.
+
+```ini
+# .coveragerc
+[run]
+source_pkgs = kindly_web_search_mcp_server
+branch = true
+relative_files = true
+
+[paths]
+source =
+    src/kindly_web_search_mcp_server
+    */site-packages/kindly_web_search_mcp_server
+```
+
+The `[paths]` mapping is not optional here. The lane installs a wheel, so coverage
+records paths under `site-packages`, while `git diff` produces
+`src/kindly_web_search_mcp_server/...`. Unmapped, the two never join: the totals
+double-count and `diff-cover` finds no coverage for any changed line and reports
+nothing — passing silently. `relative_files = true` is what keeps the mapping
+working across a Windows and Linux combine.
+
+Two assertions enforce it after combining:
+
+- Every `.py` file under `src/kindly_web_search_mcp_server/` appears in
+  `coverage.json`, including files at zero. A new module that nothing imports
+  fails the build rather than vanishing.
+- A PR that changes executable Python lines may not produce a `diff-cover` report
+  with **zero** analyzed lines. Zero means the path mapping broke, not that the
+  change was safe.
+
+**2. Diff coverage — the PR gate.** `diff-cover --fail-under=80` over the changed
+lines of each PR.
+
+The promise is precise: **at least 80% of changed statement lines that appear in
+the coverage report must be covered.** Not every changed line — diff-cover
+compares a line-based diff against a statement-based report, so continuation lines
+of a multi-line statement appear in the diff and not in the report, and are simply
+not counted. `--expand-coverage-report` extends the report to cover them; it is
+worth adopting, but it must be validated on this codebase first and the promise
+above is what holds without it.
 
 Operationally:
 
-- The combined-coverage job (below) emits `coverage.xml`; `diff-cover` consumes
-  that, not the console report.
+- The combined-coverage job emits `coverage.xml`; `diff-cover` consumes that, not
+  the console report.
 - **The diff comes from the same boundary as the baseline** — the event's base
-  SHA, not `origin/main`. Generate it explicitly and pass it in:
+  SHA, not `origin/main`:
 
   ```bash
   git diff "$BASE_SHA"...HEAD > diff.txt
   diff-cover coverage.xml --diff-file=diff.txt --fail-under=80
   ```
 
-  `--compare-branch=origin/main` would contradict the stacked-PR rule stated for
-  the baseline: a PR based on another PR would have its parent's changed lines
-  counted as its own, and could fail on coverage it did not author. One boundary
-  for both controls, taken from the immutable event payload.
-- `actions/checkout` defaults to a shallow clone, in which the base SHA is not
-  present and `git diff` cannot resolve it. The job sets `fetch-depth: 0`, or
-  fetches the base explicitly before running.
-- **The gate measures changed-line execution only.** A changed line where only one
-  branch was taken counts as covered here. Branch completeness is measured by the
-  whole-project report (`branch = true`) and by mutation testing (§3.2), not by
-  this gate.
+  `--compare-branch=origin/main` would contradict the stacked-PR rule below: a PR
+  based on another PR would be charged for its parent's changed lines. One
+  boundary for both controls, from the immutable event payload.
+- `actions/checkout` defaults to a shallow clone in which the base SHA is absent
+  and `git diff` cannot resolve it. The job sets `fetch-depth: 0`, or fetches the
+  base explicitly.
+- The gate measures changed-line execution only. Branch completeness on changed
+  lines needs `diff-cover >= 10.4` and `--branch-coverage`, which this design does
+  **not** pass; §10.2 sets the floor at 10.4 anyway so the lane's exact pins do not
+  have to be renegotiated later to gain the option. Adopting the flag is a separate
+  change that must be exercised first.
 
-  Branch-aware diff coverage needs `diff-cover >= 10.4` and its
-  `--branch-coverage` flag, which this design does **not** pass. The floor is set
-  at 10.4 anyway for a plain reason: the ratchet lane pins its tooling exactly
-  (§"pinned lane"), so starting below 10.4 would mean a coordinated
-  pin-bump-plus-baseline-reset later just to gain an option. Taking the newer
-  floor now costs nothing on a dev-only tool. Adopting the flag remains a separate,
-  deliberate change that must be exercised first — an earlier draft of this
-  document asserted branch behaviour the pinned version could not deliver, and the
-  gate is only ever as strong as the flag actually passed.
+**3. A committed baseline over the hermetic tests only.** Total branch coverage of
+the hermetic suite is written to `coverage-baseline.json`, committed, and may not
+decrease.
 
-**2. A committed baseline, ratcheted.** Total branch coverage is written to
-`coverage-baseline.json`, committed. Three checks, and all three are needed —
-any one alone leaves a hole:
+**Scope: L1 and L2 only — `fast` on Linux, Python 3.13, pinned lane.** The
+`subsystem` and `chromium` jobs are deliberately excluded, and this is the change
+that makes exact comparison honest. Those jobs drive real processes, real
+timeouts, retries and a real browser; which branches execute can legitimately
+differ between runs on identical code, and a single such branch moves a two-decimal
+total. Ratcheting on a number that flickers teaches people to edit the baseline
+until CI passes, which destroys the control. Their coverage is still reported; it
+just does not gate.
 
-1. `head_baseline >= base_baseline`, where the base value is read from the PR's
-   **base SHA as supplied by the event** — `github.event.pull_request.base.sha` —
-   via `git show <base-sha>:coverage-baseline.json`. Not `origin/main`, whose tip
-   can move while the workflow is running, which would make the comparison depend
-   on unrelated merges. This is the ratchet: lowering the committed number in the
-   same PR that lowers coverage now **fails CI**, rather than merely being
-   visible in review.
-2. `measured_head == head_baseline` to the documented precision. Without this, a
-   coverage *rise* need never be recorded, and a later PR could silently give the
-   gain back while still clearing the stale floor.
-3. `measured_head >= head_baseline` is implied by (2) but stated separately so a
-   precision mismatch reports as such rather than as a regression.
+**Stability is an acceptance criterion, not an assumption.** Before check (b)
+below is switched on, run the pinned lane repeatedly on one commit and compare the
+**covered and missing line and branch sets**, not the rounded percentage. Equal
+percentages can hide compensating differences. If the sets differ, the offending
+tests are stabilized or dropped from the ratcheted set before exact equality is
+enabled.
 
-**Bootstrap and non-PR cases.** Check (1) needs a value that does not exist on the
-first run, and there is no base at all outside a PR:
+The checks:
+
+- **(a) `head_baseline >= base_baseline`**, with the base value read from the
+  event's base SHA — `git show "$BASE_SHA":coverage-baseline.json` — not
+  `origin/main`, whose tip can move mid-workflow. **Exception:** a decrease is
+  permitted only when the PR carries the `coverage-baseline-reset` label. CI reads
+  the label from the event and applies it as a condition, so an authorized reset
+  passes mechanically instead of being worked around. See the reset rule below.
+- **(b) `measured_head == head_baseline`** to two decimal places. Without it a
+  rise need never be recorded, and a later PR could give the gain back while still
+  clearing a stale floor.
+- **(c) `measured_head >= head_baseline`**, implied by (b) but reported separately
+  so a precision mismatch reads as such rather than as a regression.
+
+**Bootstrap and non-PR cases.**
 
 - **Bootstrap.** When `coverage-baseline.json` is absent from the base SHA, skip
-  check (1) and require only (2). This is a one-time state; once the file is on
-  `main` the check is live. Do not treat "absent" as zero — a missing file would
-  otherwise let any value through as an improvement.
-- **Pushes to `main`.** Run checks (2) and (3) only. There is no base to ratchet
-  against, and the value was already gated on the PR that merged it — **but that
-  holds only if every change reaches `main` through a PR.** "Require a pull
-  request before merging" is a separate branch-protection setting from required
-  status checks, and an administrator or bypass actor can push directly. So
-  either:
-  - make *require a pull request, with no bypass actors* part of the required
-    repository configuration alongside the `ci-required` check (§10.3); or
-  - if direct pushes stay possible, compare a `main` push against its **first
-    parent's** committed baseline, so the ratchet still applies.
+  (a) and require only (b). Absent is not zero — treating it as zero would let any
+  value through as an improvement.
+- **Pushes to `main`.** Run (b) and (c) only. There is no base to ratchet against
+  and the value was gated on the PR that merged it — **but that holds only if every
+  change reaches `main` through a PR.** "Require a pull request before merging" is
+  a separate branch-protection setting from required status checks, and bypass
+  actors can push directly. So either make *require a pull request, no bypass
+  actors* part of the required repository configuration alongside `ci-required`, or
+  compare a `main` push against its **first parent's** baseline. The first is the
+  recommendation; the second exists so the rule is not silently void without it.
+- **PRs targeting other branches.** Unchanged, because the rule reads the event's
+  base SHA rather than a hard-coded branch. A stacked PR ratchets against its own
+  parent.
 
-  The first is simpler and is the recommendation; the second exists so the rule
-  is not silently void if the first is not adopted.
-- **PRs targeting a branch other than `main`.** The rule is unchanged, because it
-  reads the event's base SHA rather than a hard-coded branch. A stacked PR
-  therefore ratchets against its own parent, which is the intended behaviour.
+**The reset rule, as an implementable condition.** A `coverage` or Python update
+can lower the number on identical code, where (b) demands a lower baseline and (a)
+refuses it. Left as prose this deadlocks the first dependency bump. As a
+mechanism:
 
-Read the number from `coverage json` output, not by parsing the formatted console
-report — the text report is a presentation format and its rounding is not a
-contract.
+- Check (a) fails on a decrease **unless** the PR carries the
+  `coverage-baseline-reset` label; the workflow triggers on
+  `pull_request: [labeled, unlabeled, synchronize]` so applying the label reruns
+  the check rather than requiring a manual re-run.
+- The label is not self-service: `coverage-baseline.json` and
+  `requirements-ratchet.txt` are owned in `CODEOWNERS`, branch protection requires
+  code-owner review and dismisses stale approvals on new commits, and `CODEOWNERS`
+  itself is owned by the same people.
+- The PR must state what changed in the measurement and why the drop is not a loss
+  of testing. The default expectation remains that the author recovers the
+  difference.
 
-**Precision.** Two decimal places on the percentage, taken from the JSON totals.
+**Measurement environment for the baseline.** Dependencies come from the committed
+`requirements-ratchet.txt` — the single authority for this lane, not
+`requirements.txt`, which covers runtime only and has no `pytest`, `coverage` or
+`diff-cover`. Pinning those with `==` while leaving their transitive dependencies
+free would reopen the same hole one level down.
 
-This is deliberately a stored-and-compared baseline rather than a re-measured
-merge base. Re-measuring means checking out, installing, running and combining
-three revisions per side — six runs — and raises a question with no good answer:
-does the base revision run *its* tests or *head's*? Each measures something
-different and neither is what the control is for. Comparing two committed numbers
-gives a true non-decreasing guarantee at the cost of one `git show`.
+`requirements-ratchet.txt` is regenerated deliberately, and its header records how:
+install a `ratchet` extra — declaring pytest, pytest-asyncio, hypothesis, coverage,
+diff-cover and mypy — into a clean Python 3.13 Linux virtualenv, then
+`pip freeze --exclude-editable` with the project itself filtered out, since a
+`pip freeze` after `pip install .[…]` otherwise records a local path or URL that no
+other machine can resolve. Add `--require-hashes` if this lane is ever treated as
+security-relevant; reproducibility alone does not need it.
 
-There is **no tolerance band.** A tolerance turns a ratchet into a
-bounded-regression policy that compounds: twenty PRs each losing 0.09 points lose
-nearly two points with every job green.
+Because the ratcheted set is `fast` only, no browser image is involved and the
+test-runtime image digest cannot move the baseline. That is a further reason to
+scope it this way.
 
-**Exact equality requires a pinned environment, not merely a fixed job set.** A
-fixed *selection* of jobs is not a fixed *execution environment*, and the
-measurement set as first written was not reproducible: it included the moving
-"newest allowed" `mcp` release, unpinned application dependencies, broadly bounded
-test tooling, and a Chromium job whose browser package changes underneath it. Any
-of those can move the percentage on an unchanged commit, which under exact
-equality means unrelated PRs fail or authors are pushed into meaningless baseline
-edits — and a baseline people routinely edit to make CI pass is no longer a
-control.
-
-The ratchet therefore runs in a **pinned lane**:
-
-- Dependencies installed from the pinned `requirements.txt` (`pip freeze` output,
-  `mcp==1.25.0` among them), not from the `pyproject.toml` ranges.
-- An exact `mcp` version, never the "newest allowed" axis.
-- The Chromium container referenced **by image digest**, not by tag — but see the
-  next paragraph, because "by digest" alone does not work here.
-- Exact `==` pins for `coverage` and the test tooling in the ratchet lane, since a
-  coverage-measurement change alters the number without any code changing.
-- Python 3.13 only.
-
-**Compatibility jobs do not feed the ratchet.** The `mcp` {min, max} axis, Python
-3.14, and `fast-extras` exist to catch breakage across the supported range. Their
-coverage artefacts are discarded. Mixing them in is what made exact equality
-impossible, and their purpose — does it still work — is served by them passing,
-not by their coverage number.
-
-**The production image cannot be the ratchet image.** `Dockerfile` starts
-`FROM python:3.13-slim` (a moving tag), installs `chromium` from Debian's rolling
-archive, and `COPY`s `src/` in before `pip install .`. That leaves no good option
-if the same image is used for testing: rebuilt per PR, the browser and base layer
-still float, so the environment is not pinned; reused by digest, it contains a
-*previous* revision of the application and can go green without ever executing the
-PR's code. The second failure is the dangerous one, because it looks like a pass.
-
-The lane therefore uses a **separate test-runtime image**, and the shipped
-`Dockerfile` is left alone:
-
-- It contains only Python, Chromium and system dependencies — **no application
-  code**. Nothing in it changes when the project does.
-- It is built from a pinned base digest with pinned Debian package versions (or an
-  archive snapshot), published once, and referenced from CI **by digest**.
-- CI installs the PR's wheel into it at run time (`pip install --no-deps` plus the
-  pinned requirements of §"one committed artefact" below), so the application
-  layer is always the current checkout while the browser layer never moves.
-- The job asserts the imported package resolves to that freshly installed wheel,
-  exactly as §6.1 requires — this is what makes "green" impossible to achieve
-  against stale code baked into the image.
-
-Rebuilding the test-runtime image is a deliberate, reviewable PR that updates the
-recorded digest, and may legitimately move the baseline under the rule below.
-
-**One committed dependency artefact for the lane.** `requirements.txt` pins
-runtime dependencies only — it has no `pytest`, `coverage` or `diff-cover`, and
-saying those get `==` pins elsewhere still leaves *their* transitive dependencies
-free to move, which is the same reproducibility hole one level down. The lane
-installs from a single committed `requirements-ratchet.txt` covering runtime and
-test tooling together, with the regeneration command recorded in its header
-(`pip freeze` from a clean install of `.[dev]`, same as `requirements.txt`
-documents its own provenance). Hashes (`--require-hashes`) are worth adding if
-this lane is ever treated as security-relevant; they are not required for
-reproducibility alone.
-
-**When a pin bump legitimately lowers coverage.** Check (1) forbids any decrease,
-while a `coverage` or Python update can change measurement semantics downward on
-identical code — so a pin-update PR could deadlock: equality demands a lower
-number, the ratchet refuses it. The rule is explicit rather than left to whoever
-hits it first:
-
-- A pin update **may not** silently lower the baseline. The default expectation is
-  that the author recovers the difference, or demonstrates the change is a
-  measurement artefact.
-- A **baseline reset** is permitted for measurement-semantics changes, gated on a
-  dedicated label plus review from the owners of `coverage-baseline.json` and
-  `requirements-ratchet.txt` under `CODEOWNERS`. The PR must state what changed in
-  the measurement and why the drop is not a loss of testing.
-
-Without this, the first dependency bump either blocks indefinitely or teaches
-everyone that the baseline is editable at will — which is the failure mode the
-control exists to prevent.
-
-**Measurement definition.** `coverage combine` over the **pinned-lane** runs of
-`fast`, `subsystem` and `chromium` on Linux — one fixed set in one fixed
-environment, so a platform-conditional branch cannot inflate the number in one job
-and fail in another. Windows and every compatibility axis are reported but
-excluded.
-`branch = true`. `[paths]` in `.coveragerc` maps Windows and Linux checkouts to a
-single root so combined data does not double-count. Exclusions: `tests/` itself,
-`if TYPE_CHECKING:` blocks and `__main__` guards — nothing else, and in
-particular no blanket exclusion of `scrape/`.
-
-**What coverage would and would not have caught.** The stale tests raise
-`TypeError` before `_fetch_html`'s body runs, so a coverage *report* would show
-that function dark to anyone who looked. The baseline check is weaker: losing
-eleven tests' worth of lines may or may not move the whole-project total enough
-to trip it. Coverage is a diagnostic that would have made this visible on
-inspection; the baseline is what makes silent erosion fail; mutation testing
-(§3.2) is what judges assertion quality. None substitutes for another.
+**What each control would have caught.** The stale tests raise `TypeError` before
+`_fetch_html`'s body runs, so its lines would show dark in a report — but only to
+someone who looked, and a whole-project total might not move enough to trip a
+ratchet. Control 1 is what makes an untested module impossible to overlook;
+control 2 is what stops new code arriving uncovered; control 3 is what makes
+silent erosion fail; mutation testing (§3.2) is what judges whether the assertions
+mean anything. None substitutes for another.
 
 ### 10.5 pytest configuration
 
