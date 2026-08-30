@@ -352,6 +352,13 @@ directory is cleaned up with `ignore_cleanup_errors`. These use narrow doubles
 around `_fetch_html`, built from the real interface (autospec) so a signature
 change fails loudly.
 
+**Autospec for callables, a Protocol for the process object.** Autospec validates
+call signatures, which is exactly what the eight stale tests needed and did not
+have. It does *not* declare instance attributes: `create_autospec` on
+`asyncio.subprocess.Process` gives no `stdout`, `stderr`, `stdin` or `pid`
+(§8A step 3), so the process double is pinned by a Protocol instead. Use each for
+the failure it actually catches.
+
 These complement the L1 flag tests of §3.1 — a fixture child cannot assert which
 Chromium flags were chosen, and a resolver test cannot assert a process tree
 died.
@@ -437,6 +444,23 @@ Two tool calls, each deterministic by construction:
 
 Anything requiring real content resolution is a `chromium` or live job, not this
 one.
+
+**Isolation and cleanup.** This job starts two real entrypoints and a local
+fixture server, so §5.4's anti-flake rules apply here in full, plus two
+requirements specific to testing an installed artefact:
+
+- **A fresh virtual environment**, and a working directory **outside the
+  checkout**. Running from the repo root puts `src/` on `sys.path` ahead of the
+  installed package on some invocations.
+- **Assert the import actually resolves to the wheel.** The test asserts the
+  server module's `__file__` lies under the venv's `site-packages` and not under
+  the checkout. Without it the job can pass while exercising the source tree — a
+  false positive on the one thing this job exists to prove.
+- Ephemeral port and readiness handshake for the fixture server; never a sleep.
+- Per-call and whole-process timeouts, so a failed entrypoint fails fast instead
+  of hanging until the job timeout.
+- `finally` cleanup keyed on the PIDs this test spawned, with child stdout and
+  stderr captured and attached on failure.
 
 ### 6.2 Live canaries — nightly, gated
 
@@ -548,9 +572,22 @@ conversion bug.
    (§3.1); retry and cleanup orchestration stays as narrow autospecced tests
    around `_fetch_html` (§5.2).
 3. Repair the 3 stale loader tests. They assert command arguments and environment
-   propagation, which a real child cannot verify; rebuild the fake from the real
-   `asyncio.subprocess.Process` interface via a shared builder or autospec so it
-   cannot drift again.
+   propagation, which a real child cannot verify, so a double is required.
+
+   **Autospec does not close this gap — verified.**
+   `create_autospec(asyncio.subprocess.Process, instance=True)` declares
+   `returncode`, `wait`, `kill` and `terminate`, but **not** `stdout`, `stderr`,
+   `stdin` or `pid`: those are set on the instance in `__init__`, so a
+   class-based spec never sees them. An autospec double would therefore have
+   accepted the very `_FakeProc` that was missing `stdout`.
+
+   Define instead a `WorkerProcess` **Protocol** naming the exact surface
+   production consumes — `stdout`, `stderr`, `pid`, `returncode`, `wait()`,
+   `kill()`, `terminate()` — annotate `_run_worker_command` with it, and have the
+   fake implement it. A type checker then flags a missing attribute, and a small
+   conformance test asserts the fake satisfies the Protocol at runtime. Keep the
+   real-child contract test of §5.2 as well: the Protocol pins the shape,
+   the real child pins the behaviour, and neither substitutes for the other.
 4. Rewrite the concurrency test OS-neutral. Only the Windows default is obsolete;
    its explicit-value, malformed, zero and negative cases are real requirements
    with no other home. One parameterized test over defaulting, validation,
@@ -563,8 +600,11 @@ plan is built would let exactly that recur while B–D are in flight.
 
 The minimum viable gate is small and ships as soon as A lands:
 
-1. One workflow running **`-m "not live and not chromium and not package"`** on
-   Linux and Windows, Python 3.13.
+1. One workflow running
+   **`pytest --ignore=tests/package -m "not live and not chromium and not package"`**
+   on Linux and Windows, Python 3.13. The `--ignore` is not redundant with the
+   marker: §10.3 requires it on every source-checkout job precisely because the
+   marker is the thing that gets forgotten.
 2. The `ci-required` aggregation job (§10.3) as the **required check** under
    branch protection on `main`.
 
@@ -651,7 +691,7 @@ project is pure asyncio, so the marker is noise. Migration removes every
 | `pytest-asyncio` | `>=1.4,<2` | Async tests, `asyncio_mode = "auto"` |
 | `hypothesis` | `>=6.167,<7` | Properties in §3.1 |
 | `coverage` | `>=7,<8` | Branch coverage and the committed baseline (§10.4) |
-| `diff-cover` | `>=9,<10` | Diff coverage on changed lines |
+| `diff-cover` | `>=10.4,<11` | Diff coverage on changed lines; 10.4 is the floor because `--branch-coverage` does not exist below it (§10.4) |
 | `mutmut` | `>=3,<4` | L1 validation; **needs `fork()` — Linux/WSL only** |
 | `ruff` | `>=0.6,<1` | Lint |
 | `packaging` | `>=24` | Dependency guard |
@@ -701,11 +741,24 @@ ci-required:
   needs: [fast, fast-extras, subsystem, chromium, package]
   runs-on: ubuntu-latest
   steps:
-    - name: Require every dependency to have succeeded
-      run: |
-        echo '${{ toJSON(needs) }}'
-        [ "$(echo '${{ toJSON(needs) }}' | jq -r '[.[].result] | unique | join(",")')" = "success" ]
+    - name: Fail unless every dependency succeeded
+      if: >-
+        needs.fast.result != 'success' ||
+        needs['fast-extras'].result != 'success' ||
+        needs.subsystem.result != 'success' ||
+        needs.chromium.result != 'success' ||
+        needs.package.result != 'success'
+      run: exit 1
 ```
+
+**No expression substitution inside `run:`.** The comparison happens in the
+Actions `if:` expression, and the shell step is a bare `exit 1`. Interpolating
+`${{ toJSON(needs) }}` into a script — as an earlier draft did — is the pattern
+GitHub warns against: the expression is substituted *before* the shell parses the
+line, `needs` carries job **outputs** and not just results, and an apostrophe or
+crafted output can break the quoting or inject commands. It also prints every
+dependency's outputs into the log for no reason. Listing the jobs explicitly
+costs a line each and keeps untrusted data out of the shell entirely.
 
 Requiring `success` explicitly — rather than the looser
 `!contains(needs.*.result, 'failure')` — is deliberate: the loose form treats
@@ -856,22 +909,47 @@ Operationally:
 - `actions/checkout` defaults to a shallow clone, where `origin/main` does not
   exist and `diff-cover` cannot compute a diff. The job sets `fetch-depth: 0`, or
   fetches `main` explicitly before running.
-- Branch coverage is on, so a changed line with only one branch taken counts as
-  partially covered and does not satisfy the gate.
+- **The gate measures changed-line execution only.** A changed line where only one
+  branch was taken counts as covered here. Branch completeness is measured by the
+  whole-project report (`branch = true`) and by mutation testing (§3.2), not by
+  this gate.
+
+  Branch-aware diff coverage needs `diff-cover >= 10.4` and its `--branch-coverage`
+  flag; the constraint in §10.2 allows that version so the option is open, but the
+  flag is **not** assumed here and must be exercised before anyone claims the gate
+  enforces branch completeness. An earlier draft of this document asserted branch
+  behaviour the pinned version could not deliver — the gate is only ever as strong
+  as the flag actually passed.
 
 **2. A committed baseline, ratcheted.** Total branch coverage is written to
 `coverage-baseline.json`, committed. Three checks, and all three are needed —
 any one alone leaves a hole:
 
 1. `head_baseline >= base_baseline`, where the base value is read from the PR's
-   base revision (`git show origin/main:coverage-baseline.json`). This is the
-   ratchet: lowering the committed number in the same PR that lowers coverage
-   now **fails CI**, rather than merely being visible in review.
+   **base SHA as supplied by the event** — `github.event.pull_request.base.sha` —
+   via `git show <base-sha>:coverage-baseline.json`. Not `origin/main`, whose tip
+   can move while the workflow is running, which would make the comparison depend
+   on unrelated merges. This is the ratchet: lowering the committed number in the
+   same PR that lowers coverage now **fails CI**, rather than merely being
+   visible in review.
 2. `measured_head == head_baseline` to the documented precision. Without this, a
    coverage *rise* need never be recorded, and a later PR could silently give the
    gain back while still clearing the stale floor.
 3. `measured_head >= head_baseline` is implied by (2) but stated separately so a
    precision mismatch reports as such rather than as a regression.
+
+**Bootstrap and non-PR cases.** Check (1) needs a value that does not exist on the
+first run, and there is no base at all outside a PR:
+
+- **Bootstrap.** When `coverage-baseline.json` is absent from the base SHA, skip
+  check (1) and require only (2). This is a one-time state; once the file is on
+  `main` the check is live. Do not treat "absent" as zero — a missing file would
+  otherwise let any value through as an improvement.
+- **Pushes to `main`.** Run checks (2) and (3) only. There is no base to ratchet
+  against, and the value was already gated on the PR that merged it.
+- **PRs targeting a branch other than `main`.** The rule is unchanged, because it
+  reads the event's base SHA rather than a hard-coded branch. A stacked PR
+  therefore ratchets against its own parent, which is the intended behaviour.
 
 Read the number from `coverage json` output, not by parsing the formatted console
 report — the text report is a presentation format and its rounding is not a
@@ -888,13 +966,43 @@ gives a true non-decreasing guarantee at the cost of one `git show`.
 
 There is **no tolerance band.** A tolerance turns a ratchet into a
 bounded-regression policy that compounds: twenty PRs each losing 0.09 points lose
-nearly two points with every job green. Measurement is deterministic for a fixed
-job set, so no band is needed.
+nearly two points with every job green.
 
-**Measurement definition.** `coverage combine` over `fast` (Linux, Python 3.13,
-`mcp` max), `subsystem` (Linux) and `chromium` — one fixed set, so a
-platform-conditional branch cannot inflate the number in one job and fail in
-another. Windows and the other matrix axes are reported but excluded.
+**Exact equality requires a pinned environment, not merely a fixed job set.** A
+fixed *selection* of jobs is not a fixed *execution environment*, and the
+measurement set as first written was not reproducible: it included the moving
+"newest allowed" `mcp` release, unpinned application dependencies, broadly bounded
+test tooling, and a Chromium job whose browser package changes underneath it. Any
+of those can move the percentage on an unchanged commit, which under exact
+equality means unrelated PRs fail or authors are pushed into meaningless baseline
+edits — and a baseline people routinely edit to make CI pass is no longer a
+control.
+
+The ratchet therefore runs in a **pinned lane**:
+
+- Dependencies installed from the pinned `requirements.txt` (`pip freeze` output,
+  `mcp==1.25.0` among them), not from the `pyproject.toml` ranges.
+- An exact `mcp` version, never the "newest allowed" axis.
+- The Chromium container referenced **by image digest**, not by tag.
+- Exact `==` pins for `coverage` and the test tooling in the ratchet lane, since a
+  coverage-measurement change alters the number without any code changing.
+- Python 3.13 only.
+
+**Compatibility jobs do not feed the ratchet.** The `mcp` {min, max} axis, Python
+3.14, and `fast-extras` exist to catch breakage across the supported range. Their
+coverage artefacts are discarded. Mixing them in is what made exact equality
+impossible, and their purpose — does it still work — is served by them passing,
+not by their coverage number.
+
+Bumping a pin in the ratchet lane is a deliberate PR that may legitimately move
+the baseline; that is a reviewable event, which is exactly the property the whole
+control is for.
+
+**Measurement definition.** `coverage combine` over the **pinned-lane** runs of
+`fast`, `subsystem` and `chromium` on Linux — one fixed set in one fixed
+environment, so a platform-conditional branch cannot inflate the number in one job
+and fail in another. Windows and every compatibility axis are reported but
+excluded.
 `branch = true`. `[paths]` in `.coveragerc` maps Windows and Linux checkouts to a
 single root so combined data does not double-count. Exclusions: `tests/` itself,
 `if TYPE_CHECKING:` blocks and `__main__` guards — nothing else, and in
