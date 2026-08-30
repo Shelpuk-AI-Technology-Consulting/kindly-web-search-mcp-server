@@ -730,7 +730,7 @@ project is pure asyncio, so the marker is noise. Migration removes every
 | `pytest` | `>=9,<10` | Runner |
 | `pytest-asyncio` | `>=1.4,<2` | Async tests, `asyncio_mode = "auto"` |
 | `hypothesis` | `>=6.167,<7` | Properties in §3.1 |
-| `coverage` | `>=7.10,<8` | Branch coverage and the committed baseline; 7.10 is the floor because `patch = subprocess` does not exist below it (§10.4) |
+| `coverage` | `==7.13.5` in the pinned lane, `>=7.10.3,<8` elsewhere | Branch coverage and the committed baseline. 7.10.0 introduced `patch = subprocess`; **7.10.3** fixed missed nested children, data stranded when a child changes directory, Windows startup failures and incomplete config propagation — all of which the worker tests hit directly (§10.4) |
 | `diff-cover` | `>=10.4,<11` | Diff coverage on changed lines; 10.4 is the floor because `--branch-coverage` does not exist below it (§10.4) |
 | `mutmut` | `>=3,<4` | L1 validation; **needs `fork()` — Linux/WSL only** |
 | `ruff` | `>=0.6,<1` | Lint |
@@ -765,25 +765,31 @@ version; Dependabot may propose, never auto-merge.
 run on every push and PR.
 
 **The `coverage` job is where §10.4's controls actually execute**, and it is a
-required check. Without it named here, a literal implementation of this document
-would produce all-green required checks having run none of them. It cannot be
-folded into `fast`: `fast` is a *compatibility matrix* over Python and `mcp`
-versions from a source checkout, while the ratchet needs exactly one pinned
-environment.
+required dependency of `ci-required` (which remains the only *required check*).
+Without it named here, a literal implementation of this document would produce
+all-green required checks having run none of them. It cannot be folded into
+`fast`: `fast` is a *compatibility matrix* over Python and `mcp` versions, while
+these controls need exactly one pinned environment.
 
-The job:
+The job is deliberately **self-contained — it consumes no artefacts from other
+jobs**:
 
-1. Installs from `requirements-ratchet.txt` on Python 3.13, from a **source
-   checkout** — not a wheel. The `[paths]` mapping of §10.4 exists for the
-   artefacts it *consumes* from `package` and `chromium`, which do install wheels.
+1. Installs from `requirements-ratchet.txt` on Python 3.13, from a source
+   checkout.
 2. Runs the hermetic selection itself
    (`--ignore=tests/package -m "not live and not subsystem and not chromium and not package"`)
-   under `coverage run`, producing **`coverage-hermetic`** — the baseline product.
-3. `needs: [fast, subsystem, chromium, package]` and downloads the `.coverage`
-   data each of those uploads as an artefact, then `coverage combine`s them with
-   its own run into **`coverage-combined`** — the diff-coverage product.
-4. Runs all three controls: module presence and diff coverage against
-   `coverage-combined`, the baseline ratchet against `coverage-hermetic`.
+   under `coverage run`.
+3. Runs all three controls of §10.4 against that single run.
+
+No `needs` on the test jobs, no artefact upload or download, no cross-job
+`coverage combine`. §10.4 explains why: a required threshold gate cannot take
+nondeterministic input, and combining lanes that drive real browsers and timeouts
+would make it one. Removing the fan-in also removes its whole failure surface —
+unique artefact names per matrix leg, hidden-file exclusion, download collisions,
+`coverage combine` replacing rather than appending, and every producer needing an
+identical coverage version and `.coveragerc`. None of that machinery can silently
+reduce the measurement to the hermetic lane, because the hermetic lane is all
+there ever was.
 
 **Workflow triggers must be complete.** Specifying `types` on `pull_request`
 *replaces* the defaults rather than extending them, so listing only the label
@@ -997,7 +1003,7 @@ exists.
 **"Green" is a gate only when enforced.** A passing workflow is not a gate until
 `ci-required` — and only `ci-required`, per the paragraph above — is a **required
 check** under branch protection on `main`, with `fast`, `fast-extras`,
-`subsystem`, `chromium` and `package` in its `needs`.
+`subsystem`, `chromium`, `package`, `types` and `coverage` in its `needs`.
 
 ### 10.4 Coverage
 
@@ -1035,7 +1041,7 @@ double-count and `diff-cover` finds no coverage for any changed line and reports
 nothing — passing silently. `relative_files = true` is what keeps the mapping
 working across a Windows and Linux combine.
 
-Two assertions enforce it, against `coverage-combined`:
+Two assertions enforce it:
 
 - Every `.py` file under `src/kindly_web_search_mcp_server/` appears in the
   report, including files at zero. A new module that nothing imports fails the
@@ -1048,32 +1054,37 @@ Two assertions enforce it, against `coverage-combined`:
   statement lines, and an unconditional guard would misdiagnose that as broken
   wiring.
 
-**Two coverage products, and they are not interchangeable.**
+**One coverage product, from the hermetic lane.** Every control measures the
+`coverage` job's own pinned run of the L1/L2 selection. Nothing is combined across
+jobs.
 
-| Product | Built from | Feeds |
-|---|---|---|
-| `coverage-hermetic` | the `coverage` job's own pinned run of the L1/L2 selection | the baseline ratchet (control 3) |
-| `coverage-combined` | that run plus the `.coverage` artefacts of `fast`, `subsystem`, `chromium` and `package` | module presence (control 1) and diff coverage (control 2) |
+That is a deliberate reduction in what the coverage controls claim, and it costs
+something: changes to code only reachable through `subsystem` or `chromium` —
+the worker lifecycle, `ChromiumPool` — are **not** diff-gated. What covers them
+instead is §2.1's allocation rule enforced in review, the `subsystem` and
+`chromium` jobs themselves being required, and control 1 below, which still fails
+if such a module has no tests at all.
 
-Diff coverage **must** use the combined product. Charging a change to
-`chromium_pool.py` against a lane that structurally cannot execute it would push
-authors to write the wrong test at the wrong layer to satisfy the gate — the exact
-pathology §2.1 exists to prevent.
+The alternative was combining every lane into the diff gate, and it does not
+survive contact with the arithmetic. A required threshold gate must take
+deterministic input. On a five-statement diff, one timing-dependent line moves the
+result from 80% to 60% — so feeding lanes that drive real browsers, timeouts and
+retries into an 80% required check produces a check that goes red for reasons
+unrelated to the change. An earlier draft justified this as jitter "rarely"
+flipping the threshold; "rarely" is not a property a required check can be built
+on, and a flaky required check is precisely the normalised-red failure this whole
+document exists to prevent.
 
-That means `subsystem` and `chromium` coverage **does** gate, through control 2.
-The earlier claim that it is "reported but does not gate" was too broad: it does
-not feed the *ratchet*, which is a different statement. The distinction is
-deliberate and rests on what each control is sensitive to. Control 2 asks a
-per-line yes/no question at an 80% threshold, which run-to-run branch jitter
-rarely flips. Control 3 compares an aggregate to two decimal places, where a
-single differently-taken branch changes the answer. Nondeterministic lanes are
-therefore safe in one and corrosive in the other.
+The full `subsystem` and `chromium` coverage is still worth producing and reading
+as **observational** reporting — it is how someone notices the worker is thinly
+covered — but it does not gate.
 
 **2. Diff coverage — the PR gate.** `diff-cover --fail-under=80` over the changed
 lines of each PR.
 
 The promise is precise: **at least 80% of changed statement lines that appear in
-the coverage report must be covered.** Not every changed line — diff-cover
+the hermetic coverage report must be covered.** Lines in files the hermetic lane
+cannot exercise are not counted for or against it — see the product note above. Not every changed line — diff-cover
 compares a line-based diff against a statement-based report, so continuation lines
 of a multi-line statement appear in the diff and not in the report, and are simply
 not counted. `--expand-coverage-report` extends the report to cover them; it is
@@ -1082,8 +1093,8 @@ above is what holds without it.
 
 Operationally:
 
-- The `coverage` job exports `coverage-combined` as `coverage.xml`; `diff-cover`
-  consumes that, not the console report.
+- The `coverage` job exports its run as `coverage.xml`; `diff-cover` consumes
+  that, not the console report.
 - **The diff comes from the same boundary as the baseline** — the event's base
   SHA, not `origin/main`:
 
@@ -1112,30 +1123,34 @@ and a PR touching it would be charged by control 2 for lines it cannot cover.
 
 The `subsystem` and `chromium` jobs therefore set `parallel = true` with
 `patch = subprocess` in `.coveragerc` and `coverage combine` the child data files
-before uploading their artefact. `patch = subprocess` requires **coverage.py
-7.10+**, so §10.2's `>=7,<8` bound is raised to `>=7.10,<8`. `COVERAGE_PROCESS_START`
-with a `.pth` hook is the alternative if the newer bound is unacceptable.
+before publishing their **observational** report. The floor is **7.10.3**, not
+7.10.0: the option arrived in 7.10.0, but 7.10.3 fixed missed nested children, data
+stranded when a child changes working directory, Windows startup failures and
+incomplete configuration propagation to children — every one of which this design's
+worker tests exercise. `COVERAGE_PROCESS_START` with a `.pth` hook is the
+alternative if that floor is unacceptable.
 
 **A forcibly killed child does not flush its coverage data.** The
 kill-at-the-deadline and terminate-the-process-tree tests of §5.2 will therefore
 contribute little or nothing for the worker, by construction. That is a real and
 irreducible limit: those tests exist to prove a process dies, and a dead process
 cannot report. Do not chase the resulting gap with a coverage exclusion that also
-hides genuinely untested code — measure it, note it, and let mutation testing and
-the real-child assertions carry the confidence there.
+hides genuinely untested code — measure it, note it, and let the real-child
+assertions of §5.2 carry the confidence there. Mutation testing cannot help here:
+§3.2 deliberately scopes `mutmut` to the pure-logic modules and excludes `scrape/`
+plumbing, so it has nothing to say about these paths. Widening that scope is a
+separate decision with its own runtime cost, not an answer to this gap.
 
 **3. A committed baseline over the hermetic tests only.** Total branch coverage of
 the hermetic suite is written to `coverage-baseline.json`, committed, and may not
 decrease.
 
 **Scope: L1 and L2 only — `fast` on Linux, Python 3.13, pinned lane.** The
-`subsystem` and `chromium` jobs are excluded **from this control**, which is what
-makes exact comparison honest. Those jobs drive real processes, real timeouts,
-retries and a real browser; which branches execute can legitimately differ between
-runs on identical code, and a single such branch moves a two-decimal total.
-Ratcheting on a number that flickers teaches people to edit the baseline until CI
-passes, which destroys the control. Their coverage still gates through control 2,
-where the per-line threshold is insensitive to that jitter.
+This follows from the single-product decision above rather than adding a rule:
+every control measures the hermetic lane, so the ratchet inherits its determinism.
+Were the nondeterministic lanes included, a single differently-taken branch would
+move a two-decimal total, and ratcheting on a flickering number teaches people to
+edit the baseline until CI passes — which destroys the control.
 
 **Stability is an acceptance criterion, not an assumption.** Before check (b)
 below is switched on, run the pinned lane repeatedly on one commit and compare the
@@ -1176,6 +1191,12 @@ specification, and float equality is not a comparison anyone should rely on:
 - **`coverage-baseline.json` schema:** `{"basis_points": <int>, "covered": <int>,
   "total": <int>, "generated_by": "<tool versions>"}`. The raw counts are stored
   alongside the ratio so a reviewer can see *what* moved, not merely that it did.
+- **What equality covers:** `basis_points`, `covered` and `total` must all match
+  the measured run. Comparing only `basis_points` would let the raw counts drift
+  stale and hide compensating changes — a file removed and another grown can hold
+  the ratio while both numbers move. `generated_by` is **not** part of the equality
+  check; it is validated separately against the pinned lane's configuration, so a
+  tooling bump reports as a tooling mismatch rather than as a coverage regression.
 
 **Bootstrap and non-PR cases.**
 
@@ -1200,9 +1221,11 @@ refuses it. Left as prose this deadlocks the first dependency bump. As a
 mechanism:
 
 - Check (a) fails on a decrease **unless** the PR carries the
-  `coverage-baseline-reset` label; the workflow triggers on
-  `pull_request: [labeled, unlabeled, synchronize]` so applying the label reruns
-  the check rather than requiring a manual re-run.
+  `coverage-baseline-reset` label. §10.3's trigger list is canonical and already
+  includes the label events, so applying the label reruns the check rather than
+  requiring a manual re-run. Do not restate the trigger here — an earlier draft
+  did, and the copy drifted into an incomplete list that would have stopped the
+  workflow running on PR open.
 - Authorization is on the **merge**, not on the label. `CODEOWNERS` governs who
   must approve a change to `coverage-baseline.json` and `requirements-ratchet.txt`;
   branch protection requires that code-owner review and dismisses stale approvals
