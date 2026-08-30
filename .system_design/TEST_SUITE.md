@@ -1504,29 +1504,103 @@ Stated explicitly so the omission is not mistaken for an oversight.
 
 ## 13. Open decisions
 
-Four items need an answer from the maintainer; none can be settled by this
-document.
+Four decisions cannot be settled by this document. Each is recorded here in full:
+what it decides, why it is open, what it blocks, and what an answer must contain.
 
-1. **Outbound request policy (§7.2).** Is fetching private-network addresses
-   intentional? It plausibly is — self-hosted SearXNG and internal documentation
-   are exactly what this server is pointed at, and a blanket RFC1918 block would
-   break those users. The tests in §7.2 apply either way; what is not acceptable
-   is leaving it undefined on an unauthenticated server.
-2. **Tool result schemas (§11.3).** Annotate the tools with their response models
-   so clients receive an `outputSchema`, or keep `-> dict` and pin its absence?
-   This is an API change with client impact.
-3. **Owners in the risk matrix (§9).** Assigning maintainers is not this
-   document's call; the column is otherwise complete.
-4. **Per-module coverage minimums.** Diff coverage and the committed baseline are adopted
-   (§10.4); fixed per-module floors are not, because no coverage measurement
-   exists in this repo yet and any number chosen now would be invented. Revisit
-   once workstream A produces a measured baseline.
+**This section is the authoritative statement of each decision.**
+`TEST_SUITE_IMPLEMENTATION_PLAN.md` §3 tracks the same items as external
+prerequisites X-1…X-6 with owners and blocked steps, but for *scheduling* only. If
+the two disagree about what is being decided, this section is right and the plan
+is stale.
 
-Deferred with a reason: **versioning the `KINDLY_DIAG` frame format.** There is
-no version field today, so adding one is a wire-format change, not a test
-decision, and the two endpoints ship in the same wheel and cannot disagree by
-version in practice. If a version field is ever added, §4.3 gains an
-unknown-version case; until then there is nothing to test.
+### 13.1 Outbound request policy — X-1
+
+**The largest open item, and it is three decisions rather than one.** Answering
+only the first leaves the browser path unenforced, which is why this keeps
+resurfacing in review.
+
+1. **Is fetching private-network addresses intentional?** It plausibly is —
+   self-hosted SearXNG and internal documentation are exactly what this server is
+   pointed at, and a blanket RFC1918 block would break those users.
+2. **If restricted, how are Chromium's own connections enforced?** `httpx`
+   resolves in Python where the address is observable. Chromium resolves and
+   connects *inside the browser process*, so a Python-side seam proves nothing
+   about what it contacted. Candidates: a **local policy-enforcing proxy** that
+   resolves and decides; a **host-resolver rule paired with per-request
+   interception**; or another mechanism mediating every browser request.
+3. **What happens to an upstream proxy?** `KINDLY_CHROME_PROXY` is passed to
+   Chromium verbatim (`nodriver_worker.py`, `_build_chromium_launch_args`). With
+   an HTTP `CONNECT` proxy the **proxy** resolves the hostname and the server never
+   sees the destination address, so host-side validation is bypassed by
+   configuration alone. Prohibit it under a restrictive policy, treat it as a
+   trusted boundary whose limit is documented, or chain it through something that
+   enforces.
+
+Decisions 2 and 3 are independent. Disallowing or trusting the proxy says nothing
+about Chromium with no proxy configured.
+
+**An answer must:**
+
+- State the policy, and for a restrictive policy name the mechanisms for 2 and 3.
+- **Mediate every request the browser makes, not the navigation URL.** A permitted
+  public page can reach a private address through an image, script, frame,
+  stylesheet or `fetch`. An architecture that passes top-level navigation and
+  cannot constrain subresources does not satisfy this decision (§7.2).
+- Say whether *every* address a hostname resolves to must be permitted, or whether
+  the connection is pinned to one validated address (§7.2).
+- Re-plan the implementation branch. A restrictive policy is not one change: it
+  spans a shared policy function, `httpx` enforcement across redirect hops,
+  Chromium enforcement, and deterministic rebinding and proxy tests. The plan's
+  **E9-0** exists to carry that re-planning and must land before any security step
+  is authored.
+
+**Blocks:** all outbound-security work — the plan's E9-0, and through it E3-6 and
+E9-2…E9-7. Nothing else in the plan waits on it.
+
+**Not deciding is itself a position**, and a poor one: the server is
+unauthenticated and `get_content` fetches whatever URL it is given.
+
+### 13.2 Tool result schemas — no external prerequisite
+
+Annotate `web_search` and `get_content` with their response models so clients
+receive an `outputSchema`, or keep `-> dict` and pin its absence? An API change
+with client impact either way.
+
+**Resolved for this implementation, provisionally:** `outputSchema is None` is
+**normative** and §4.2's golden test pins it. That keeps the contract test honest
+about what clients receive today. Revisiting is a new step, not a pending decision
+blocking anything — which is why this has no X-number.
+
+### 13.3 Owners in the risk matrix — X-6
+
+§9's Owner column is blank except where X-4 (live-alert) and X-5 (observational
+coverage) name someone. Assigning the rest is not this document's call.
+
+**An answer must** name an owner per row, and be **written into §9** — the plan's
+**E13-2** does that, because an answer living only in a ticket leaves the
+authoritative design showing an empty column.
+
+**Blocks:** completion (the plan's E13-1) via E13-2. It blocks no implementation
+work.
+
+### 13.4 Per-module coverage minimums — no external prerequisite
+
+Diff coverage and the committed baseline are adopted (§10.4). Fixed per-module
+floors are not, because no coverage measurement exists in this repository yet and
+any number chosen now would be invented.
+
+**Discharged by the plan's E10-11**, once E10-3 produces the first real
+measurement — not "workstream A", which was the earlier and wrong reference.
+**"Do not adopt floors" is a valid outcome** provided the measured figures are
+recorded here; leaving this open indefinitely is not.
+
+### 13.5 Deferred, with a reason
+
+**Versioning the `KINDLY_DIAG` frame format.** There is no version field today, so
+adding one is a wire-format change rather than a test decision, and the two
+endpoints ship in the same wheel and cannot disagree by version in practice. If a
+version field is ever added, §4.3 gains an unknown-version case; until then there
+is nothing to test.
 
 ---
 

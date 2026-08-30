@@ -171,73 +171,40 @@ note recorded before any dependent step activates**.
 listed in its Blocks column — declared `impl` because neither the policy function
 nor the seams it attaches to can be written until the decision exists.
 
-**X-1 must settle three things, not one.** They are independent, and answering
-only the first two leaves the browser path unenforced:
+**What X-1 decides is stated in TEST_SUITE §13.1, and only there.** It is three
+independent decisions — the policy, how Chromium's own connections are enforced,
+and what happens to an upstream proxy — with an acceptance criterion that rejects
+any architecture mediating only top-level navigation. That belongs in the design
+document; restating it here is how the two drift, and an earlier revision of this
+plan carried a fuller version of the decision than the design did, which is why
+reviewers kept rediscovering its scope.
 
-1. **Is fetching private-network addresses intentional?** The policy itself.
-2. **How are Chromium's own connections enforced?** Direct DNS resolution and
-   connection happen inside the browser process.
-3. **What happens to an upstream proxy?** Prohibited under the restrictive policy,
-   trusted as a boundary whose limit is documented, or chained through something
-   that enforces.
+Two scheduling consequences belong here rather than in §13.1:
 
-Decisions 2 and 3 are not substitutes. Disallowing or trusting
-`KINDLY_CHROME_PROXY` says nothing about what Chromium does when no proxy is
-configured, so neither can satisfy E9-6's rebinding requirement on its own.
-
-`httpx` is straightforward: E3-6's injectable resolver and transport sit in
-Python, so the address actually connected to is observable. Chromium is not. It
-resolves and connects *inside the browser process*, and the worker passes
-`--proxy-server=$KINDLY_CHROME_PROXY` straight through
-(`nodriver_worker.py`, `_build_chromium_launch_args`). Replacing a Python resolver
-proves nothing about what the browser contacted — and with an HTTP `CONNECT`
-proxy the **proxy** resolves the hostname, so the application never sees the
-destination address at all. A test navigating to a literal private URL does not
-exercise that bypass.
-
-For decision 2 the candidates, each with a different cost:
-
-- Route browser traffic through a **local policy-enforcing proxy** that resolves
-  and decides, and pin Chromium to it. This is the only candidate that also covers
-  subresources, below.
-- A **host-resolver rule or equivalent** pinning the browser to validated
-  addresses — but only **paired with per-request interception**. A rule covering
-  the top-level hostname cannot constrain a hostname the loaded page introduces,
-  so on its own it fails the subresource requirement below.
-- Any other mechanism mediating *every* browser request, not the first one.
-
-**X-1's acceptance rejects any architecture that mediates only top-level
-navigation.** That is the test the candidates are judged against.
-
-**Enforcement must cover every request the browser makes, not the navigation URL.**
-A permitted public page can reach a private address through an image, script,
-frame, stylesheet, `fetch`, or its own redirect. Blocking top-level navigation to
-`169.254.169.254` while letting the loaded page request it is still SSRF, and a
-mechanism that only inspects `browser.get()`'s argument does not qualify.
-
-E9-4, E9-6 and E9-7 then name the fixture and the observable proving the **actual
-browser connections** were controlled, not merely that a pre-navigation
-classification ran.
-
-**Both branches are materialised by E9-0, which is a PR.** X-1 is a decision;
-turning it into a plan is a reviewable change to this document and to
-`TEST_SUITE.md`, and it must land before any security step is authored. Otherwise
-every E9 step becomes authorable the moment X-1 is answered, and an engineer picks
-up E9-4 — a deliberately non-atomic placeholder that could mean a documented
-limitation or a local proxy with its own lifecycle, routing, resolver behaviour and
-authentication chaining. A local enforcing proxy is several PRs, not one.
+- **E9-0 must land before any security step is authored.** X-1 is a decision;
+  turning it into a plan is a reviewable change to both documents. Without that
+  gate every E9 step becomes authorable the moment X-1 is answered, and an
+  engineer picks up E9-4 — a deliberately non-atomic placeholder that could mean a
+  documented limitation or a local proxy with its own lifecycle, routing, resolver
+  behaviour and authentication chaining.
+- **A restrictive answer is several PRs, not one.** E9-0 replaces E9-4 with
+  architecture-specific steps carrying their own dependencies, sizes and
+  acceptance criteria.
 
 The other prerequisites block merge or activation, so the work they gate can be
 written first.
 
 **E13-2** writes X-6's answer into `TEST_SUITE.md` §9's Owner column. Without it
-X-6 could be "complete" with names in a ticket while the design that is supposed to
-be authoritative still shows a blank column, and E13-1 would pass. X-3 in particular
-no longer gates writing ChromiumPool tests: E4-6 builds and smoke-tests the image
-locally with no registry, and E7-3 merges against that.
+X-6 could be "complete" with names in a ticket while the design that is supposed
+to be authoritative still shows a blank column, and E13-1 would pass.
 
-`outputSchema is None` is **normative for this implementation** (E6-1). If
-TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
+**X-3 does not gate writing ChromiumPool tests.** E4-6 builds and smoke-tests the
+image locally with no registry, and E7-3 merges against that; only the CI job
+waits on publication.
+
+**`outputSchema is None` is normative for this implementation** (E6-1), per
+TEST_SUITE §13.2. Changing it is a new step, not a pending decision — which is why
+it carries no X-number.
 
 ---
 
