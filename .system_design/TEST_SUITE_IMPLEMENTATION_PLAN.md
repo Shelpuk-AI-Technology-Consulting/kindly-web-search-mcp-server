@@ -118,7 +118,7 @@ action).
 
 ## 2. Sequencing for parallelism
 
-<!-- totals: steps=79 authorable=49 pr_authorable=45 -->
+<!-- totals: steps=79 authorable=50 pr_authorable=46 -->
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
@@ -165,7 +165,7 @@ note recorded before any dependent step activates**.
 
 | ID | Prerequisite | Blocks | Owner |
 |---|---|---|---|
-| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1) — see the note below; it decides more than a yes/no. | E9-0, and through it E3-6 and E9-2…E9-7 — **before authoring** | maintainer |
+| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1) — see the note below; it decides more than a yes/no. | E9-0, and through it E9-2…E9-7 — **before authoring**. Not E3-6, whose API is policy-independent. | maintainer |
 | **X-2** | Repository admin authority — branch protection, require a PR, no bypass actors | E4-2 | repo admin |
 | **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-7 | repo admin |
 | **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-13 | maintainer |
@@ -184,8 +184,8 @@ how the two drift; the count is as restateable as anything else.
 
 Two scheduling consequences belong here rather than in §13.1:
 
-- **E9-0 must land before any outbound-policy step is authored** — E3-6 and
-  E9-2…E9-7. It does **not** gate E9-1, the diagnostics sanitizer, which the graph
+- **E9-0 must land before any outbound-policy step is authored** — E9-2…E9-7.
+  **Not E3-6**, whose API is policy-independent (§E3-6). It does **not** gate E9-1, the diagnostics sanitizer, which the graph
   correctly leaves independent of X-1; reading this as "all security work" would
   serialize a stream that is deliberately parallel. X-1 is a decision;
   turning it into a plan is a reviewable change to both documents. Without that
@@ -343,7 +343,7 @@ it carries no X-number.
 | **E3-3** | HTML corpus scaffolding and governance | PR | impl E0-2 | M |
 | **E3-4** | Anti-flake harness helpers | PR | impl E0-2 | M |
 | **E3-5** | `tests/package/` and its marker policy test | PR | impl E0-2 | S |
-| **E3-6** | Injectable DNS-resolution and transport seam | PR | impl E9-0 | M |
+| **E3-6** | Injectable DNS-resolution and transport seam | PR | impl E0-2 | M |
 
 - **E3-1.** Emits known `KINDLY_DIAG` frames, can hang, can exit non-zero, can
   write garbage to stderr. *Verify:* a smoke test drives each mode. **Readiness is
@@ -371,9 +371,14 @@ it carries no X-number.
 - **E3-6.** **Production change**, not a test helper. E9-5 must observe a hostname
   resolving differently at validation and at connect, and that cannot be faked
   from outside: the resolver and transport have to be injectable in the code that
-  performs the fetch. Scope depends on X-1 — under an allow policy this is a
-  narrow seam used only for characterization; under a restrict policy it is where
-  enforcement will attach.
+  performs the fetch.
+
+  **This step does not wait on X-1.** The seam's API is the same whichever way the
+  policy goes — a resolver callable and a transport factory, both defaulting to
+  today's behaviour. Only what *attaches* to it differs: under a permissive policy
+  tests script it, under a restrictive one enforcement wraps it. Blocking it on
+  E9-0 would have been false blocking on the one seam every retained rebinding
+  test needs.
   *Verify:* the seam has an explicit API (a resolver callable and a transport
   factory, both defaulting to today's behaviour); production behaviour is
   unchanged with the defaults; a test can script successive lookups of one
@@ -666,15 +671,31 @@ behaviour worth characterizing and a deleted test measures nothing. Only the
 production enforcement is conditional, and it is conditional **per dimension**,
 not on a single restricted/unrestricted flag.
 
-| Step | Enforcement required when | Tests |
+| Step | Production change required when | Tests |
 |---|---|---|
-| E9-2 policy function | always — it classifies both dimensions | always |
+| E3-6 resolver and transport seam | **always** — see below | — |
+| E9-2 policy function | any scheme **or** address restriction | always |
 | E9-3 `httpx` validation and redirect hops | any scheme **or** address restriction | always |
 | E9-4 Chromium navigation and subresources | any scheme **or** address restriction | always |
-| E3-6 resolver and transport seam | address restriction only | — |
 | E9-5 `httpx` rebinding and mixed-address | address restriction only | always |
 | E9-6 Chromium rebinding | address restriction only | always |
 | E9-7 proxy policy | address restriction only | always |
+
+**E3-6 is unconditional, and that is deliberate.** An earlier revision listed it as
+address-restriction-only, which made the address-permitting branch impossible to
+build: E9-5's rebinding test is unconditional, E3-6 is the mechanism that makes it
+deterministic, and E3-6's own rationale is that the behaviour cannot be observed
+from outside. Dropping the seam while keeping the test that requires it is a
+contradiction. The seam is small — a resolver callable and a transport factory,
+both defaulting to today's behaviour — and it exists for testability, exactly like
+`_run_worker_command` (§11.2). Its justification does not depend on the policy.
+
+**E9-2 is conditional, because a classifier nobody calls is not useful on merge.**
+If no dimension is restricted there is nothing to classify: the conformance tests
+assert routes are permitted, they do not consult a policy. Shipping a tested but
+unreferenced production function would satisfy §1.7's letter and break its intent,
+so E9-0 drops the production function in that case and folds its cases into the
+boundary tests.
 
 The distinction is load-bearing. Permitting private addresses while refusing
 `file:`, `data:`, `ftp:` and `chrome:` needs scheme enforcement on both stacks but
@@ -715,22 +736,38 @@ architecture-specific steps.
 
   It applies the table above **per dimension**, not as a single branch:
 
-  - For each step whose enforcement dimension X-1 did not restrict, strip the
-    production change and rewrite the step as a **conformance test** asserting the
-    route is permitted, or recording where a guarantee stops. Do not delete it —
-    a deleted boundary test leaves that route uncharacterized.
-  - E3-6 is the exception: it is a seam with no test of its own, so it is dropped
-    outright if no address class is restricted. Anything declaring `impl E3-6`
-    must then be rewritten, or the validator fails on a dangling reference.
+  - For each step whose dimension X-1 did not restrict, strip the production
+    change and rewrite the step as a **conformance test** asserting the route is
+    permitted, or recording where a guarantee stops. Do not delete it — a deleted
+    boundary test leaves that route uncharacterized.
+  - **E3-6 survives regardless.** It is the mechanism the retained rebinding tests
+    need, not an enforcement step.
+  - **E9-2's production function is dropped if nothing is restricted**, its cases
+    folding into the boundary tests, since a classifier with no caller is not
+    useful on merge.
   - Where enforcement *is* required, expand or replace E9-4 with
     architecture-specific steps carrying their own dependencies, sizes and
     acceptance criteria.
 
   Either way it updates the declared totals.
-  *Verify:* `python scripts/check_plan_dag.py` passes afterwards; no step still
-  declares a dependency on a deleted row; `TEST_SUITE.md` §7.2 and §13.1 record the
-  decision, so this plan traces to the design rather than asserting new design of
-  its own.
+  *Verify:* the four **semantic** checks below, then the syntactic ones. A rewrite
+  can pass a DAG check while having quietly lost a boundary or kept enforcement
+  nobody asked for, so the syntactic checks are necessary and not sufficient.
+
+  1. **Every restricted dimension maps to surviving enforcement steps.** For each
+     dimension X-1 restricted, name the steps that enforce it; none may be missing.
+  2. **Every §7.2 boundary maps to a surviving test.** All five — URL validation,
+     redirects, connection, browser-initiated requests, upstream proxy — are still
+     covered by some step, as enforcement or as conformance.
+  3. **No production enforcement survives for an unrestricted dimension.** The
+     converse of check 1, and the one that catches a rewrite defaulting to the
+     maximal implementation.
+  4. **Every retained rebinding test names its deterministic fixture mechanism**,
+     and that mechanism exists in the plan — E3-6 or whatever replaces it.
+
+  Then: `python scripts/check_plan_dag.py` passes; no step declares a dependency on
+  a deleted row; `TEST_SUITE.md` §7.2 and §13.1 record the decision, so this plan
+  traces to the design rather than asserting new design of its own.
 - **E9-1.** **Production change**, shipped with its tests in one PR. One sanitizing
   step at the top of `Diagnostics.emit`, before the entry is appended to `entries`.
   *Verify:* both the returned `entries` and the emitted JSON are asserted;

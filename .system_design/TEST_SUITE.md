@@ -560,7 +560,7 @@ supplies, from wherever the server runs**. Nothing currently restricts:
   cannot — and where, with an HTTP `CONNECT` proxy, the **proxy** resolves the
   hostname and the server never sees the destination address.
 
-**The policy is a product decision** (§13). Once stated, tests follow at **four**
+**The policy is a product decision** (§13). Once stated, tests follow at **five**
 boundaries, and they exist whatever the policy says:
 
 1. **URL validation** — L1, table-driven over scheme, address class, and
@@ -570,13 +570,16 @@ boundaries, and they exist whatever the policy says:
    and connect.
 4. **Browser-initiated requests** — L3, a permitted public page attempting a
    private subresource by each route Chromium supports.
+5. **Upstream proxy** — L3, a request whose hostname a configured `CONNECT` proxy
+   resolves on the server's behalf. This is its own boundary, not a facet of the
+   others: the four above all assume the server can see the destination address,
+   and this is the case where it cannot.
 
 **Enforcement is conditional; these tests are not.** A policy permitting
 everything removes the need for production enforcement, not the need to know how
-the server behaves at each boundary. In that case the four tests become
+the server behaves at each boundary. In that case the five tests become
 *conformance* tests asserting each route is permitted and recording where a
-guarantee stops — notably that a configured `CONNECT` proxy resolves on the
-server's behalf. Deleting them would leave redirect handling, Chromium navigation
+guarantee stops. Deleting them would leave redirect handling, Chromium navigation
 and subresources, Chromium DNS behaviour and proxy behaviour with no characterization
 at all, which is not a lighter test suite but an unmeasured one.
 
@@ -1603,8 +1606,10 @@ proxy says nothing about Chromium with no proxy configured.
   **outbound-policy** step is authored — the plan's E3-6 and E9-2…E9-7. It does
   not gate E9-1, the diagnostics sanitizer, which is independent of this decision.
 
-**Blocks:** all outbound-security work — the plan's E9-0, and through it E3-6 and
-E9-2…E9-7. Nothing else in the plan waits on it.
+**Blocks:** the outbound-policy work — the plan's E9-0, and through it E9-2…E9-7.
+It does **not** block the plan's E3-6, the resolver and transport seam, whose API
+is the same whichever way this is decided; nor E9-1, the diagnostics sanitizer.
+Nothing else in the plan waits on it.
 
 **Not deciding is itself a position**, and a poor one: the server is
 unauthenticated and `get_content` fetches whatever URL it is given.
