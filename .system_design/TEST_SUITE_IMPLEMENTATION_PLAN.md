@@ -176,13 +176,11 @@ note recorded before any dependent step activates**.
 listed in its Blocks column — declared `impl` because neither the policy function
 nor the seams it attaches to can be written until the decision exists.
 
-**What X-1 decides is stated in TEST_SUITE §13.1, and only there.** It is three
-independent decisions — the policy, how Chromium's own connections are enforced,
-and what happens to an upstream proxy — with an acceptance criterion that rejects
-any architecture mediating only top-level navigation. That belongs in the design
-document; restating it here is how the two drift, and an earlier revision of this
-plan carried a fuller version of the decision than the design did, which is why
-reviewers kept rediscovering its scope.
+**What X-1 decides is stated in TEST_SUITE §13.1, and only there.** This document
+deliberately does not summarise it — not even the number of parts. An earlier
+revision said "three decisions" two paragraphs after warning against restating the
+decision here, and was wrong within a round of §13.1 growing a fourth. Restating is
+how the two drift; the count is as restateable as anything else.
 
 Two scheduling consequences belong here rather than in §13.1:
 
@@ -661,17 +659,44 @@ it does. The branch is **not** a single allow/restrict switch: TEST_SUITE §13.1
 decides schemes and address classes as separate dimensions, and enforcement is
 needed whenever *either* restricts anything.
 
-- **Nothing restricted** — every listed scheme and address class permitted. E9-3,
-  E9-4, E9-6 and E9-7 are dropped; E9-2 and E9-5 become characterization tests
-  recording the permitted behaviour.
-- **Anything restricted** — including the plausible case of allowing private
-  HTTP(S) while refusing `file:`, `data:`, `ftp:` and `chrome:`. Every
-  responsibility below remains, because enforcement still needs call sites: the
-  submitted URL is validated, the `httpx` clients follow redirects internally,
-  Chromium has its own networking stack, and DNS must be checked close enough to
-  connection to prevent rebinding. **E9-4 is expanded or replaced** by E9-0 into
-  architecture-specific steps rather than standing as written — it is a
-  placeholder, not a specification.
+**Two things vary independently: whether a step's *enforcement* is needed, and
+whether its *tests* are.** The tests are always needed — TEST_SUITE §7.2's four
+boundaries exist whatever the policy says, because "we permit everything" is a
+behaviour worth characterizing and a deleted test measures nothing. Only the
+production enforcement is conditional, and it is conditional **per dimension**,
+not on a single restricted/unrestricted flag.
+
+| Step | Enforcement required when | Tests |
+|---|---|---|
+| E9-2 policy function | always — it classifies both dimensions | always |
+| E9-3 `httpx` validation and redirect hops | any scheme **or** address restriction | always |
+| E9-4 Chromium navigation and subresources | any scheme **or** address restriction | always |
+| E3-6 resolver and transport seam | address restriction only | — |
+| E9-5 `httpx` rebinding and mixed-address | address restriction only | always |
+| E9-6 Chromium rebinding | address restriction only | always |
+| E9-7 proxy policy | address restriction only | always |
+
+The distinction is load-bearing. Permitting private addresses while refusing
+`file:`, `data:`, `ftp:` and `chrome:` needs scheme enforcement on both stacks but
+**no** rebinding seam, no mixed-address handling, and no proxy policy — a
+`CONNECT` proxy reaching a private address is not a violation if private addresses
+are permitted. Collapsing that into "anything restricted" would have bought the
+maximal security implementation for a scheme restriction.
+
+Where enforcement is not required, the step's tests remain as **conformance
+tests**: each route is exercised and asserted permitted, and where a guarantee
+stops — a `CONNECT` proxy resolving on the server's behalf — that limit is recorded
+rather than silently untested.
+
+**E9-4 is a placeholder, not a specification.** E9-0 expands or replaces it with
+architecture-specific steps.
+
+> **Deferred: enumerating every dimension combination.** Two dimensions give four
+> combinations today, and each further dimension doubles them. This table gives
+> E9-0 the *rule* — enforcement follows the dimension that requires it, tests are
+> unconditional — rather than a materialised branch per combination, which would
+> go stale the moment §13.1 gains a dimension and which nobody would read. E9-0
+> applies the rule to whatever X-1 actually decided.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
@@ -688,14 +713,18 @@ needed whenever *either* restricts anything.
   and the selected Chromium and proxy mechanisms, and rewrites this document's E9
   branch to match.
 
-  **If nothing is restricted:** delete E9-3, E9-4, E9-6 and E9-7; rewrite E9-5 to
-  `impl E9-2, impl E3-6` with characterization criteria; drop E9-6 and E9-7 from
-  E13-1. Note this is not only a deletion — E9-5 declares `impl E9-3`, so removing
-  rows alone leaves a dangling reference and the validator fails.
+  It applies the table above **per dimension**, not as a single branch:
 
-  **If anything is restricted** — a scheme *or* an address class — every
-  responsibility remains and E9-4 is replaced by architecture-specific steps
-  carrying their own dependencies, sizes and acceptance criteria.
+  - For each step whose enforcement dimension X-1 did not restrict, strip the
+    production change and rewrite the step as a **conformance test** asserting the
+    route is permitted, or recording where a guarantee stops. Do not delete it —
+    a deleted boundary test leaves that route uncharacterized.
+  - E3-6 is the exception: it is a seam with no test of its own, so it is dropped
+    outright if no address class is restricted. Anything declaring `impl E3-6`
+    must then be rewritten, or the validator fails on a dangling reference.
+  - Where enforcement *is* required, expand or replace E9-4 with
+    architecture-specific steps carrying their own dependencies, sizes and
+    acceptance criteria.
 
   Either way it updates the declared totals.
   *Verify:* `python scripts/check_plan_dag.py` passes afterwards; no step still

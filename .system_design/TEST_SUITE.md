@@ -560,8 +560,8 @@ supplies, from wherever the server runs**. Nothing currently restricts:
   cannot — and where, with an HTTP `CONNECT` proxy, the **proxy** resolves the
   hostname and the server never sees the destination address.
 
-**The policy is a product decision** (§13). Once stated, tests follow at three
-boundaries and the shape is the same either way:
+**The policy is a product decision** (§13). Once stated, tests follow at **four**
+boundaries, and they exist whatever the policy says:
 
 1. **URL validation** — L1, table-driven over scheme, address class, and
    multi-record answers including mixed public/private and dual-family results.
@@ -570,6 +570,15 @@ boundaries and the shape is the same either way:
    and connect.
 4. **Browser-initiated requests** — L3, a permitted public page attempting a
    private subresource by each route Chromium supports.
+
+**Enforcement is conditional; these tests are not.** A policy permitting
+everything removes the need for production enforcement, not the need to know how
+the server behaves at each boundary. In that case the four tests become
+*conformance* tests asserting each route is permitted and recording where a
+guarantee stops — notably that a configured `CONNECT` proxy resolves on the
+server's behalf. Deleting them would leave redirect handling, Chromium navigation
+and subresources, Chromium DNS behaviour and proxy behaviour with no characterization
+at all, which is not a lighter test suite but an unmeasured one.
 
 The `httpx` and Chromium paths need separate mechanisms: `httpx` resolves in
 Python where the address is observable, while Chromium resolves and connects
