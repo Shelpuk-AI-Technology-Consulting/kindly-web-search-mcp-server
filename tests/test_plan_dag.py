@@ -342,6 +342,62 @@ def test_mutation_region_listing_an_unknown_step_is_rejected() -> None:
     )
 
 
+def test_step_not_required_by_the_terminal_is_reported() -> None:
+    """Reject a step the completion milestone does not transitively require
+
+    "Everything is done" is worthless as a milestone if a whole epic can be added
+    later without becoming its prerequisite.
+    """
+    rows = (
+        "| **E9-7** | Proxy policy | PR | — | M |",
+        "| **E13-1** | Suite complete | milestone | — | S |",
+    )
+    steps, _ = checker.parse_plan(plan(*rows))
+
+    assert checker.check_terminal_reachability(steps, "E13-1") == [
+        "E13-1 does not require E9-7; it could complete with that unfinished"
+    ]
+
+
+def test_terminal_reachability_follows_transitive_prerequisites() -> None:
+    """Accept a step required only indirectly by the milestone"""
+    rows = (
+        "| **E9-4** | Chromium enforcement | PR | — | M |",
+        "| **E9-6** | Chromium rebinding | PR | merge E9-4 | M |",
+        "| **E13-1** | Suite complete | milestone | merge E9-6 | S |",
+    )
+    steps, _ = checker.parse_plan(plan(*rows))
+
+    assert checker.check_terminal_reachability(steps, "E13-1") == []
+
+
+def test_stale_declared_totals_are_reported() -> None:
+    """Reject headline figures that no longer match the table
+
+    A stale count is the one claim in the document a reader cannot check by
+    reading, so the validator checks it instead.
+    """
+    document = plan("| **E0-1** | Deps | PR | — | S |") + (
+        "<!-- totals: steps=99 authorable=7 -->" + chr(10)
+    )
+    steps, _ = checker.parse_plan(document)
+
+    problems = checker.check_declared_totals(document, steps, 0)
+
+    assert "declared steps=99 but the table has 1" in problems
+    assert "declared authorable=7 but 0 steps are authorable after bootstrap" in problems
+
+
+def test_missing_totals_declaration_is_reported() -> None:
+    """Require the machine-readable totals comment to exist"""
+    steps, _ = checker.parse_plan(plan("| **E0-1** | Deps | PR | — | S |"))
+
+    assert checker.check_declared_totals("no comment here", steps, 0) == [
+        "no machine-readable totals declaration found; add "
+        "'<!-- totals: steps=N authorable=M -->'"
+    ]
+
+
 def test_real_plan_is_valid() -> None:
     """Keep the committed plan passing its own validator"""
     assert checker.main([str(checker.DEFAULT_PLAN)]) == 0

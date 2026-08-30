@@ -46,6 +46,10 @@ EXTERNAL_ROW = re.compile(r"^\|\s*\*\*(?P<id>X-\d+)\*\*\s*\|", re.M)
 MUTATION_ROW = re.compile(
     r"^\|\s*`(?P<region>[a-z][\w.-]*)`\s*\|(?P<steps>[^|]*)\|", re.M
 )
+#: ``<!-- totals: steps=76 authorable=48 -->``
+TOTALS_DECLARATION = re.compile(
+    r"<!--\s*totals:\s*steps=(?P<steps>\d+)\s+authorable=(?P<authorable>\d+)\s*-->"
+)
 #: ``Files: tests/a.py, tests/b.py``
 FILES_LINE = re.compile(r"^\s*Files:\s*(?P<files>.+)$", re.M)
 #: Framework use, not `unittest.mock`, which pytest-native tests use freely.
@@ -312,6 +316,75 @@ def check_mutation_order(text: str, steps: dict[str, dict]) -> list[str]:
     return problems
 
 
+def check_terminal_reachability(steps: dict[str, dict], terminal: str) -> list[str]:
+    """Require every step to be a prerequisite of the completion milestone.
+
+    A milestone whose acceptance says "everything is done" is worthless if a whole
+    epic can be added later without becoming its prerequisite. This makes the claim
+    structural: anything not reachable backwards from ``terminal`` is reported.
+
+    Args:
+        steps: Parsed step table.
+        terminal: Id of the completion milestone.
+
+    Returns:
+        Human-readable problems, empty when every other step is reachable.
+    """
+    if terminal not in steps:
+        return [f"completion milestone {terminal} is not declared"]
+
+    reachable: set[str] = set()
+    frontier = [terminal]
+    while frontier:
+        current = frontier.pop()
+        for _, dep in steps.get(current, {}).get("deps", []):
+            if dep in steps and dep not in reachable:
+                reachable.add(dep)
+                frontier.append(dep)
+
+    return [
+        f"{terminal} does not require {step}; it could complete with that unfinished"
+        for step in sorted(set(steps) - reachable - {terminal})
+    ]
+
+
+def check_declared_totals(
+    text: str, steps: dict[str, dict], startable: int
+) -> list[str]:
+    """Compare the plan's stated headline figures with the computed ones.
+
+    The prose quotes a step count and an authorable count. Those go stale as soon
+    as steps are added while the validator keeps passing, leaving the numbers a
+    reader trusts as the only unchecked claims in the document.
+
+    Args:
+        text: Full Markdown source of the implementation plan.
+        steps: Parsed step table.
+        startable: Computed count of steps authorable after bootstrap.
+
+    Returns:
+        Human-readable problems, empty when the declaration matches.
+    """
+    match = TOTALS_DECLARATION.search(text)
+    if match is None:
+        return [
+            "no machine-readable totals declaration found; add "
+            "'<!-- totals: steps=N authorable=M -->'"
+        ]
+
+    problems = []
+    if int(match.group("steps")) != len(steps):
+        problems.append(
+            f"declared steps={match.group('steps')} but the table has {len(steps)}"
+        )
+    if int(match.group("authorable")) != startable:
+        problems.append(
+            f"declared authorable={match.group('authorable')} but {startable} "
+            "steps are authorable after bootstrap"
+        )
+    return problems
+
+
 def authorable_after(steps: dict[str, dict], completed: set[str]) -> set[str]:
     """List the steps that can be *written* once ``completed`` has landed.
 
@@ -419,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
         + check_row_syntax(source, set(steps))
         + check_file_ownership(source, plan_path.resolve().parents[1])
         + check_mutation_order(source, steps)
+        + check_terminal_reachability(steps, "E13-1")
     )
 
     ordered, stuck = topological_order(steps)
@@ -432,6 +506,12 @@ def main(argv: list[str] | None = None) -> int:
 
     depth, chain = longest_chain(steps, ordered)
     startable = sorted(authorable_after(steps, {"E0-1", "E0-2"}))
+
+    stale = check_declared_totals(source, steps, len(startable))
+    if stale:
+        for problem in stale:
+            print(f"FAIL: {problem}")
+        return 1
     print(f"OK: {len(steps)} steps, {len(externals)} external prerequisites, acyclic")
     print(f"    longest chain: {depth} steps — {' -> '.join(chain)}")
     print(f"    startable immediately after E0-2: {len(startable)}")

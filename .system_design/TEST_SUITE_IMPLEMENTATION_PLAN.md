@@ -52,12 +52,27 @@ worse outcome is a rebase that silently drops the other's edit.
 
 | Region | Mutated by, in order |
 |---|---|
-| `ci-required.needs` | E4-1, E4-3, E4-4, E4-5, E4-10, E4-11, E10-10 |
-| `nightly-summary.needs` | E4-12, E4-13, E12-1 |
+| `ci.yml.jobs` | E4-1, E4-3, E4-4, E4-5, E4-11, E10-3, E4-9 |
+| `ci-required.needs` | E4-1, E4-3, E4-4, E4-5, E4-11, E4-10, E10-10 |
+| `nightly.yml.jobs` | E4-12, E12-1, E4-13 |
+| `nightly-summary.needs` | E4-12, E12-1, E4-13 |
 
-Job *definitions* live in separate files and are not contended, so E4-9 can create
-the `chromium` job in parallel with anything; only its activation (E4-10) is in the
-chain.
+**The caller job is contended too, not just `needs`.** A reusable workflow reports
+nothing until `ci.yml` calls it, so a "reporting-only" step still edits `ci.yml`.
+Both regions are tracked; a step's reusable-workflow *file* remains uncontended and
+can be written in parallel with anything.
+
+**The chain order is chosen to keep external prerequisites off it where it can
+be.** `package` and the reporting-only `coverage` job are wired before `chromium`,
+so the container registry (X-3) does not gate them; and `mutation` attaches to the
+nightly before the live jobs, so the live-query budget owner (X-4) does not gate
+it. An ordering that put `chromium` first would have made the registry a
+prerequisite of nearly every later job.
+
+Chromium cannot be pushed further back than this: E10-5 measures the `chromium`
+job's own coverage and E10-6 asserts on it, so the coverage *controls* — though not
+the coverage job — genuinely depend on X-3. Ordering `chromium` after them
+produced a dependency cycle, which is how that constraint was found.
 
 ### 1.4 Red and green ship together
 
@@ -98,11 +113,15 @@ action).
 
 ## 2. Sequencing for parallelism
 
+<!-- totals: steps=76 authorable=48 -->
+
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
 *authorable* using §1.5's semantics — only an unsatisfied `impl` dependency stops
-a step being written — and reports **46 of the 72 steps authorable the moment E0-2
-lands**. A step waiting on `merge` or `complete` is written now and simply queued
+a step being written — and reports **48 of the 76 steps authorable the moment E0-2
+lands**. Those figures are declared in the machine-readable comment above and
+checked by `check_declared_totals`, because a stale headline number is a claim no
+reader can verify. A step waiting on `merge` or `complete` is written now and simply queued
 to land, which is the distinction that makes this plan distributable.
 
 Each stream starts on its own narrow dependency, not on a wave.
@@ -329,16 +348,20 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 | **E4-6** | Define and locally smoke-test the runtime image | PR | impl E0-1 | M |
 | **E4-7** | Publish the image to the registry | PR | merge E4-6, complete X-3 | M |
 | **E4-8** | Record and validate the image digest | PR | merge E4-7 | S |
-| **E4-9** | Add the `chromium` job, reporting only | PR | merge E7-3, merge E4-8 | S |
-| **E4-10** | Activate the `chromium` job | PR | merge E4-9, merge E4-5 | S |
-| **E4-11** | Add and activate the `package` job | PR | merge E8-1, merge E4-10 | S |
+| **E4-9** | Add the `chromium` job, reporting only | PR | merge E7-3, merge E4-8, merge E10-3 | S |
+| **E4-10** | Activate the `chromium` job | PR | merge E4-9, merge E4-11 | S |
+| **E4-11** | Add and activate the `package` job | PR | merge E8-1, merge E4-5 | S |
 | **E4-12** | Nightly workflow foundation | PR | impl E0-3 | S |
-| **E4-13** | Add the live jobs to the nightly | PR | merge E8-4, merge E8-5, merge E4-8, merge E4-12, complete X-4 | M |
+| **E4-13** | Add the live jobs to the nightly | PR | merge E8-4, merge E8-5, merge E4-8, merge E12-1, complete X-4 | M |
 
 **Every marker-selected job carries a `--min-selected` floor.** That is stated
 once here rather than repeated per step, and it applies to the broad job,
-`fast`, `subsystem`, `fast-extras`, `types`, `chromium`, `package`, both live jobs
-and the hermetic coverage selection. A floor is committed alongside the workflow
+`fast`, `subsystem`, `fast-extras`, `chromium`, `package`, both live jobs and the
+hermetic coverage selection. **`types` is excluded**: it runs `mypy`, not a
+marker-selected pytest invocation, so the option does not apply. Its equivalent
+non-vacuity check is in E4-5 — the configured target modules must exist and be
+reported as checked, so a job pointed at a path that no longer exists fails
+instead of passing with nothing to do. A floor is committed alongside the workflow
 and **updated in the same PR whenever tests are deliberately added to or removed
 from that selection**; a job whose selector silently stops matching is otherwise
 green while running nothing. Each job's acceptance includes: a deliberately
@@ -368,7 +391,9 @@ typo'd selector fails the job.
   `fast-extras` is in `ci-required.needs` and the aggregate is green.
 - **E4-5.** Likewise created and activated together — E2-1's code is already
   merged. *Verify:* the negative-fixture directory is excluded; **`types` is in
-  `ci-required.needs`**; introducing an `Any` on the Protocol surface makes it red.
+  `ci-required.needs`**; introducing an `Any` on the Protocol surface makes it red;
+  and mypy's output names every configured target module, so a target that no
+  longer exists fails the job rather than leaving it green with nothing checked.
 - **E4-6.** The image definition — Python, Chromium, system deps, **no application
   code** — from a pinned base digest with pinned package versions, built and smoke
   tested **locally**. No registry, so it does not wait on X-3, and E7-3 can merge
@@ -388,8 +413,9 @@ typo'd selector fails the job.
 - **E4-10.** One line. *Verify:* `chromium` is in `ci-required.needs` and the
   aggregate is green.
 - **E4-11.** `tests/package -m package`, Python 3.13 × mcp {min, max}, created and
-  activated together. `merge E4-10` sequences its `ci-required.needs` edit behind
-  the previous one, per §1.3. *Verify:* green against E8-1's tests and present in
+  activated together. `merge E4-5` sequences its `ci-required.needs` edit behind
+  the previous one, per §1.3, and keeps it ahead of `chromium` so the registry
+  does not gate it. *Verify:* green against E8-1's tests and present in
   the aggregator.
 - **E4-12.** A `schedule`-triggered workflow with `workflow_dispatch` and a
   `nightly-summary` aggregator, and **no jobs yet**. Exists so mutation and live
@@ -611,9 +637,14 @@ separate steps.
   address class (loopback, RFC1918, link-local, IPv6 ULA, `169.254.169.254`),
   asserting whatever X-1 decided; each row fails if its branch is removed; the
   module cites the X-1 artefact so the expected behaviour is traceable.
-  **This PR also materialises the chosen subplan in this document**: under an allow
-  policy it deletes the E9-3, E9-4, E9-6 and E9-7 rows and their prose, and
-  `scripts/check_plan_dag.py` must pass afterwards. Otherwise the step count,
+  **This PR also materialises the chosen subplan in this document.** Under an allow
+  policy that is not only a deletion: E9-5 declares `impl E9-3`, so removing rows
+  alone leaves a dangling reference and the validator fails. The complete
+  transformation is — delete the E9-3, E9-4, E9-6 and E9-7 rows and their prose;
+  rewrite **E9-5** to `impl E9-2, impl E3-6` with characterization acceptance
+  criteria recording the permitted behaviour rather than asserting enforcement;
+  and remove E9-6 and E9-7 from **E13-1**'s prerequisites. `scripts/check_plan_dag.py`
+  must pass afterwards. Otherwise the step count,
   chain length and completion state reported by the validator stay wrong from the
   moment X-1 is decided — a conditional branch that only prose knows about is not
   in the source of truth.
@@ -652,14 +683,14 @@ separate steps.
 |---|---|---|---|---|
 | **E10-1** | Classification policy test | PR | impl E2-3, impl E0-4 | M |
 | **E10-2** | Non-zero coverage assertion tool, unit-tested | PR | impl E10-1 | M |
-| **E10-3** | Hermetic `coverage` job — reporting only | PR | impl E10-2, merge E4-3 | M |
+| **E10-3** | Hermetic `coverage` job — reporting only | PR | impl E10-2, merge E4-11 | M |
 | **E10-4** | Worker observational coverage | PR | merge E7-2, merge E4-3 | M |
 | **E10-5** | Chromium observational coverage | PR | merge E4-10 | M |
 | **E10-6** | Install the assertion in each producing job | PR | merge E10-3, merge E10-4, merge E10-5 | M |
 | **E10-7** | Job-summary and delta reporting | PR | merge E10-6, complete X-5 | M |
 | **E10-8** | Diff-coverage gate | PR | merge E10-3 | M |
 | **E10-9** | Baseline bootstrap, ratchet and reset label | PR | merge E10-8 | L |
-| **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9, merge E4-11 | S |
+| **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9, merge E4-10 | S |
 
 - **E10-1.** Every `src/**/*.py` in the gating scope or in `omit`, exactly once.
   *Verify:* a module in neither fails; a module in both fails.
@@ -750,11 +781,16 @@ under `tests/`; this unblocks E6-4.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E13-1** | Suite complete | milestone | merge E10-10, merge E12-1, complete E11-5, merge E6-4, merge E4-13, merge E7-1, merge E9-1 | S |
+| **E13-1** | Suite complete | milestone | merge E10-10, merge E10-7, merge E12-1, complete E11-5, merge E6-1, merge E6-3, merge E6-4, merge E4-13, merge E7-1, merge E8-2, merge E8-3, merge E2-4, merge E5-5, merge E5-6, merge E9-1, merge E9-5, merge E9-6, merge E9-7 | S |
 
 No diff. Exists because "every row is done" is otherwise something nobody checks:
 the validator reports what is *listed*, not what is *finished*, and the E9 branch
 changes which rows are applicable.
+
+Its prerequisites are every terminal node, and
+`check_terminal_reachability` **fails if any step is not transitively required by
+this one** — so a future epic cannot be added and silently left out of
+"complete". The check found seventeen such steps when it was introduced.
 *Verify:* every step in this document is merged or complete; every external
 prerequisite X-1…X-5 is resolved with its rollback note recorded; `ci-required`
 carries all of `fast`, `fast-extras`, `subsystem`, `chromium`, `package`, `types`
@@ -767,10 +803,10 @@ platforms.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-13, merge E5-1, merge E5-2, merge E5-3, merge E5-4, merge E5-7 | M |
+| **E12-1** | Mutation configuration and its nightly job | PR | merge E4-12, merge E5-1, merge E5-2, merge E5-3, merge E5-4, merge E5-7 | M |
 
 Configuration and job ship together — a job without its configuration is a
-scheduled failure. It attaches to E4-12's nightly foundation and needs **neither
+scheduled failure. It attaches to E4-12's nightly foundation, ahead of the live jobs, and needs **neither
 live credentials nor the live jobs**.
 
 The dependency list matches §3.2's mutation scope exactly: the URL parsers (E5-1,
