@@ -32,10 +32,55 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Every bound below comes from §10.2 of `.system_design/TEST_SUITE.md` and is
+# asserted by `tests/test_dependency_constraints.py`. They are bounds rather than
+# "current" because this project has twice been broken by an unbounded dependency.
+# Raising one is a deliberate PR that runs the full suite against the new version;
+# Dependabot may propose, never auto-merge.
+#
 # `packaging` is declared rather than inherited from pytest: the dependency-bound
 # guard in `tests/test_dependency_constraints.py` imports it directly, and relying
 # on a transitive dep is the same failure mode that guard exists to prevent.
-dev = ["pytest", "ruff", "packaging"]
+dev = [
+    "pytest>=9,<10",
+    "pytest-asyncio>=1.4,<2",
+    "hypothesis>=6.167,<7",
+    "coverage>=7.10.3,<8",
+    "diff-cover>=10.4,<11",
+    "ruff>=0.6,<1",
+    "mypy>=2.3.1,<3",
+    "packaging>=24",
+]
+# `mutmut` needs `fork()` and therefore only runs on Linux/WSL. It is kept out of
+# `dev` so the extra everyone installs stays installable everywhere.
+#
+# This extra is ADDITIVE, never installed alone: `mutmut` drives pytest over the
+# L1 suite, which needs `hypothesis` and `pytest-asyncio`, and mutmut declares
+# neither. The nightly mutation job installs `.[dev,mutation]`. Installing this
+# extra by itself yields a mutmut whose test command fails at import — which
+# reads as "tests fail on unmutated code", not as a missing dependency.
+mutation = ["mutmut>=3,<4"]
+# The pinned environment §10.4's coverage baseline is measured in.
+# `requirements-ratchet.txt` is the frozen transitive closure of this extra and is
+# what CI installs; this list is the input that regenerates it.
+#
+# `coverage` is pinned exactly rather than range-bounded because a patch release
+# that moved a two-decimal total would fail the ratchet for reasons unrelated to
+# the change under test. `ruff` is absent because linting is not measurement, and
+# `mutmut` because it is Linux-only and belongs to the nightly. `packaging` is
+# present for the same reason it is in `dev`: the guard module imports it
+# directly. It does resolve transitively through `pytest`, so declaring it changes
+# nothing about whether the lane runs — only whether the declaration is honest,
+# which is the whole point of that guard.
+ratchet = [
+    "pytest>=9,<10",
+    "pytest-asyncio>=1.4,<2",
+    "hypothesis>=6.167,<7",
+    "coverage==7.13.5",
+    "diff-cover>=10.4,<11",
+    "mypy>=2.3.1,<3",
+    "packaging>=24",
+]
 # Optional extras for improved PDF-to-Markdown conversion on supported Python versions.
 # These pull in `onnxruntime` transitively (via `pymupdf-layout`), which may not have wheels
 # for the newest CPython releases (e.g., cp314). Keeping them optional avoids install

@@ -293,6 +293,14 @@ it carries no X-number.
   job is red forever. It lives under `tests/typing_negative/`, is excluded in mypy
   config, and is exercised by a harness that shells out to mypy, asserts a
   non-zero exit, and asserts the *specific* diagnostic code.
+  **Two consequences of §10.2's `mypy>=2.3.1,<3`.** mypy 2.x enables
+  `--strict-bytes` by default, so the fake's `stdout`/`stderr` must return `bytes`
+  — a buffer-backed fake returning `bytearray` or `memoryview` no longer
+  type-checks. And this step must **state the harness's marker**: it shells out to
+  mypy, which §10.5's `subsystem` definition ("a real socket or child process")
+  covers, but §10.4 currently puts `mypy` in the `ratchet` extra on the assumption
+  the harness stays in the hermetic set. Mark it `subsystem` and `mypy` leaves
+  both the `ratchet` extra and the lockfile.
   *Verify:* the harness fails if the negative fixture starts type-checking
   cleanly; removing `stdout` from the fake fails mypy and the conformance test; a
   test documents that `isinstance` alone does not catch a wrong `wait()`
@@ -860,8 +868,9 @@ live credentials nor the live jobs**.
 The dependency list matches §3.2's mutation scope exactly: the URL parsers (E5-1,
 E5-2), the environment resolvers (E5-3, E5-4) and diagnostics redaction (E5-7).
 E5-6's accumulators are **not** in that scope, so they are not a dependency.
-Installs from the `mutation` extra (E0-1); Linux-only, since `mutmut` needs
-`fork()`.
+Installs `.[dev,mutation]` (E0-1) — the `mutation` extra is additive and carries
+only `mutmut`, which declares neither `hypothesis` nor `pytest-asyncio` and so
+cannot run E5-1/E5-2 on its own. Linux-only, since `mutmut` needs `fork()`.
 *Verify:* completes within the nightly budget; surviving mutants publish as a
 review queue, not a gate; the job is in `nightly-summary.needs`, and a failed or
 skipped mutation job makes the summary fail.

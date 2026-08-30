@@ -797,13 +797,38 @@ project is pure asyncio, so the marker is noise. Migration removes every
 | `diff-cover` | `>=10.4,<11` | Diff coverage on changed lines; 10.4 is the floor because `--branch-coverage` does not exist below it (§10.4) |
 | `mutmut` | `>=3,<4` | L1 validation; **needs `fork()` — Linux/WSL only** |
 | `ruff` | `>=0.6,<1` | Lint |
-| `mypy` | `>=1.11,<2` | Static check for the test-double Protocols (§8A step 3) |
+| `mypy` | `>=2.3.1,<3` | Static check for the test-double Protocols (§8A step 3) |
 | `packaging` | `>=24` | Dependency guard |
 
 Bounds, not "current": this project has twice been broken by an unbounded
 dependency, which is why `test_dependency_constraints.py` exists. **Update
 policy:** bounds are raised in a PR that runs the full suite against the new
 version; Dependabot may propose, never auto-merge.
+
+**This table is machine-checked.** `tests/test_dependency_constraints.py` parses
+it and fails if it and `pyproject.toml` disagree in either direction, so a
+docs-only edit here turns CI red. Change both in the same PR. `packaging>=24` is
+deliberately one-sided — it is the only entry without an upper bound, because the
+guard module needs a floor for `Requirement`/`SpecifierSet` behaviour and
+`packaging` has no breaking-major cadence to defend against.
+
+**The `mutation` extra is additive and is never installed alone.** `mutmut` drives
+pytest over the L1 suite, which needs `hypothesis` and `pytest-asyncio`; mutmut's
+own metadata declares neither. The nightly installs `.[dev,mutation]`. Installed
+by itself it produces a mutmut whose test command fails at import, which surfaces
+as "tests fail on unmutated code" rather than as a missing dependency.
+
+**`mypy` tracks the current major, not the 1.x line.** An earlier draft of this
+table said `>=1.11,<2`. mypy 2.0.0 shipped 6 May 2026 and 2.3.1 is current, so
+that bound excluded every supported release of the tool. The 2.0 breaking changes
+are dropping Python 3.9 as a runtime and as a `--python-version` target, and
+enabling `--local-partial-types` and `--strict-bytes` by default. The first is
+irrelevant to a `requires-python >=3.13` project; the second two change what mypy
+reports, not what the code may express. §8A step 3's Protocol harness is the first
+mypy harness in this repo, so writing it against 1.x defaults would only buy a
+second migration later, against code written for the superseded behaviour. The floor is
+the exact release verified rather than a bare `>=2`, matching how `mcp>=1.25` is
+justified in `pyproject.toml`.
 
 **No HTTP-mocking library.** `httpx.MockTransport` is already the pattern in
 `test_searxng_unit.py:57` and covers every case here.
@@ -1410,11 +1435,47 @@ free would reopen the same hole one level down.
 
 `requirements-ratchet.txt` is regenerated deliberately, and its header records how:
 install a `ratchet` extra — declaring pytest, pytest-asyncio, hypothesis, coverage,
-diff-cover and mypy — into a clean Python 3.13 Linux virtualenv, then
+diff-cover, mypy and packaging — into a clean Python 3.13 Linux virtualenv, then
 `pip freeze --exclude-editable` with the project itself filtered out, since a
 `pip freeze` after `pip install .[…]` otherwise records a local path or URL that no
 other machine can resolve. Add `--require-hashes` if this lane is ever treated as
 security-relevant; reproducibility alone does not need it.
+
+`packaging` is in that list for the same reason it is in `dev`:
+`test_dependency_constraints.py` imports it directly, and a directly-imported
+package that arrives only transitively is precisely the failure that guard exists
+to catch. It *would* resolve through `pytest`, whose metadata requires
+`packaging>=22` unconditionally — so declaring it changes nothing about whether
+the lane runs, and everything about whether the declaration is honest. `ruff` and
+`mutmut` stay out: `ruff` is lint rather than measurement, and `mutmut` is
+Linux-only and belongs to the nightly.
+
+`mypy` is in the pinned lane on the assumption that E2-1's negative type-check
+fixture runs inside the ratcheted selection. If E2-1 marks that fixture
+`subsystem` — §10.5 defines the marker as needing "a real socket or child
+process", and the fixture shells out to mypy — then it leaves the hermetic set and
+`mypy` should be dropped from both this extra and the lockfile. **E2-1 must state
+the marker explicitly**; the two readings disagree and nothing else settles it.
+
+**The lockfile is the whole environment, not just the tooling.** §10.3's lane
+installs the project with `--no-deps`, so nothing else resolves `mcp`, `httpx`,
+`nodriver` or `trafilatura` — they are pinned here too. That is deliberate, and it
+has a consequence the reset rule above must absorb: **a runtime dependency bump
+moves the baseline**, because a different `mcp` or `nodriver` takes different
+branches in the hermetic suite. The reset trigger is therefore a `coverage`,
+Python, **or pinned runtime-dependency** update, not the first two alone. Where
+this file and `requirements.txt` disagree, this file wins for this lane; they are
+permitted to diverge.
+
+Adopting `--require-hashes` also means relaxing
+`test_ratchet_lockfile_pins_every_entry`, which currently requires every line to
+be a bare `name==version`; a hash-pinned file is a continuation line plus
+`--hash=` entries. Change both in the same PR.
+
+The exact `coverage` pin is raised only in a labelled `coverage-baseline-reset`
+PR, and the baseline is only ever measured from `requirements-ratchet.txt` —
+never from `.[dev]`, whose `>=7.10.3,<8` range resolves higher and would report a
+different number locally than CI does.
 
 Because the ratcheted set is `fast` only, no browser image is involved and the
 test-runtime image digest cannot move the baseline. That is a further reason to
