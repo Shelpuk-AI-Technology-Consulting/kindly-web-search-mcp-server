@@ -378,11 +378,11 @@ def test_stale_declared_totals_are_reported() -> None:
     reading, so the validator checks it instead.
     """
     document = plan("| **E0-1** | Deps | PR | — | S |") + (
-        "<!-- totals: steps=99 authorable=7 -->" + chr(10)
+        "<!-- totals: steps=99 authorable=7 pr_authorable=3 -->" + chr(10)
     )
     steps, _ = checker.parse_plan(document)
 
-    problems = checker.check_declared_totals(document, steps, 0)
+    problems = checker.check_declared_totals(document, steps, 0, 0)
 
     assert "declared steps=99 but the table has 1" in problems
     assert "declared authorable=7 but 0 steps are authorable after bootstrap" in problems
@@ -392,10 +392,76 @@ def test_missing_totals_declaration_is_reported() -> None:
     """Require the machine-readable totals comment to exist"""
     steps, _ = checker.parse_plan(plan("| **E0-1** | Deps | PR | — | S |"))
 
-    assert checker.check_declared_totals("no comment here", steps, 0) == [
+    assert checker.check_declared_totals("no comment here", steps, 0, 0) == [
         "no machine-readable totals declaration found; add "
-        "'<!-- totals: steps=N authorable=M -->'"
+        "'<!-- totals: steps=N authorable=M pr_authorable=K -->'"
     ]
+
+
+def test_pr_authorability_is_reported_separately() -> None:
+    """Count only PR steps as work an engineer can pick up
+
+    Milestones and admin operations are authorable in the graph sense but are not
+    work anyone can start, so counting them overstates capacity.
+    """
+    rows = (
+        "| **E0-1** | Deps | PR | \u2014 | S |",
+        "| **E1-6** | Green | milestone | \u2014 | S |",
+        "| **E4-2** | Protection | operation | \u2014 | S |",
+        "| **E5-1** | Parsers | PR | impl E0-1 | M |",
+    )
+    steps, _ = checker.parse_plan(plan(*rows))
+
+    authorable = checker.authorable_after(steps, {"E0-1", "E0-2"})
+    pr_only = {s for s in authorable if steps[s]["type"] == "PR"}
+
+    assert authorable == {"E1-6", "E4-2", "E5-1"}
+    assert pr_only == {"E5-1"}
+
+
+def test_declared_pr_authorable_must_match() -> None:
+    """Reject a stale staffing figure as well as a stale step count"""
+    document = plan("| **E0-1** | Deps | PR | \u2014 | S |") + (
+        "<!-- totals: steps=1 authorable=0 pr_authorable=9 -->" + chr(10)
+    )
+    steps, _ = checker.parse_plan(document)
+
+    problems = checker.check_declared_totals(document, steps, 0, 0)
+
+    assert problems == [
+        "declared pr_authorable=9 but 0 PR steps are authorable after bootstrap"
+    ]
+
+
+def test_external_blocking_nothing_is_reported() -> None:
+    """Reject an external prerequisite that gates no step on the path to done
+
+    Otherwise a prerequisite can be added, block nothing, and be skipped while the
+    completion milestone still passes.
+    """
+    document = plan(
+        "| **E9-2** | Policy | PR | \u2014 | M |",
+        "| **E13-1** | Suite complete | milestone | merge E9-2 | S |",
+        externals="| **X-9** | Unused prerequisite | nothing | maintainer |" + chr(10),
+    )
+    steps, externals = checker.parse_plan(document)
+
+    assert checker.check_external_completion(steps, externals, "E13-1") == [
+        "external prerequisite X-9 blocks no step required by E13-1; it could be "
+        "skipped while completion still passes"
+    ]
+
+
+def test_external_gating_a_required_step_is_accepted() -> None:
+    """Accept an external that blocks a step the milestone requires"""
+    document = plan(
+        "| **E9-2** | Policy | PR | impl X-1 | M |",
+        "| **E13-1** | Suite complete | milestone | merge E9-2 | S |",
+        externals="| **X-1** | Outbound policy | E9-2 | maintainer |" + chr(10),
+    )
+    steps, externals = checker.parse_plan(document)
+
+    assert checker.check_external_completion(steps, externals, "E13-1") == []
 
 
 def test_real_plan_is_valid() -> None:

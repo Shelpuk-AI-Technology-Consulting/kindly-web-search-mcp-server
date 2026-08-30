@@ -113,16 +113,25 @@ action).
 
 ## 2. Sequencing for parallelism
 
-<!-- totals: steps=76 authorable=48 -->
+<!-- totals: steps=76 authorable=48 pr_authorable=44 -->
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
 *authorable* using §1.5's semantics — only an unsatisfied `impl` dependency stops
-a step being written — and reports **48 of the 76 steps authorable the moment E0-2
-lands**. Those figures are declared in the machine-readable comment above and
-checked by `check_declared_totals`, because a stale headline number is a claim no
-reader can verify. A step waiting on `merge` or `complete` is written now and simply queued
-to land, which is the distinction that makes this plan distributable.
+a step being written.
+
+The figure that matters for staffing is **`pr_authorable` in the declaration
+above: the number of `PR` steps an engineer can pick up the moment E0-2 lands.**
+The larger `authorable` count includes milestones and an admin operation, which
+are not work anyone can start, and quoting it overstates capacity.
+
+A step waiting only on `merge` or `complete` is written now and simply queued to
+land, which is the distinction that makes this plan distributable.
+
+Both figures are checked by `check_declared_totals`. **Numbers appear once, in the
+declaration above.** A figure repeated in prose drifts the moment the table
+changes — and the validator checks only the declaration — so the rest of this
+document refers to it rather than restating it.
 
 Each stream starts on its own narrow dependency, not on a wave.
 
@@ -151,16 +160,47 @@ note recorded before any dependent step activates**.
 
 | ID | Prerequisite | Blocks | Owner |
 |---|---|---|---|
-| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1). Is fetching private-network addresses intentional? Artefact: an approved amendment to §7.2 that states the policy **and selects one of E9's two subplans**, since a restrict policy turns four of those steps into production work. | E3-6, E9-2, E9-3, E9-4, E9-5 — **before authoring** | maintainer |
+| **X-1** | **Outbound request policy decision** (TEST_SUITE §13.1) — see the note below; it decides more than a yes/no. | E3-6, E9-2, E9-3, E9-4, E9-5, E9-6, E9-7 — **before authoring** | maintainer |
 | **X-2** | Repository admin authority — branch protection, require a PR, no bypass actors | E4-2 | repo admin |
 | **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-7 | repo admin |
 | **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-13 | maintainer |
 | **X-5** | Observational coverage reviewer and cadence (TEST_SUITE §10.4 requires a named owner; unowned reporting decays into the signal nobody reads) | E10-7 | maintainer |
 
-**X-1 is the only prerequisite that blocks authoring**, and it blocks five steps
-rather than two — it is declared `impl` because neither the policy function nor
-the seam it attaches to can be written until the decision exists. The rest block
-merge or activation, so the work they gate can be written first. X-3 in particular
+**X-1 is the only prerequisite that blocks authoring**, and it blocks every step
+listed in its Blocks column — declared `impl` because neither the policy function
+nor the seams it attaches to can be written until the decision exists.
+
+**X-1 must settle two things, not one.** The first is the policy: is fetching
+private-network addresses intentional? The second is harder, and is what makes a
+restrict policy expensive — **how enforcement is even possible on the Chromium
+path.**
+
+`httpx` is straightforward: E3-6's injectable resolver and transport sit in
+Python, so the address actually connected to is observable. Chromium is not. It
+resolves and connects *inside the browser process*, and the worker passes
+`--proxy-server=$KINDLY_CHROME_PROXY` straight through
+(`nodriver_worker.py`, `_build_chromium_launch_args`). Replacing a Python resolver
+proves nothing about what the browser contacted — and with an HTTP `CONNECT`
+proxy the **proxy** resolves the hostname, so the application never sees the
+destination address at all. A test navigating to a literal private URL does not
+exercise that bypass.
+
+So under a restrict policy the artefact must also choose an enforceable
+architecture. The candidates, each with a different cost:
+
+- Route browser traffic through a **local policy-enforcing proxy** that resolves
+  and decides, and pin Chromium to it.
+- **Disallow `KINDLY_CHROME_PROXY`** while the restrictive policy is in force.
+- Treat a configured proxy as a **trusted policy boundary**, and document that the
+  guarantee ends there.
+- Any other mechanism pinning the browser's connection to the validated address.
+
+E9-4, E9-6 and E9-7 then name the fixture and the observable proving the **actual
+browser connection** was controlled, not merely that a pre-navigation
+classification ran.
+
+The other prerequisites block merge or activation, so the work they gate can be
+written first. X-3 in particular
 no longer gates writing ChromiumPool tests: E4-6 builds and smoke-tests the image
 locally with no registry, and E7-3 merges against that.
 
@@ -344,7 +384,7 @@ TEST_SUITE §13.2 later changes it, that is a new step, not a pending decision.
 | **E4-2** | Enable branch protection | operation | complete X-2, merge E4-1 | S |
 | **E4-3** | Split into the normative `fast` and `subsystem` jobs | PR | merge E4-1, complete E4-2 | M |
 | **E4-4** | Add and activate the `fast-extras` job | PR | merge E4-3 | S |
-| **E4-5** | Add and activate the `types` job | PR | merge E2-1, merge E4-4 | S |
+| **E4-5** | Add and activate the `types` job | PR | merge E2-4, merge E4-4 | S |
 | **E4-6** | Define and locally smoke-test the runtime image | PR | impl E0-1 | M |
 | **E4-7** | Publish the image to the registry | PR | merge E4-6, complete X-3 | M |
 | **E4-8** | Record and validate the image digest | PR | merge E4-7 | S |
@@ -389,8 +429,12 @@ typo'd selector fails the job.
   Created and activated together: its tests already exist, so §1.2's split does
   not apply. *Verify:* a PDF-path test that skips without the extras runs here;
   `fast-extras` is in `ci-required.needs` and the aggregate is green.
-- **E4-5.** Likewise created and activated together — E2-1's code is already
-  merged. *Verify:* the negative-fixture directory is excluded; **`types` is in
+- **E4-5.** Likewise created and activated together. `merge E2-4`, not `merge
+  E2-1`: the job's whole purpose is catching signature drift on
+  `_run_worker_command`, which does not exist until E2-3 and is not annotated
+  until E2-4. Created earlier, its target list would omit the one signature it
+  exists to check, and the non-vacuity rule below would then prevent adding a
+  target that did not yet exist. *Verify:* the negative-fixture directory is excluded; **`types` is in
   `ci-required.needs`**; introducing an `Any` on the Protocol surface makes it red;
   and mypy's output names every configured target module, so a target that no
   longer exists fails the job rather than leaving it green with nothing checked.
@@ -654,9 +698,13 @@ separate steps.
   redirect behaves per policy; a chain of two redirects is checked at both; the
   test fails if the check is applied only to the initial URL.
 - **E9-4.** Applies E9-2 on the Chromium path, which does not share the `httpx`
-  stack and therefore cannot inherit E9-3's enforcement. *Verify:* a page fetch to
-  a private address behaves per policy; disabling the check in the worker makes it
-  fail.
+  stack and therefore cannot inherit E9-3's enforcement. **Implements whichever
+  architecture X-1 selected** (§3); this step cannot be scoped before that choice.
+  *Verify:* the observable is the **connection**, not the classification — a
+  fixture that records the address actually contacted, such as the local
+  policy-enforcing proxy, or a listener on the private address asserting it was
+  never reached. A test that only asserts a pre-navigation decision is explicitly
+  insufficient.
 - **E9-5.** Uses E3-6's resolver seam so the race is scripted rather than real.
   Depends on **E9-3**, not merely on the policy function: a rebinding test that
   only exercises `E9-2` would pass while the `httpx` connection path enforces
@@ -664,16 +712,22 @@ separate steps.
   *Verify:* a hostname resolving public at validation and private at connect
   behaves per policy; the test is deterministic across 50 consecutive runs.
 - **E9-6.** The same for Chromium, which E9-5 cannot cover — it is a different
-  networking stack — plus the redirect case E9-4 does not itself test.
+  networking stack — plus the redirect case E9-4 does not itself test. E3-6's
+  Python resolver seam does **not** reach here; the fixture must control what the
+  browser resolves, via the mechanism X-1 selected.
   *Verify:* a Chromium fetch following a public→private redirect behaves per
-  policy; a rebinding hostname behaves per policy; both fail if E9-4's check is
-  removed.
-- **E9-7.** `KINDLY_CHROME_PROXY` routes Chromium's traffic through a proxy that
-  may reach networks the host cannot, so host-side address validation can be
-  bypassed entirely by configuration. Whatever X-1 decided has to hold here too.
-  *Verify:* with a proxy configured, a request to a private address behaves per
-  policy; the test fails if the policy is checked only against the directly
-  resolved address.
+  policy; a hostname whose resolution changes between validation and connect
+  behaves per policy; the address actually contacted is observed, not inferred;
+  both fail if E9-4's enforcement is removed.
+- **E9-7.** The hardest case. With an HTTP `CONNECT` proxy the **proxy** resolves
+  the hostname, so host-side address validation can be bypassed by configuration
+  alone and the application never sees the destination address. Whatever X-1
+  decided has to hold here, and under a "trusted boundary" choice this step
+  instead pins and documents that limit.
+  *Verify:* with a proxy configured, a request whose hostname the proxy resolves
+  to a private address behaves per policy; the test uses a hostname, **not a
+  literal private URL**, since a literal address does not exercise the bypass; it
+  fails if the policy is checked only against the locally resolved address.
 
 ---
 
@@ -863,8 +917,8 @@ Five engineers.
 E1-4 goes to engineer B as soon as A's E2-1 lands; E2-3 waits on it. E4-1 is
 authored early but merges with E1-6, and E4-2 follows immediately — the gate is on
 within a day of green. Coverage work (E10-1) waits on E2-3. E3-2, E3-3, E3-5,
-E5-3, E5-6, E5-7, E8-4 are unassigned backlog — and with 46 steps authorable
-after E0-2, the constraint on throughput is people, not the graph.
+E5-3, E5-6, E5-7, E8-4 are unassigned backlog. With `pr_authorable` steps open
+from day one (§2), the constraint on throughput is people, not the graph.
 
 In parallel, the maintainer works **X-1** — the only prerequisite blocking steps
 from being *written*, and by far the largest in downstream scope: a restrict

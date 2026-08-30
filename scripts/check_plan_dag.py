@@ -46,9 +46,10 @@ EXTERNAL_ROW = re.compile(r"^\|\s*\*\*(?P<id>X-\d+)\*\*\s*\|", re.M)
 MUTATION_ROW = re.compile(
     r"^\|\s*`(?P<region>[a-z][\w.-]*)`\s*\|(?P<steps>[^|]*)\|", re.M
 )
-#: ``<!-- totals: steps=76 authorable=48 -->``
+#: ``<!-- totals: steps=76 authorable=48 pr_authorable=44 -->``
 TOTALS_DECLARATION = re.compile(
-    r"<!--\s*totals:\s*steps=(?P<steps>\d+)\s+authorable=(?P<authorable>\d+)\s*-->"
+    r"<!--\s*totals:\s*steps=(?P<steps>\d+)\s+authorable=(?P<authorable>\d+)"
+    r"\s+pr_authorable=(?P<pr_authorable>\d+)\s*-->"
 )
 #: ``Files: tests/a.py, tests/b.py``
 FILES_LINE = re.compile(r"^\s*Files:\s*(?P<files>.+)$", re.M)
@@ -348,8 +349,47 @@ def check_terminal_reachability(steps: dict[str, dict], terminal: str) -> list[s
     ]
 
 
+def check_external_completion(
+    steps: dict[str, dict], externals: set[str], terminal: str
+) -> list[str]:
+    """Require every external prerequisite to gate something that reaches the end.
+
+    The completion milestone's acceptance says every external prerequisite is
+    resolved. That is only structurally true if each one actually blocks a step on
+    the path to it -- otherwise a prerequisite can be added to the table, block
+    nothing, and be quietly skipped while completion still passes.
+
+    Args:
+        steps: Parsed step table.
+        externals: Declared external prerequisite ids.
+        terminal: Id of the completion milestone.
+
+    Returns:
+        Human-readable problems, empty when every external is load-bearing.
+    """
+    reachable: set[str] = set()
+    frontier = [terminal]
+    while frontier:
+        current = frontier.pop()
+        for _, dep in steps.get(current, {}).get("deps", []):
+            if dep in steps and dep not in reachable:
+                reachable.add(dep)
+                frontier.append(dep)
+
+    referenced = {
+        dep
+        for step_id in reachable | {terminal}
+        for _, dep in steps.get(step_id, {}).get("deps", [])
+    }
+    return [
+        f"external prerequisite {external} blocks no step required by {terminal}; "
+        "it could be skipped while completion still passes"
+        for external in sorted(externals - referenced)
+    ]
+
+
 def check_declared_totals(
-    text: str, steps: dict[str, dict], startable: int
+    text: str, steps: dict[str, dict], startable: int, pr_startable: int
 ) -> list[str]:
     """Compare the plan's stated headline figures with the computed ones.
 
@@ -361,6 +401,9 @@ def check_declared_totals(
         text: Full Markdown source of the implementation plan.
         steps: Parsed step table.
         startable: Computed count of steps authorable after bootstrap.
+        pr_startable: The same, restricted to steps of type ``PR``. This is the
+            staffing figure: a milestone or an admin operation is not work an
+            engineer can pick up, so counting them inflates capacity.
 
     Returns:
         Human-readable problems, empty when the declaration matches.
@@ -369,7 +412,7 @@ def check_declared_totals(
     if match is None:
         return [
             "no machine-readable totals declaration found; add "
-            "'<!-- totals: steps=N authorable=M -->'"
+            "'<!-- totals: steps=N authorable=M pr_authorable=K -->'"
         ]
 
     problems = []
@@ -381,6 +424,11 @@ def check_declared_totals(
         problems.append(
             f"declared authorable={match.group('authorable')} but {startable} "
             "steps are authorable after bootstrap"
+        )
+    if int(match.group("pr_authorable")) != pr_startable:
+        problems.append(
+            f"declared pr_authorable={match.group('pr_authorable')} but "
+            f"{pr_startable} PR steps are authorable after bootstrap"
         )
     return problems
 
@@ -493,6 +541,7 @@ def main(argv: list[str] | None = None) -> int:
         + check_file_ownership(source, plan_path.resolve().parents[1])
         + check_mutation_order(source, steps)
         + check_terminal_reachability(steps, "E13-1")
+        + check_external_completion(steps, externals, "E13-1")
     )
 
     ordered, stuck = topological_order(steps)
@@ -507,14 +556,18 @@ def main(argv: list[str] | None = None) -> int:
     depth, chain = longest_chain(steps, ordered)
     startable = sorted(authorable_after(steps, {"E0-1", "E0-2"}))
 
-    stale = check_declared_totals(source, steps, len(startable))
+    pr_startable = sorted(s for s in startable if steps[s]["type"] == "PR")
+    stale = check_declared_totals(source, steps, len(startable), len(pr_startable))
     if stale:
         for problem in stale:
             print(f"FAIL: {problem}")
         return 1
     print(f"OK: {len(steps)} steps, {len(externals)} external prerequisites, acyclic")
     print(f"    longest chain: {depth} steps — {' -> '.join(chain)}")
-    print(f"    startable immediately after E0-2: {len(startable)}")
+    print(
+        f"    authorable after E0-2: {len(startable)} "
+        f"({len(pr_startable)} of them PR steps an engineer can pick up)"
+    )
     return 0
 
 
