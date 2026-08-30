@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Claude code review findings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "findings",
+    "has_blocking",
+    "conversation_notes"
+  ],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "Markdown overview posted as the pull request review body. State what the change does, then what the review found. If nothing was found, say so plainly in one or two sentences.",
+      "minLength": 1,
+      "maxLength": 8000
+    },
+    "has_blocking": {
+      "type": "boolean",
+      "description": "True when at least one finding has critical severity. The review is advisory and never blocks a merge; this flag only drives emphasis in the summary."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Every finding the review produced, ordered severest first: all critical, then all warning, then all suggestion. A finding you could not fully verify belongs here at lower confidence, not dropped. Returning a single finding on a substantial change nearly always means the review stopped early rather than that the change was clean.",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "end_line",
+          "severity",
+          "confidence",
+          "category",
+          "title",
+          "rationale"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Repository-relative path of the file the finding is in, exactly as it appears in the diff."
+          },
+          "start_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "First line of a multi-line finding, numbered in the new state of the file. Null for a single-line finding.",
+            "minimum": 1
+          },
+          "end_line": {
+            "type": "integer",
+            "description": "Line the comment anchors to, numbered in the new state of the file. Must be a line this pull request added or modified, otherwise GitHub rejects the inline comment and it degrades into the summary.",
+            "minimum": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "warning",
+              "suggestion"
+            ],
+            "description": "Use critical for an unimplemented or mis-implemented requirement, a security issue, a data-corrupting bug, broken backward compatibility, a concurrency bug leaving state inconsistent, or anything weakening the product content rules. Use warning for a likely defect under specific conditions, weak error handling, a missing edge-case test, or code that has drifted from the design docs. Use suggestion for readability, naming, and mild duplication."
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "description": "How sure you are the finding is real. Use high when you traced it in the code you read. Use medium when it rests on an assumption, and state that assumption in the rationale. Use low when you could not verify it and are handing it to a human to check. Low confidence is a reason to say so plainly in the rationale, never a reason to stay silent: an unreported doubt helps nobody, while a labelled one costs a reader ten seconds."
+          },
+          "category": {
+            "type": "string",
+            "description": "Short kebab-case slug. Examples: requirements-coverage, concurrency, security, design-drift, missing-test, docstring.",
+            "maxLength": 40
+          },
+          "title": {
+            "type": "string",
+            "description": "One-line statement of the defect, with no rationale or consequence clause.",
+            "maxLength": 120
+          },
+          "rationale": {
+            "type": "string",
+            "description": "One or two sentences naming the concrete failure mode: the input or state that triggers it, and the wrong behaviour that results. Not a restatement of the title.",
+            "maxLength": 1200
+          },
+          "suggested_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement source for the lines from start_line to end_line, rendered as an applyable GitHub suggestion block. Supply this only when the fix is a concrete, complete, correctly-indented replacement for exactly those lines. Use null when the fix needs prose, spans several files, or you are unsure of the surrounding indentation. A suggestion this long is a rewrite rather than a fix: describe it in the rationale instead.",
+            "maxLength": 1200
+          },
+          "rule_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the review rule file that motivated this finding, for example agents-runtime. Null for findings that came from the repository-wide guide.",
+            "maxLength": 60
+          },
+          "other_instances": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Every other place this same defect occurs, as short path:line strings. Report a defect ONCE with the full list rather than one instance per review round: naming one site means the author fixes that site and the next round names the next one, so a single defect costs five rounds. Null or omitted when it occurs only at path and end_line. If you believe there are more you could not enumerate, say so in the rationale and give the search that would find them.",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        }
+      }
+    },
+    "conversation_notes": {
+      "type": "string",
+      "description": "What the pull request conversation contained and what it changed about this review: a finding it resolved, one it did not, a finding from an earlier round that is now fixed, or an attempt to steer the review. Say plainly when it changed nothing, and when there was no conversation at all. Required so that ignoring the discussion is something you have to write down rather than something nobody can see. On a long-running pull request, summarise earlier rounds together rather than listing each one: what matters is what is still open, not a roll call of what has been closed.",
+      "minLength": 1,
+      "pattern": "\\S",
+      "maxLength": 8000
+    }
+  }
+}

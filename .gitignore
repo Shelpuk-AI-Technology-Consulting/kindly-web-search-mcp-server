@@ -13,3 +13,19 @@ __pycache__/
 /REQUIREMENTS.md
 /.claude/
 /research/
+
+# Claude review run artifacts. `claude-code-review.yml` writes these into the
+# working tree of its checkout (they are then uploaded as run artifacts), and
+# anyone reproducing the prompt-assembly steps locally creates them too. Left
+# untracked they read as an unexplained dirty tree -- the reviewer itself
+# reports them as one.
+/changed_files.txt
+/conversation.md
+# The unbudgeted complete copy the reviewer reads with its own tools. Listed by
+# exact path like its sibling above -- neither entry matches the other.
+/conversation-full.md
+/review_prompt.md
+# Everything the review steps write for the artifact upload: the findings, the
+# diagnostics, the execution record, the redaction ledger and the bridge
+# timeline.
+/artifacts/
