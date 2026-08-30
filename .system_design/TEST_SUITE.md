@@ -774,8 +774,19 @@ these controls need exactly one pinned environment.
 The job is deliberately **self-contained — it consumes no artefacts from other
 jobs**:
 
-1. Installs from `requirements-ratchet.txt` on Python 3.13, from a source
-   checkout.
+1. Installs from `requirements-ratchet.txt` on Python 3.13, then makes the project
+   itself importable — the lockfile deliberately excludes it, so an explicit step
+   is required and the two commands belong together:
+
+   ```bash
+   pip install -r requirements-ratchet.txt
+   pip install --no-deps -e .
+   ```
+
+   The job then asserts `kindly_web_search_mcp_server.__file__` resolves under the
+   checkout's `src/`, which is the mirror image of §6.1's assertion and catches the
+   opposite mistake: measuring an installed wheel when the lane is supposed to
+   measure the working tree.
 2. Runs the hermetic selection itself
    (`--ignore=tests/package -m "not live and not subsystem and not chromium and not package"`)
    under `coverage run`.
@@ -1007,9 +1018,10 @@ check** under branch protection on `main`, with `fast`, `fast-extras`,
 
 ### 10.4 Coverage
 
-No absolute percentage target: a percentage rewards executing lines and can be
-satisfied by deleting tests. Three controls, each aimed at a failure the others
-cannot see.
+No absolute percentage target: a percentage rewards executing lines, and it rises
+when you delete uncovered production code — a refactor that removes a dead branch
+improves the number without improving the testing. Three controls instead, each
+aimed at a failure the others cannot see.
 
 **1. Every production module must appear in the report.** This is the control that
 would actually have caught this project's worst gap, and the first draft of this
@@ -1021,8 +1033,11 @@ no test ever imports is absent from the report entirely — so
 and drag nothing down. It would be invisible rather than visibly at zero. Setting
 `source_pkgs` is what makes coverage.py report never-executed files.
 
+Three configuration files, because the jobs genuinely need different behaviour and
+an earlier draft described settings that were not in the file it displayed:
+
 ```ini
-# .coveragerc
+# .coveragerc — base, used by the gating lane's control 1 view
 [run]
 source_pkgs = kindly_web_search_mcp_server
 branch = true
@@ -1034,36 +1049,105 @@ source =
     */site-packages/kindly_web_search_mcp_server
 ```
 
-The `[paths]` mapping is not optional here. The lane installs a wheel, so coverage
-records paths under `site-packages`, while `git diff` produces
-`src/kindly_web_search_mcp_server/...`. Unmapped, the two never join: the totals
-double-count and `diff-cover` finds no coverage for any changed line and reports
-nothing — passing silently. `relative_files = true` is what keeps the mapping
-working across a Windows and Linux combine.
+```ini
+# .coveragerc-gate — controls 2 and 3; base plus the declared exemptions
+[run]
+source_pkgs = kindly_web_search_mcp_server
+branch = true
+relative_files = true
+omit =
+    */scrape/nodriver_worker.py
+    */scrape/chromium_pool.py
+    */scrape/worker_runner.py
 
-Two assertions enforce it:
+[paths]
+source =
+    src/kindly_web_search_mcp_server
+    */site-packages/kindly_web_search_mcp_server
+```
 
-- Every `.py` file under `src/kindly_web_search_mcp_server/` appears in the
-  report, including files at zero. A new module that nothing imports fails the
-  build rather than vanishing.
-- **If the diff contains at least one changed line that the coverage report
-  represents as a statement**, `diff-cover` may not report zero analyzed lines.
-  Zero in that case means the path mapping broke, not that the change was safe.
-  The condition is necessary rather than pedantic: a PR editing only a literal on
-  a continuation line of a multi-line call legitimately has no represented
-  statement lines, and an unconditional guard would misdiagnose that as broken
-  wiring.
+```ini
+# .coveragerc-subprocess — observational L3 jobs only
+[run]
+source_pkgs = kindly_web_search_mcp_server
+branch = true
+relative_files = true
+parallel = true
+patch = subprocess
+```
 
-**One coverage product, from the hermetic lane.** Every control measures the
-`coverage` job's own pinned run of the L1/L2 selection. Nothing is combined across
-jobs.
+Each job selects one by **absolute `COVERAGE_RCFILE`**, never by discovery.
+Discovery walks up from the working directory, and §6.1 deliberately runs the
+package tests from outside the checkout, where the file would not be found.
+`COVERAGE_FILE` is likewise set to an absolute path.
 
-That is a deliberate reduction in what the coverage controls claim, and it costs
-something: changes to code only reachable through `subsystem` or `chromium` —
-the worker lifecycle, `ChromiumPool` — are **not** diff-gated. What covers them
-instead is §2.1's allocation rule enforced in review, the `subsystem` and
-`chromium` jobs themselves being required, and control 1 below, which still fails
-if such a module has no tests at all.
+`patch = subprocess` implies `parallel = true`, so those jobs write suffixed data
+files and **must run a local `coverage combine` before reporting** — reporting does
+not implicitly combine them. That combine is local to the job; it is not the
+cross-job fan-in removed above.
+
+The `[paths]` mapping stays in the gating configs even though that lane runs from a
+source checkout, because §6.1's package tests do install a wheel and their
+observational report needs the mapping to line up with the tree.
+
+The `[paths]` mapping matters wherever a wheel is involved. The gating lane runs
+from a source checkout, so its own paths already match `git diff`; §6.1's package
+tests install a wheel and record paths under `site-packages`, and unmapped those
+never join `src/kindly_web_search_mcp_server/...` — the totals double-count and
+`diff-cover` finds no coverage for any changed line, passing silently.
+`relative_files = true` keeps paths comparable between jobs and platforms.
+
+Three assertions enforce it. Note that "appears in the report" is **not** one of
+them: under `source_pkgs` every module always appears, so such a check can only
+fail on a broken config and says nothing about whether tests exist. The control
+has to assert coverage, not presence.
+
+- **Classification is total and exclusive.** Every `src/**/*.py` file is either in
+  the gating scope or in `.coveragerc-gate`'s `omit` list — exactly one. A policy
+  test walks the tree and the omit list and fails on any file in both or neither,
+  so a new module cannot slip in unclassified.
+- **Every gating-scope module has non-zero coverage** in the hermetic report, and
+  **every omitted module has non-zero coverage** in the observational L3 report.
+  This is what would have caught `chromium_pool.py`: it is classified L3, the L3
+  report shows it at zero, the build fails until a test exists. Presence never
+  would have.
+- **If the diff contains at least one changed line the report represents as a
+  statement**, `diff-cover` may not report zero analyzed lines — that means the
+  path mapping broke, not that the change was safe. The condition is necessary
+  rather than pedantic: a PR editing only a literal on a continuation line of a
+  multi-line call legitimately has no represented statement lines, and an
+  unconditional guard would misdiagnose that as broken wiring.
+
+**One coverage run, two report views.** Every control measures the `coverage`
+job's own pinned run of the L1/L2 selection; nothing is combined across jobs. But
+that single run is reported twice, and the difference is load-bearing.
+
+`source_pkgs` makes the report **whole-package by definition** — that is the point
+of control 1, and it is also a trap. A module the hermetic lane cannot execute,
+such as `chromium_pool.py`, appears with every statement at zero hits. It is not
+absent; it is present and uncovered. So a scope claim cannot be made by wishing:
+without filtering, `diff-cover` sees those zero-hit statements and counts changed
+ones as uncovered, and adding L3-only statements grows the ratchet's denominator
+while the numerator stands still. Ordinary worker or pool development would fail
+both gates, pushing authors either to write hermetic tests for code that has no
+hermetic seam or to reach for the baseline-reset escape hatch. An earlier draft of
+this section asserted such lines were "not counted for or against" the gate; that
+was false, and this is the correction.
+
+**The gating scope is therefore declared, and the declaration is checked.**
+
+| View | Config | Feeds |
+|---|---|---|
+| whole-package | `.coveragerc` | control 1 |
+| gating scope | `.coveragerc-gate` — the same file plus an `omit` list | controls 2 and 3 |
+
+`omit` names the modules with no hermetic seam. Today that is
+`scrape/nodriver_worker.py`, `scrape/chromium_pool.py`, and `scrape/worker_runner.py`
+— the process-management module §11.2 extracts from `universal_html.py`.
+
+**That extraction is a prerequisite of this control, not a nicety** — see §11.2
+for why file-granularity `omit` forces it, and why the split is the same argument
+§2.1 makes about assertions: the seam belongs in the design, not in a side-table.
 
 The alternative was combining every lane into the diff gate, and it does not
 survive contact with the arithmetic. A required threshold gate must take
@@ -1075,9 +1159,25 @@ flipping the threshold; "rarely" is not a property a required check can be built
 on, and a flaky required check is precisely the normalised-red failure this whole
 document exists to prevent.
 
-The full `subsystem` and `chromium` coverage is still worth producing and reading
-as **observational** reporting — it is how someone notices the worker is thinly
-covered — but it does not gate.
+The full `subsystem` and `chromium` coverage is still produced as
+**observational** reporting. It does not gate — but "observational" cannot mean
+"emitted and forgotten", because this project's founding problem was exactly that:
+a signal nobody read. Unowned reporting decays into the same thing.
+
+So it is specified rather than gestured at:
+
+- Published as an HTML and JSON artefact per run, with `if-no-files-found: error`,
+  so a silently missing report fails the job instead of reading as "nothing to
+  say".
+- Reduced to a **per-module summary in the PR job summary** — module, percent,
+  delta against the previous run on `main`. A number in a downloadable artefact is
+  not a signal; a table on the PR is.
+- Control 1's second assertion already gates the strongest fact this report
+  carries — that an L3-classified module has *some* coverage — so the observational
+  view is for degree, not existence.
+- It has a **named reviewer and a cadence**, assigned when §13's owner decision is
+  resolved. Until then it is explicitly unowned, which is a known gap rather than
+  an oversight.
 
 **2. Diff coverage — the PR gate.** `diff-cover --fail-under=80` over the changed
 lines of each PR.
@@ -1145,7 +1245,7 @@ separate decision with its own runtime cost, not an answer to this gap.
 the hermetic suite is written to `coverage-baseline.json`, committed, and may not
 decrease.
 
-**Scope: L1 and L2 only — `fast` on Linux, Python 3.13, pinned lane.** The
+**Scope: the gating scope only, measured on Linux, Python 3.13, pinned lane.**
 This follows from the single-product decision above rather than adding a rule:
 every control measures the hermetic lane, so the ratchet inherits its determinism.
 Were the nondeterministic lanes included, a single differently-taken branch would
@@ -1319,6 +1419,20 @@ There is no way to point it at a fixture child. Split the function in two:
 `fetch_html_via_nodriver` keeps its current signature and **always builds its own
 command**, calling the builder and passing the result to the runner. Tests reach
 `_run_worker_command` directly with a fixture command.
+
+**Move the runner into its own module, `scrape/worker_runner.py`.** This is not
+tidiness: §10.4 classifies every production file as hermetically testable or not,
+and `omit` works at file granularity. `universal_html.py` today mixes the
+Markdown-suffix probe path — covered by 15 passing hermetic tests — with subprocess
+spawn and stream management that only a real child can exercise. While both live in
+one file, the coverage gate must treat the whole file as one or the other, and both
+choices are wrong: gate it and worker changes fail against a lane with no seam for
+them; exempt it and the probe path loses real gating. The split makes the
+classification a module boundary, which is a design property rather than a
+side-table to maintain.
+
+`_build_worker_command` stays with `fetch_html_via_nodriver`; it is pure and
+hermetically testable, so it belongs on the gated side.
 
 **The command must not become a parameter of the public fetch API.** Adding a
 `command=` argument to `fetch_html_via_nodriver` would turn "execute an arbitrary
