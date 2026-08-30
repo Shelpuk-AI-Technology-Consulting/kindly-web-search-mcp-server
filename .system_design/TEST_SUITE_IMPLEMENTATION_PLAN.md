@@ -108,6 +108,11 @@ action).
 - An acceptance check a reviewer can run, naming a fault to inject where the step
   adds tests.
 - Sizes: S under half a day, M half to two days, L two to five days.
+- **A review point we decide not to act on is recorded here, not only in the PR
+  thread.** It gets a `> **Deferred:**` block at the place it applies, naming what
+  was raised and why it was not taken. A decision that lives only in a review
+  conversation is invisible to the next reader, who then raises it again — which is
+  how several items in this document were rediscovered three or four times.
 
 ---
 
@@ -181,7 +186,10 @@ reviewers kept rediscovering its scope.
 
 Two scheduling consequences belong here rather than in §13.1:
 
-- **E9-0 must land before any security step is authored.** X-1 is a decision;
+- **E9-0 must land before any outbound-policy step is authored** — E3-6 and
+  E9-2…E9-7. It does **not** gate E9-1, the diagnostics sanitizer, which the graph
+  correctly leaves independent of X-1; reading this as "all security work" would
+  serialize a stream that is deliberately parallel. X-1 is a decision;
   turning it into a plan is a reviewable change to both documents. Without that
   gate every E9 step becomes authorable the moment X-1 is answered, and an
   engineer picks up E9-4 — a deliberately non-atomic placeholder that could mean a
@@ -648,14 +656,22 @@ duplicating tests or touching the same files.
 
 ### E9 — Security
 
-**X-1's artefact selects one of two subplans**, and the plan cannot be more
-specific until it does. Under an **allow** policy, E9-3, E9-4, E9-6 and E9-7 are
-dropped and E9-2 and E9-5 become characterization tests recording the permitted
-behaviour. Under a **restrict** policy all seven steps stand, and the enforcement is not one
-change: routing validates the submitted URL, the `httpx` clients follow redirects
-internally, Chromium has its own networking stack, and DNS must be checked close
-enough to connection to prevent rebinding. Those are separate seams and get
-separate steps.
+**X-1's artefact selects the subplan**, and the plan cannot be more specific until
+it does. The branch is **not** a single allow/restrict switch: TEST_SUITE §13.1
+decides schemes and address classes as separate dimensions, and enforcement is
+needed whenever *either* restricts anything.
+
+- **Nothing restricted** — every listed scheme and address class permitted. E9-3,
+  E9-4, E9-6 and E9-7 are dropped; E9-2 and E9-5 become characterization tests
+  recording the permitted behaviour.
+- **Anything restricted** — including the plausible case of allowing private
+  HTTP(S) while refusing `file:`, `data:`, `ftp:` and `chrome:`. Every
+  responsibility below remains, because enforcement still needs call sites: the
+  submitted URL is validated, the `httpx` clients follow redirects internally,
+  Chromium has its own networking stack, and DNS must be checked close enough to
+  connection to prevent rebinding. **E9-4 is expanded or replaced** by E9-0 into
+  architecture-specific steps rather than standing as written — it is a
+  placeholder, not a specification.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
@@ -668,13 +684,20 @@ separate steps.
 | **E9-6** | Rebinding and redirect tests on the Chromium path | PR | impl E9-4 | M |
 | **E9-7** | Proxy policy test | PR | impl E9-4 | M |
 
-- **E9-0.** Amends `TEST_SUITE.md` §7.2 with the chosen policy and the selected
-  Chromium and proxy mechanisms, and rewrites this document's E9 branch to match:
-  under **allow**, delete E9-3, E9-4, E9-6 and E9-7, rewrite E9-5 to
-  `impl E9-2, impl E3-6` with characterization criteria, and drop E9-6 and E9-7
-  from E13-1; under **restrict**, replace E9-4 with architecture-specific steps
-  carrying their own dependencies, sizes and acceptance criteria. Either way it
-  updates the declared totals.
+- **E9-0.** Amends `TEST_SUITE.md` §7.2 with the chosen policy **per dimension**
+  and the selected Chromium and proxy mechanisms, and rewrites this document's E9
+  branch to match.
+
+  **If nothing is restricted:** delete E9-3, E9-4, E9-6 and E9-7; rewrite E9-5 to
+  `impl E9-2, impl E3-6` with characterization criteria; drop E9-6 and E9-7 from
+  E13-1. Note this is not only a deletion — E9-5 declares `impl E9-3`, so removing
+  rows alone leaves a dangling reference and the validator fails.
+
+  **If anything is restricted** — a scheme *or* an address class — every
+  responsibility remains and E9-4 is replaced by architecture-specific steps
+  carrying their own dependencies, sizes and acceptance criteria.
+
+  Either way it updates the declared totals.
   *Verify:* `python scripts/check_plan_dag.py` passes afterwards; no step still
   declares a dependency on a deleted row; `TEST_SUITE.md` §7.2 and §13.1 record the
   decision, so this plan traces to the design rather than asserting new design of
@@ -699,14 +722,8 @@ separate steps.
   name**, and **IPv4-mapped IPv6** (`::ffff:169.254.169.254`), asserting whatever
   X-1 decided; each row fails if its branch is removed; the module cites the X-1
   artefact so the expected behaviour is traceable.
-  **This PR also materialises the chosen subplan in this document.** Under an allow
-  policy that is not only a deletion: E9-5 declares `impl E9-3`, so removing rows
-  alone leaves a dangling reference and the validator fails. The complete
-  transformation is — delete the E9-3, E9-4, E9-6 and E9-7 rows and their prose;
-  rewrite **E9-5** to `impl E9-2, impl E3-6` with characterization acceptance
-  criteria recording the permitted behaviour rather than asserting enforcement;
-  and remove E9-6 and E9-7 from **E13-1**'s prerequisites. `scripts/check_plan_dag.py`
-  must pass afterwards. Otherwise the step count,
+  Materialising the branch is **E9-0's** job, not this step's. E9-2 owns the
+  policy function and its tests, nothing more. Otherwise the step count,
   chain length and completion state reported by the validator stay wrong from the
   moment X-1 is decided — a conditional branch that only prose knows about is not
   in the source of truth.

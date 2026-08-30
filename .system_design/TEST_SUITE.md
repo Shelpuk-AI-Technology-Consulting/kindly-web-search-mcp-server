@@ -1502,33 +1502,59 @@ Stated explicitly so the omission is not mistaken for an oversight.
 
 ---
 
-## 13. Open decisions
+## 13. Decision records and external prerequisites
 
-Four decisions cannot be settled by this document. Each is recorded here in full:
-what it decides, why it is open, what it blocks, and what an answer must contain.
+Not everything here is open, and not everything open is here. The four states:
 
-**This section is the authoritative statement of each decision.**
-`TEST_SUITE_IMPLEMENTATION_PLAN.md` §3 tracks the same items as external
-prerequisites X-1…X-6 with owners and blocked steps, but for *scheduling* only. If
-the two disagree about what is being decided, this section is right and the plan
-is stale.
+| State | Items |
+|---|---|
+| **Externally unresolved** — nobody has decided | §13.1 (X-1), §13.3 (X-6) |
+| **Provisionally resolved** — settled for this implementation, revisitable | §13.2 |
+| **Scheduled** — deferred deliberately, with a step that discharges it | §13.4 |
+| **Deferred with a reason** — not scheduled, and why | §13.5 |
+
+**Operational prerequisites live only in the plan.** X-2 (repository admin), X-3
+(container registry), X-4 (live-query budget) and X-5 (observational coverage
+owner) are provisioning and ownership tasks, not design decisions, so they are
+tracked in `TEST_SUITE_IMPLEMENTATION_PLAN.md` §3 and are deliberately absent
+here.
+
+**For the items that are here, this section is authoritative.** The plan's §3
+records the same decisions for *scheduling* — owner, blocked steps — but not what
+is being decided. If the two disagree about substance, this section is right and
+the plan is stale.
+
+**Review points we decide not to act on are recorded inline** as `> **Deferred:**`
+blocks at the place they apply, naming what was raised and why it was not taken.
+A judgement that lives only in a review thread is invisible to the next reader.
 
 ### 13.1 Outbound request policy — X-1
 
-**The largest open item, and it is three decisions rather than one.** Answering
+**The largest open item, and it is four decisions rather than one.** Answering
 only the first leaves the browser path unenforced, which is why this keeps
 resurfacing in review.
 
-1. **Is fetching private-network addresses intentional?** It plausibly is —
-   self-hosted SearXNG and internal documentation are exactly what this server is
-   pointed at, and a blanket RFC1918 block would break those users.
-2. **If restricted, how are Chromium's own connections enforced?** `httpx`
+**Decisions 1 and 2 are independent dimensions, not one switch.** Treating them as
+a single allow/restrict choice cannot express what may well be the right answer —
+*permit private HTTP(S) so self-hosted SearXNG and intranet docs keep working,
+while refusing `file:`, `data:`, `ftp:` and `chrome:` outright*. Under a single
+switch, "allow" would delete the enforcement steps that a scheme restriction still
+needs.
+
+1. **Which URL schemes are fetchable?** `http` and `https` are the only ones the
+   loaders are built for; `file:`, `data:`, `ftp:` and `chrome:` are reachable
+   today and each has a different failure mode.
+2. **Are private-network addresses fetchable?** Plausibly yes — self-hosted
+   SearXNG and internal documentation are exactly what this server is pointed at,
+   and a blanket RFC1918 block would break those users.
+3. **If *either* dimension is restricted, how are Chromium's own connections
+   enforced?** `httpx`
    resolves in Python where the address is observable. Chromium resolves and
    connects *inside the browser process*, so a Python-side seam proves nothing
    about what it contacted. Candidates: a **local policy-enforcing proxy** that
    resolves and decides; a **host-resolver rule paired with per-request
    interception**; or another mechanism mediating every browser request.
-3. **What happens to an upstream proxy?** `KINDLY_CHROME_PROXY` is passed to
+4. **What happens to an upstream proxy?** `KINDLY_CHROME_PROXY` is passed to
    Chromium verbatim (`nodriver_worker.py`, `_build_chromium_launch_args`). With
    an HTTP `CONNECT` proxy the **proxy** resolves the hostname and the server never
    sees the destination address, so host-side validation is bypassed by
@@ -1536,12 +1562,25 @@ resurfacing in review.
    trusted boundary whose limit is documented, or chain it through something that
    enforces.
 
-Decisions 2 and 3 are independent. Disallowing or trusting the proxy says nothing
-about Chromium with no proxy configured.
+Decisions 3 and 4 are independent of each other too. Disallowing or trusting the
+proxy says nothing about Chromium with no proxy configured.
+
+> **Deferred: enumerating further policy dimensions.** Scheme and address class are
+> separated above because both are concretely reachable today and pull in opposite
+> directions — the plausible answer permits private HTTP(S) while refusing
+> `file:`/`data:`. Other dimensions could be carved out in the same way: redirect
+> depth, non-standard ports, request method, response size. They are **not**
+> enumerated here, because each one that is speculative adds a branch E9-0 must
+> materialise and a column the answer must fill, for a restriction nobody has asked
+> for. If X-1's author needs one, adding it is a paragraph here and a case in
+> §7.2 — the structure supports it; the guess does not belong in it.
 
 **An answer must:**
 
-- State the policy, and for a restrictive policy name the mechanisms for 2 and 3.
+- State the policy **per dimension** — schemes and address classes separately —
+  and, if either restricts anything, name the mechanisms for 3 and 4. Enforcement
+  is needed whenever *any* dimension restricts *anything*; only a policy permitting
+  every listed scheme **and** every listed address class removes the need for it.
 - **Mediate every request the browser makes, not the navigation URL.** A permitted
   public page can reach a private address through an image, script, frame,
   stylesheet or `fetch`. An architecture that passes top-level navigation and
@@ -1551,8 +1590,9 @@ about Chromium with no proxy configured.
 - Re-plan the implementation branch. A restrictive policy is not one change: it
   spans a shared policy function, `httpx` enforcement across redirect hops,
   Chromium enforcement, and deterministic rebinding and proxy tests. The plan's
-  **E9-0** exists to carry that re-planning and must land before any security step
-  is authored.
+  **E9-0** exists to carry that re-planning and must land before any
+  **outbound-policy** step is authored — the plan's E3-6 and E9-2…E9-7. It does
+  not gate E9-1, the diagnostics sanitizer, which is independent of this decision.
 
 **Blocks:** all outbound-security work — the plan's E9-0, and through it E3-6 and
 E9-2…E9-7. Nothing else in the plan waits on it.
