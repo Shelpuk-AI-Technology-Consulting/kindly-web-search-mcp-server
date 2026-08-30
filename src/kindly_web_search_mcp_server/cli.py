@@ -39,6 +39,16 @@ def _has_transport_flag(argv: list[str]) -> bool:
     return any(arg.split("=", 1)[0] in transport_flags for arg in argv)
 
 
+def _transport_env_set() -> bool:
+    """Report whether ``FASTMCP_TRANSPORT`` selects a transport.
+
+    Returns:
+        ``True`` when the variable holds a non-blank value, in which case the server
+        resolves the transport itself and this wrapper must not inject ``--stdio``.
+    """
+    return bool((os.environ.get("FASTMCP_TRANSPORT") or "").strip())
+
+
 def main(argv: list[str] | None = None) -> None:
     from .server import main as server_main
 
@@ -48,7 +58,10 @@ def main(argv: list[str] | None = None) -> None:
     if forwarded_args[:1] == ["--"]:
         forwarded_args = forwarded_args[1:]
 
-    if not _has_transport_flag(forwarded_args):
+    # `--stdio` is injected only when nothing else says otherwise. Injecting it
+    # unconditionally made this entry point the one place FASTMCP_TRANSPORT was
+    # ignored, so a Compose file setting it still came up in stdio and exited.
+    if not _has_transport_flag(forwarded_args) and not _transport_env_set():
         forwarded_args = ["--stdio", *forwarded_args]
 
     previous_context = os.environ.get("KINDLY_MCP_CONTEXT")

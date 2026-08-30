@@ -4,11 +4,15 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+import uvicorn
+from starlette.middleware.cors import CORSMiddleware
 
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
@@ -26,12 +30,98 @@ from .utils.logging import configure_logging
 configure_logging()
 LOGGER = logging.getLogger(__name__)
 
+# Mirrors the loopback allowlist FastMCP installs for itself when it is handed no
+# `transport_security`. It is repeated here rather than left to the SDK because the SDK
+# applies it only when the *constructor* `host` is a loopback address, while this server
+# resolves its bind address later from `FASTMCP_HOST`/`--host`. Stating it explicitly
+# keeps the protection identical whatever we end up binding to.
+LOCALHOST_ALLOWED_HOSTS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+LOCALHOST_ALLOWED_ORIGINS = ("http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*")
+
+
+def _split_env_list(raw: str | None) -> list[str]:
+    """Split a comma-separated environment variable into its entries.
+
+    Args:
+        raw: The raw environment value, or ``None`` when the variable is unset.
+
+    Returns:
+        The non-empty, whitespace-trimmed entries, in declaration order.
+    """
+    return [item.strip() for item in (raw or "").split(",") if item.strip()]
+
+
+def _resolve_transport_security(
+    allowed_hosts: list[str],
+    allowed_origins: list[str],
+) -> tuple[TransportSecuritySettings, list[str]]:
+    """Resolve DNS-rebinding settings and the CORS origins that must match them.
+
+    DNS rebinding protection stays on unconditionally, and an unset allowlist falls back
+    to loopback rather than to "allow everything". The difference matters because this
+    server is unauthenticated and ``get_content`` fetches whatever URL the caller names:
+    an empty allowlist combined with a permissive CORS policy lets any web page the
+    operator visits drive the server against their own LAN and read the response.
+
+    The two lists default independently. Setting only ``FASTMCP_ALLOWED_HOSTS`` — the
+    natural reaction to a ``421 Invalid Host header`` behind Docker Compose — therefore
+    keeps loopback origins working instead of rejecting every browser request with
+    ``403 Invalid Origin header``.
+
+    Args:
+        allowed_hosts: Host patterns from ``FASTMCP_ALLOWED_HOSTS``; empty when unset.
+        allowed_origins: Origin patterns from ``FASTMCP_ALLOWED_ORIGINS``; empty when unset.
+
+    Returns:
+        A tuple of the :class:`~mcp.server.transport_security.TransportSecuritySettings`
+        for :class:`~mcp.server.fastmcp.FastMCP` and the origin list the CORS middleware
+        must advertise. The second element is always the settings' own origin list, so
+        the two surfaces cannot disagree.
+    """
+    hosts = allowed_hosts or list(LOCALHOST_ALLOWED_HOSTS)
+    origins = allowed_origins or list(LOCALHOST_ALLOWED_ORIGINS)
+    settings = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+    return settings, origins
+
+
+def _cors_origin_regex(origins: list[str]) -> str:
+    """Translate transport-security origin patterns into a CORS origin regex.
+
+    Starlette's ``CORSMiddleware`` matches origins by exact string, so the SDK's
+    ``host:*`` port wildcard would quietly match nothing if passed to it verbatim.
+    Compiling both surfaces from one list is what stops CORS from approving a preflight
+    for an origin the transport-security middleware then rejects with a 403.
+
+    Args:
+        origins: Origin patterns, each either an exact origin or one ending in ``:*``.
+
+    Returns:
+        A regular expression matching exactly the supplied patterns.
+    """
+    alternatives = [
+        re.escape(origin[:-1]) + r"\d+" if origin.endswith(":*") else re.escape(origin)
+        for origin in origins
+    ]
+    return "|".join(alternatives)
+
+
+ALLOWED_HOSTS = _split_env_list(os.getenv("FASTMCP_ALLOWED_HOSTS"))
+ALLOWED_ORIGINS = _split_env_list(os.getenv("FASTMCP_ALLOWED_ORIGINS"))
+TRANSPORT_SECURITY, CORS_ALLOW_ORIGINS = _resolve_transport_security(
+    ALLOWED_HOSTS, ALLOWED_ORIGINS
+)
+
 mcp = FastMCP(
     "kindly-web-search",
     instructions=(
         "Web search via Serper (default), Tavily, or a self-hosted SearXNG instance with best-effort "
         "scraping/extraction of result pages into Markdown for LLM consumption."
     ),
+    transport_security=TRANSPORT_SECURITY,
 )
 
 Transport = Literal["stdio", "sse", "streamable-http"]
@@ -46,8 +136,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     transport_group = parser.add_mutually_exclusive_group()
     transport_group.add_argument(
         "--transport",
-        choices=("stdio", "sse", "streamable-http"),
-        help="Transport to use (default: stdio).",
+        choices=("stdio", "sse", "streamable-http", "http"),
+        help="Transport to use (default: stdio). `http` is an alias for `streamable-http`.",
     )
     transport_group.add_argument(
         "--stdio",
@@ -92,8 +182,31 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_transport(raw: str | None) -> Transport:
-    if raw in ("stdio", "sse", "streamable-http"):
-        return raw
+    """Resolve the transport from the CLI flag, then ``FASTMCP_TRANSPORT``.
+
+    The CLI flag wins, so an explicit invocation is never overridden by ambient
+    environment. An unrecognised value logs a warning before falling back: in a Compose
+    file a typo would otherwise bring the container up in stdio, which exits immediately
+    with nothing to explain why.
+
+    Args:
+        raw: The value of the CLI transport flag, or ``None`` when it was not given.
+
+    Returns:
+        The resolved transport, with ``http`` normalised to ``streamable-http``.
+    """
+    resolved_transport = (raw or os.environ.get("FASTMCP_TRANSPORT") or "").strip()
+    if not resolved_transport:
+        return "stdio"
+    if resolved_transport == "http":
+        return "streamable-http"
+    if resolved_transport in ("stdio", "sse", "streamable-http"):
+        return resolved_transport
+    LOGGER.warning(
+        "Unrecognised transport %r; falling back to stdio. "
+        "Valid values: stdio, sse, streamable-http (or http).",
+        resolved_transport,
+    )
     return "stdio"
 
 
@@ -176,11 +289,32 @@ def main(argv: list[str] | None = None) -> None:
             if hasattr(mcp, "settings") and hasattr(mcp.settings, key):
                 setattr(mcp.settings, key, value)
 
-    try:
-        mcp.run(transport=transport, mount_path=args.mount_path)
-    except TypeError:
-        # Backward-compat: older MCP SDKs may not accept `mount_path`.
-        mcp.run(transport=transport)
+        # Branch on the resolved transport, not on `hasattr`: `streamable_http_app`
+        # exists on every supported SDK version, so probing for it always selected
+        # Streamable HTTP, making `--sse` serve /mcp while /sse returned 404. Passing
+        # `args.mount_path` here is also what keeps `--mount-path` from being a no-op.
+        asgi_app = (
+            mcp.sse_app(args.mount_path)
+            if transport == "sse"
+            else mcp.streamable_http_app()
+        )
+
+        # NB: allow_credentials=True will require explicit methods & headers
+        app = CORSMiddleware(
+            asgi_app,
+            allow_origin_regex=_cors_origin_regex(CORS_ALLOW_ORIGINS),
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["mcp-session-id", "mcp-protocol-version"],
+        )
+        uvicorn.run(app, host=host, port=port)
+    else:
+        try:
+            mcp.run(transport=transport, mount_path=args.mount_path)
+        except TypeError:
+            # Backward-compat: older MCP SDKs may not accept `mount_path`.
+            mcp.run(transport=transport)
 
 
 

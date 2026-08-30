@@ -34,6 +34,37 @@ REJECTED_MCP_VERSIONS = ("2.0.0", "2.1.0", "3.0.0")
 SUPPORTED_MCP_VERSION = "1.25.0"
 
 
+# Imported directly at the top of ``server.py`` (``import uvicorn``,
+# ``from starlette.middleware.cors import CORSMiddleware``). Both are satisfied
+# transitively through ``mcp`` today, so nothing fails until the SDK drops one of them
+# — at which point the documented ``uvx --from git+https://...`` install breaks at
+# import for every user. Declaring them turns that into a resolver error instead.
+DIRECTLY_IMPORTED_DEPENDENCIES = ("starlette", "uvicorn")
+
+
+def _declared_dependency_names() -> set[str]:
+    """Collect the distribution names declared in ``[project].dependencies``
+
+    Returns:
+        The lowercased names of every declared runtime dependency.
+    """
+    with PYPROJECT_PATH.open("rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    return {
+        Requirement(entry).name.lower() for entry in pyproject["project"]["dependencies"]
+    }
+
+
+@pytest.mark.parametrize("name", DIRECTLY_IMPORTED_DEPENDENCIES)
+def test_directly_imported_packages_are_declared(name: str) -> None:
+    """Declare every package ``server.py`` imports without going through ``mcp``"""
+    assert name in _declared_dependency_names(), (
+        f"pyproject.toml does not declare '{name}', which server.py imports directly. "
+        "It currently resolves transitively via 'mcp'; that is not a guarantee."
+    )
+
+
 def _read_mcp_requirement() -> Requirement:
     """Extract the ``mcp`` requirement declared in ``pyproject.toml``
 
