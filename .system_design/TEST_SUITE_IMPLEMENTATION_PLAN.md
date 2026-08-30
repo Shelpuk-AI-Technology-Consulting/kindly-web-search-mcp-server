@@ -113,7 +113,7 @@ action).
 
 ## 2. Sequencing for parallelism
 
-<!-- totals: steps=76 authorable=48 pr_authorable=44 -->
+<!-- totals: steps=77 authorable=49 pr_authorable=44 -->
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
@@ -165,15 +165,25 @@ note recorded before any dependent step activates**.
 | **X-3** | Container registry — registry choice, publish credentials as Actions secrets, and a decision on whether fork PRs may pull the image | E4-7 | repo admin |
 | **X-4** | Live-query budget owner — billing authorisation for nightly spend and a named person alerted on nightly failure. `SERPER_API_KEY` already exists. | E4-13 | maintainer |
 | **X-5** | Observational coverage reviewer and cadence (TEST_SUITE §10.4 requires a named owner; unowned reporting decays into the signal nobody reads) | E10-7 | maintainer |
+| **X-6** | Owners for every row of TEST_SUITE §9's risk-to-test matrix. X-4 and X-5 name two; the column is otherwise blank, and TEST_SUITE §13.3 leaves it open | E13-1 | maintainer |
 
 **X-1 is the only prerequisite that blocks authoring**, and it blocks every step
 listed in its Blocks column — declared `impl` because neither the policy function
 nor the seams it attaches to can be written until the decision exists.
 
-**X-1 must settle two things, not one.** The first is the policy: is fetching
-private-network addresses intentional? The second is harder, and is what makes a
-restrict policy expensive — **how enforcement is even possible on the Chromium
-path.**
+**X-1 must settle three things, not one.** They are independent, and answering
+only the first two leaves the browser path unenforced:
+
+1. **Is fetching private-network addresses intentional?** The policy itself.
+2. **How are Chromium's own connections enforced?** Direct DNS resolution and
+   connection happen inside the browser process.
+3. **What happens to an upstream proxy?** Prohibited under the restrictive policy,
+   trusted as a boundary whose limit is documented, or chained through something
+   that enforces.
+
+Decisions 2 and 3 are not substitutes. Disallowing or trusting
+`KINDLY_CHROME_PROXY` says nothing about what Chromium does when no proxy is
+configured, so neither can satisfy E9-6's rebinding requirement on its own.
 
 `httpx` is straightforward: E3-6's injectable resolver and transport sit in
 Python, so the address actually connected to is observable. Chromium is not. It
@@ -185,19 +195,33 @@ proxy the **proxy** resolves the hostname, so the application never sees the
 destination address at all. A test navigating to a literal private URL does not
 exercise that bypass.
 
-So under a restrict policy the artefact must also choose an enforceable
-architecture. The candidates, each with a different cost:
+For decision 2 the candidates, each with a different cost:
 
 - Route browser traffic through a **local policy-enforcing proxy** that resolves
-  and decides, and pin Chromium to it.
-- **Disallow `KINDLY_CHROME_PROXY`** while the restrictive policy is in force.
-- Treat a configured proxy as a **trusted policy boundary**, and document that the
-  guarantee ends there.
-- Any other mechanism pinning the browser's connection to the validated address.
+  and decides, and pin Chromium to it. This is the only candidate that also covers
+  subresources, below.
+- Constrain Chromium's own resolution — a **host-resolver rule or equivalent**
+  pinning the browser to a validated address.
+- Any other mechanism pinning the browser's connections to validated addresses.
+
+**Enforcement must cover every request the browser makes, not the navigation URL.**
+A permitted public page can reach a private address through an image, script,
+frame, stylesheet, `fetch`, or its own redirect. Blocking top-level navigation to
+`169.254.169.254` while letting the loaded page request it is still SSRF, and a
+mechanism that only inspects `browser.get()`'s argument does not qualify.
 
 E9-4, E9-6 and E9-7 then name the fixture and the observable proving the **actual
-browser connection** was controlled, not merely that a pre-navigation
+browser connections** were controlled, not merely that a pre-navigation
 classification ran.
+
+**The restrictive branch needs materialising too.** The allow branch has an
+explicit procedure (E9-2); the restrictive one currently does not, and E9-4 is one
+`M` PR that could mean anything from a documented limitation to a new local proxy
+with its own process lifecycle, routing, resolver behaviour and authentication
+chaining. So X-1's artefact must also **rewrite the restrictive E9 branch into
+architecture-specific steps with their own dependencies, sizes and acceptance
+criteria** before implementation starts. A local enforcing proxy is several PRs,
+not one.
 
 The other prerequisites block merge or activation, so the work they gate can be
 written first. X-3 in particular
@@ -677,10 +701,17 @@ separate steps.
 - **E9-2.** One pure function classifying a URL — scheme, and the address class of
   a *resolved* host — returning the policy decision X-1 recorded. No call sites
   yet, so it merges green either way.
+  **A hostname resolves to a set, not an address.** The policy must say whether
+  *every* returned record must be permitted or whether the connection is pinned to
+  one validated address — a name returning both a public and a private A record
+  otherwise passes validation on the public one while the connector picks the
+  private one, with no timing involved and no rebinding required.
   *Verify:* table-driven over scheme (`file:`, `data:`, `ftp:`, `chrome:`) and
   address class (loopback, RFC1918, link-local, IPv6 ULA, `169.254.169.254`),
-  asserting whatever X-1 decided; each row fails if its branch is removed; the
-  module cites the X-1 artefact so the expected behaviour is traceable.
+  plus **mixed public/private record sets**, **IPv4 and IPv6 answers for one
+  name**, and **IPv4-mapped IPv6** (`::ffff:169.254.169.254`), asserting whatever
+  X-1 decided; each row fails if its branch is removed; the module cites the X-1
+  artefact so the expected behaviour is traceable.
   **This PR also materialises the chosen subplan in this document.** Under an allow
   policy that is not only a deletion: E9-5 declares `impl E9-3`, so removing rows
   alone leaves a dangling reference and the validator fails. The complete
@@ -701,16 +732,22 @@ separate steps.
   stack and therefore cannot inherit E9-3's enforcement. **Implements whichever
   architecture X-1 selected** (§3); this step cannot be scoped before that choice.
   *Verify:* the observable is the **connection**, not the classification — a
-  fixture that records the address actually contacted, such as the local
+  fixture recording the address actually contacted, such as the local
   policy-enforcing proxy, or a listener on the private address asserting it was
-  never reached. A test that only asserts a pre-navigation decision is explicitly
-  insufficient.
+  never reached. A test asserting only a pre-navigation decision is explicitly
+  insufficient. **Subresources are in scope:** a fixture serves a *permitted*
+  public page that attempts a private request via `<img>`, `<script>`, `<iframe>`,
+  a stylesheet `url()` and `fetch()`, and the private listener must record **zero**
+  connections. A mechanism passing the navigation test while failing this one has
+  not implemented the policy.
 - **E9-5.** Uses E3-6's resolver seam so the race is scripted rather than real.
   Depends on **E9-3**, not merely on the policy function: a rebinding test that
   only exercises `E9-2` would pass while the `httpx` connection path enforces
   nothing.
   *Verify:* a hostname resolving public at validation and private at connect
-  behaves per policy; the test is deterministic across 50 consecutive runs.
+  behaves per policy; a hostname returning a **mixed record set** in one answer
+  behaves per policy, which is the case needing no timing at all; the tests are
+  deterministic across 50 consecutive runs.
 - **E9-6.** The same for Chromium, which E9-5 cannot cover — it is a different
   networking stack — plus the redirect case E9-4 does not itself test. E3-6's
   Python resolver seam does **not** reach here; the fixture must control what the
@@ -745,6 +782,7 @@ separate steps.
 | **E10-8** | Diff-coverage gate | PR | merge E10-3 | M |
 | **E10-9** | Baseline bootstrap, ratchet and reset label | PR | merge E10-8 | L |
 | **E10-10** | Activate `coverage` in `ci-required` | PR | merge E10-6, merge E10-9, merge E4-10 | S |
+| **E10-11** | Revisit per-module coverage floors against measured data | decision | merge E10-3 | S |
 
 - **E10-1.** Every `src/**/*.py` in the gating scope or in `omit`, exactly once.
   *Verify:* a module in neither fails; a module in both fails.
@@ -791,6 +829,13 @@ separate steps.
   check without a manual re-run; an unrecorded rise fails the equality check.
 - **E10-10.** One line. *Verify:* `coverage` is in `ci-required.needs` and the
   aggregate is green; making a control fail turns `ci-required` red.
+- **E10-11.** TEST_SUITE §13.4 defers per-module floors until a baseline exists,
+  on the grounds that any number chosen earlier would be invented. E10-3 produces
+  the first real measurement, so this is where that deferral is discharged rather
+  than quietly forgotten.
+  *Verify:* a recorded decision citing the measured per-module figures.
+  **"Do not adopt floors" is a valid outcome** provided the evidence is recorded;
+  what is not valid is leaving §13.4 open indefinitely.
 
 ---
 
@@ -835,7 +880,7 @@ under `tests/`; this unblocks E6-4.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E13-1** | Suite complete | milestone | merge E10-10, merge E10-7, merge E12-1, complete E11-5, merge E6-1, merge E6-3, merge E6-4, merge E4-13, merge E7-1, merge E8-2, merge E8-3, merge E2-4, merge E5-5, merge E5-6, merge E9-1, merge E9-5, merge E9-6, merge E9-7 | S |
+| **E13-1** | Suite complete | milestone | merge E10-10, merge E10-7, complete E10-11, complete X-6, merge E12-1, complete E11-5, merge E6-1, merge E6-3, merge E6-4, merge E4-13, merge E7-1, merge E8-2, merge E8-3, merge E2-4, merge E5-5, merge E5-6, merge E9-1, merge E9-5, merge E9-6, merge E9-7 | S |
 
 No diff. Exists because "every row is done" is otherwise something nobody checks:
 the validator reports what is *listed*, not what is *finished*, and the E9 branch
@@ -887,7 +932,12 @@ The tables above are the source of truth. `scripts/check_plan_dag.py` parses the
 - table rows that look like steps but did not parse;
 - files claimed by two batches, claimed but absent from the tree, or
   `unittest`-style and claimed by none;
-- cycles.
+- cycles;
+- steps mutating one contended region (§1.3) that are not totally ordered;
+- any step not transitively required by the completion milestone E13-1;
+- any external prerequisite that gates no step E13-1 requires;
+- declared totals — step count, authorable count and PR-authorable count — that
+  do not match the table.
 
 ```
 $ python scripts/check_plan_dag.py
