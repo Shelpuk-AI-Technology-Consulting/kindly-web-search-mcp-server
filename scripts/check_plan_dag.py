@@ -1,28 +1,52 @@
-"""Validate the test suite implementation plan's dependency graph.
+"""Validate the test suite implementation plan's dependency declarations.
 
 The plan in ``.system_design/TEST_SUITE_IMPLEMENTATION_PLAN.md`` declares each
 step's prerequisites in a table column, and separately draws a summary graph in
-prose. The prose drawing is the part that drifts, and an earlier revision of the
-plan shipped three dependency cycles that a reader had to find by hand.
+prose. The prose drawing is the part that drifts, so the per-step declarations are
+the single source of truth and this script is what keeps them honest.
 
-This script treats the per-step ``Blocked by`` declarations as the single source
-of truth: it parses them, checks every referenced step exists, and fails if the
-resulting graph contains a cycle. Run it whenever the plan changes.
+It deliberately rejects loose syntax rather than interpreting it. An earlier
+version of this script accepted prose such as ``impl E1-1…E1-5`` and silently read
+two of the five steps, and ignored ``X-*`` external prerequisites entirely, which
+made its "startable now" count wrong in the optimistic direction. A validator that
+guesses is worse than none, because it is believed.
+
+Accepted grammar for the ``Blocked by`` cell::
+
+    —                                   no prerequisites
+    impl E0-1                           one prerequisite
+    impl E0-1, merge E1-6, complete X-2  several, comma separated
+
+Dependency kinds:
+    ``impl``: cannot be written until the other step exists.
+    ``merge``: can be written independently, cannot merge until the other lands.
+    ``complete``: the other is not a PR (a decision, milestone or operation).
 
 Exit codes:
-    0: the graph is complete and acyclic.
-    1: an undefined step is referenced, or a cycle exists.
+    0: every declaration is well formed and the graph is acyclic.
+    1: a syntax, reference, duplicate or cycle problem was found.
 """
 
 from __future__ import annotations
 
-import collections
 import re
 import sys
 from pathlib import Path
 
-STEP_ROW = re.compile(r"^\|\s*\*\*(E\d+-\d+[ab]?)\*\*\s*\|([^|]*)\|([^|]*)\|", re.M)
-STEP_ID = re.compile(r"E\d+-\d+[ab]?")
+#: ``| **E0-1** | Title | PR | impl E0-2 | S |``
+STEP_ROW = re.compile(
+    r"^\|\s*\*\*(?P<id>E\d+-\d+[ab]?)\*\*\s*\|(?P<title>[^|]*)\|"
+    r"(?P<type>[^|]*)\|(?P<deps>[^|]*)\|",
+    re.M,
+)
+#: ``| **X-1** | Prerequisite | … ``
+EXTERNAL_ROW = re.compile(r"^\|\s*\*\*(?P<id>X-\d+)\*\*\s*\|", re.M)
+#: ``Files: tests/a.py, tests/b.py``
+FILES_LINE = re.compile(r"^Files:\s*(?P<files>.+)$", re.M)
+
+DEPENDENCY = re.compile(r"^(?P<kind>impl|merge|complete)\s+(?P<id>E\d+-\d+[ab]?|X-\d+)$")
+VALID_TYPES = {"PR", "milestone", "decision", "operation"}
+NO_DEPS = {"—", "-", ""}
 
 DEFAULT_PLAN = (
     Path(__file__).resolve().parents[1]
@@ -31,108 +55,228 @@ DEFAULT_PLAN = (
 )
 
 
-def parse_steps(text: str) -> dict[str, set[str]]:
-    """Extract each step's declared prerequisites from the plan's tables.
+class PlanError(Exception):
+    """Raised when the plan's declarations are malformed or inconsistent."""
+
+
+def parse_dependencies(cell: str) -> list[tuple[str, str]]:
+    """Parse one ``Blocked by`` cell into (kind, step id) pairs.
+
+    Args:
+        cell: The raw table cell, which may contain Markdown emphasis.
+
+    Returns:
+        The declared dependencies, empty when the cell records none.
+
+    Raises:
+        PlanError: If any entry does not match the accepted grammar. Ranges
+            (``E1-1…E1-5``) and wildcards (``E5-*``) are rejected here rather
+            than being partially understood.
+    """
+    text = cell.replace("**", "").replace("`", "").strip()
+    if text in NO_DEPS:
+        return []
+
+    dependencies: list[tuple[str, str]] = []
+    for entry in text.split(","):
+        match = DEPENDENCY.match(entry.strip())
+        if match is None:
+            raise PlanError(
+                f"unparseable dependency {entry.strip()!r} — expected "
+                f"'impl|merge|complete <ID>'; ranges and wildcards are not allowed"
+            )
+        dependencies.append((match.group("kind"), match.group("id")))
+    return dependencies
+
+
+def parse_plan(text: str) -> tuple[dict[str, dict], set[str]]:
+    """Extract every step and external prerequisite from the plan.
 
     Args:
         text: Full Markdown source of the implementation plan.
 
     Returns:
-        A mapping of step id to the set of step ids it declares as blockers.
-        External prerequisites (``X-*``) are tracked in the plan's prose rather
-        than here, so they are deliberately not returned.
+        A tuple of the step table (id to a record holding ``type`` and ``deps``)
+        and the set of declared external prerequisite ids.
+
+    Raises:
+        PlanError: If a step id is declared twice, a step's ``Type`` is not one
+            of the recognised values, or a dependency cell is malformed.
     """
-    steps: dict[str, set[str]] = {}
+    externals = {m.group("id") for m in EXTERNAL_ROW.finditer(text)}
+
+    steps: dict[str, dict] = {}
     for match in STEP_ROW.finditer(text):
-        step_id, blocked_by = match.group(1), match.group(3)
-        steps.setdefault(step_id, set()).update(
-            set(STEP_ID.findall(blocked_by)) - {step_id}
-        )
-    return steps
+        step_id = match.group("id")
+        if step_id in steps:
+            raise PlanError(f"step {step_id} is declared more than once")
+
+        step_type = match.group("type").replace("*", "").replace("`", "").strip()
+        if step_type not in VALID_TYPES:
+            raise PlanError(
+                f"step {step_id} has Type {step_type!r}; "
+                f"expected one of {sorted(VALID_TYPES)}"
+            )
+
+        steps[step_id] = {
+            "type": step_type,
+            "deps": parse_dependencies(match.group("deps")),
+        }
+    return steps, externals
 
 
-def find_cycle(steps: dict[str, set[str]]) -> list[str]:
-    """Report the steps that cannot be topologically ordered.
+def check_references(steps: dict[str, dict], externals: set[str]) -> list[str]:
+    """Find dependencies pointing at ids the plan never defines.
 
     Args:
-        steps: Mapping of step id to its declared blockers.
+        steps: Parsed step table.
+        externals: Declared external prerequisite ids.
 
     Returns:
-        The sorted ids participating in a cycle, or an empty list when the graph
-        is acyclic.
+        Human-readable problems, empty when every reference resolves.
+    """
+    known = set(steps) | externals
+    problems = []
+    for step_id, record in steps.items():
+        for kind, dep in record["deps"]:
+            if dep not in known:
+                problems.append(f"{step_id} depends on undefined {dep}")
+            elif dep in externals and kind != "complete":
+                problems.append(
+                    f"{step_id} declares '{kind} {dep}', but {dep} is an external "
+                    "prerequisite and must use 'complete'"
+                )
+    return problems
+
+
+def topological_order(steps: dict[str, dict]) -> tuple[list[str], list[str]]:
+    """Order the steps so every step follows its prerequisites.
+
+    Args:
+        steps: Parsed step table. External prerequisites are ignored, since they
+            are roots by definition.
+
+    Returns:
+        A tuple of the ordered step ids and the ids that could not be ordered,
+        the latter being those in or downstream of a cycle.
     """
     known = set(steps)
-    indegree = {step: len(blockers & known) for step, blockers in steps.items()}
-    queue = [step for step, count in indegree.items() if count == 0]
+    blockers = {s: {d for _, d in r["deps"]} & known for s, r in steps.items()}
+    remaining = dict(blockers)
     ordered: list[str] = []
 
-    # Standard Kahn's algorithm; anything left unordered is in or behind a cycle.
-    while queue:
-        step = queue.pop()
-        ordered.append(step)
-        for candidate, blockers in steps.items():
-            if step in blockers:
-                indegree[candidate] -= 1
-                if indegree[candidate] == 0:
-                    queue.append(candidate)
+    # Resolve in deterministic passes so the reported order is stable.
+    while True:
+        ready = sorted(s for s, b in remaining.items() if not b)
+        if not ready:
+            break
+        for step in ready:
+            ordered.append(step)
+            del remaining[step]
+        for b in remaining.values():
+            b.difference_update(ready)
 
-    return sorted(known - set(ordered))
+    return ordered, sorted(remaining)
 
 
-def longest_chain(steps: dict[str, set[str]]) -> int:
-    """Measure the longest dependency chain, as a step count.
+def longest_chain(steps: dict[str, dict], ordered: list[str]) -> tuple[int, list[str]]:
+    """Measure the longest prerequisite chain in the plan.
 
     Args:
-        steps: Mapping of step id to its declared blockers. Must be acyclic.
+        steps: Parsed step table.
+        ordered: A valid topological ordering of those steps.
 
     Returns:
-        The number of steps in the longest chain, minimum 1 for a non-empty plan.
+        The chain length in steps and one chain achieving it.
     """
     known = set(steps)
-    depth: dict[str, int] = collections.defaultdict(int)
-    for step in sorted(steps, key=lambda s: len(steps[s])):
-        for blocker in steps[step] & known:
-            depth[step] = max(depth[step], depth[blocker] + 1)
-    return (max(depth.values()) + 1) if depth else len(known)
+    depth: dict[str, int] = {}
+    parent: dict[str, str | None] = {}
+
+    # `ordered` guarantees every prerequisite is resolved before its dependent.
+    for step in ordered:
+        best, best_parent = 0, None
+        for dep in {d for _, d in steps[step]["deps"]} & known:
+            if depth[dep] + 1 > best:
+                best, best_parent = depth[dep] + 1, dep
+        depth[step], parent[step] = best, best_parent
+
+    if not depth:
+        return 0, []
+
+    end = max(depth, key=lambda s: (depth[s], s))
+    chain, node = [], end
+    while node is not None:
+        chain.append(node)
+        node = parent[node]
+    return depth[end] + 1, list(reversed(chain))
+
+
+def check_file_ownership(text: str) -> list[str]:
+    """Ensure any file named in a ``Files:`` line is claimed by only one step.
+
+    Batched steps (the async migration) declare the files they own so two
+    engineers cannot pick up the same file.
+
+    Args:
+        text: Full Markdown source of the implementation plan.
+
+    Returns:
+        Human-readable problems, empty when no file is claimed twice.
+    """
+    seen: dict[str, int] = {}
+    for match in FILES_LINE.finditer(text):
+        for path in match.group("files").split(","):
+            cleaned = path.replace("`", "").strip()
+            if cleaned:
+                seen[cleaned] = seen.get(cleaned, 0) + 1
+    return [f"file {path} is claimed by {count} steps" for path, count in seen.items() if count > 1]
 
 
 def main(argv: list[str] | None = None) -> int:
     """Validate the plan and report the outcome.
 
     Args:
-        argv: Optional command-line arguments; the first is a path to the plan.
+        argv: Optional arguments; the first is a path to the plan file.
 
     Returns:
-        A process exit code: 0 when the graph is valid, 1 otherwise.
+        A process exit code: 0 when the plan is valid, 1 otherwise.
     """
     args = sys.argv[1:] if argv is None else argv
     plan_path = Path(args[0]) if args else DEFAULT_PLAN
-    steps = parse_steps(plan_path.read_text(encoding="utf-8"))
+
+    try:
+        steps, externals = parse_plan(plan_path.read_text(encoding="utf-8"))
+    except PlanError as exc:
+        print(f"FAIL: {exc}")
+        return 1
 
     if not steps:
-        print(f"no steps parsed from {plan_path}", file=sys.stderr)
+        print(f"FAIL: no steps parsed from {plan_path}")
         return 1
 
-    failed = False
+    problems = check_references(steps, externals) + check_file_ownership(
+        plan_path.read_text(encoding="utf-8")
+    )
 
-    # An undefined reference usually means a step was renamed but not everywhere.
-    undefined = sorted({d for blockers in steps.values() for d in blockers} - set(steps))
-    if undefined:
-        print(f"FAIL: references to undefined steps: {', '.join(undefined)}")
-        failed = True
+    ordered, stuck = topological_order(steps)
+    if stuck:
+        problems.append(f"cycle in or upstream of: {', '.join(stuck)}")
 
-    cycle = find_cycle(steps)
-    if cycle:
-        print(f"FAIL: dependency cycle involving: {', '.join(cycle)}")
-        failed = True
-
-    if failed:
+    if problems:
+        for problem in problems:
+            print(f"FAIL: {problem}")
         return 1
 
-    bootstrap = {"E0-1", "E0-2"}
-    ready = sorted(s for s in steps if steps[s] <= bootstrap and s not in bootstrap)
-    print(f"OK: {len(steps)} steps, acyclic, longest chain {longest_chain(steps)}")
-    print(f"    startable immediately after E0-2: {len(ready)}")
+    depth, chain = longest_chain(steps, ordered)
+    startable = sorted(
+        s
+        for s, r in steps.items()
+        if all(d in {"E0-1", "E0-2"} for _, d in r["deps"]) and s not in {"E0-1", "E0-2"}
+    )
+    print(f"OK: {len(steps)} steps, {len(externals)} external prerequisites, acyclic")
+    print(f"    longest chain: {depth} steps — {' -> '.join(chain)}")
+    print(f"    startable immediately after E0-2: {len(startable)}")
     return 0
 
 
