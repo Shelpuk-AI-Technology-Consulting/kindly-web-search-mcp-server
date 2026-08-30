@@ -403,8 +403,29 @@ configured entirely by URL, which makes it the natural seam.
 in shipped code is a larger risk than the test is worth, on a server that is
 already unauthenticated.
 
-Stubbed, this proves transport, packaging and protocol conformance — **not** the
-provider → resolver → Chromium path. That is §6.2.
+**Controlling the resolver, which the provider stub does not.** Stubbing search is
+not sufficient for determinism. On a non-empty result set `web_search` calls
+`resolve_page_content_markdown` for **every** returned link, which falls through
+to the universal loader and launches Chromium. The `package` job has no browser,
+so an unconstrained fixture response would either hang or fail on infrastructure.
+
+Two tool calls, each deterministic by construction:
+
+1. **`web_search` against a fixture that returns zero results.** `search_web`
+   returns `[]`, `web_search` short-circuits before the enrichment fan-out, and no
+   resolver runs. This exercises provider selection through `PROVIDERS`, the tool
+   wrapper, the transport and the installed entrypoint. It is explicitly a
+   **routing, protocol and packaging smoke test** — it does not touch content
+   resolution, and the document does not claim otherwise.
+2. **`get_content` on a URL ending `.pdf`.** `load_url_as_markdown` calls
+   `_is_probably_pdf_url` as its **first** statement and returns `None` before any
+   probe or browser launch, so the tool returns its deterministic "Could not
+   retrieve content" note with no network and no Chromium. This exercises the
+   second tool end to end, including the `None` → Markdown-note conversion that
+   §4.4 pins.
+
+Anything requiring real content resolution is a `chromium` or live job, not this
+one.
 
 ### 6.2 Live canaries — nightly, gated
 
@@ -524,17 +545,31 @@ conversion bug.
    with no other home. One parameterized test over defaulting, validation,
    clamping and `num_results` limiting, with the `os.name` patching removed.
 
-**B. Add the production seams** in §11 — the test design depends on them.
+**B. Enforce green — immediately after A, before anything else.** The failure this
+document exists to fix was not that tests broke; it was that a red suite was
+never enforced and became normal. Deferring enforcement until the rest of the
+plan is built would let exactly that recur while B–D are in flight.
 
-**C. New coverage,** in risk order (§9): security (§7), then the untested worker
-lifecycle and `ChromiumPool`, then contracts, then providers and loaders.
+The minimum viable gate is small and ships as soon as A lands:
 
-**D. Async migration.** Convert `IsolatedAsyncioTestCase` and `anyio.run`
-wrappers to pytest-native async, file by file, **after** A. Mixing a broad
-mechanical conversion into baseline restoration would blend framework failures
-with stale-test repairs and make both harder to judge.
+1. One workflow running the `fast` job on Linux and Windows, Python 3.13.
+2. The `ci-required` aggregation job (§10.3) as a **required check** under branch
+   protection on `main`.
 
-**E. CI and enforcement** (§10.3), including branch protection.
+That is enough to make a regression un-mergeable. Every later job — `fast-extras`,
+`subsystem`, `chromium`, `package`, the nightlies — is added to the same workflow
+and to `ci-required`'s `needs` as its tests come into existence.
+
+**C. Add the production seams** in §11 — the rest of the design depends on them.
+
+**D. New coverage,** in risk order (§9): security (§7), then the untested worker
+lifecycle and `ChromiumPool`, then contracts, then providers and loaders. Each
+increment adds its job to `ci-required`.
+
+**E. Async migration.** Convert `IsolatedAsyncioTestCase` and `anyio.run`
+wrappers to pytest-native async, file by file. Deliberately last: it is a broad
+mechanical change, and running it under an already-enforced gate means a
+conversion bug fails visibly instead of blending into stale-test repairs.
 
 ---
 
@@ -593,7 +628,7 @@ project is pure asyncio, so the marker is noise. Migration removes every
 | `pytest` | `>=9,<10` | Runner |
 | `pytest-asyncio` | `>=1.4,<2` | Async tests, `asyncio_mode = "auto"` |
 | `hypothesis` | `>=6.167,<7` | Properties in §3.1 |
-| `coverage` | `>=7,<8` | Branch coverage and the ratchet (§10.4) |
+| `coverage` | `>=7,<8` | Branch coverage and the committed baseline (§10.4) |
 | `diff-cover` | `>=9,<10` | Diff coverage on changed lines |
 | `mutmut` | `>=3,<4` | L1 validation; **needs `fork()` — Linux/WSL only** |
 | `ruff` | `>=0.6,<1` | Lint |
@@ -615,39 +650,101 @@ version; Dependabot may propose, never auto-merge.
 | `fast-extras` | same, with `pdf-advanced` installed | Python 3.13 only | Linux |
 | `subsystem` | `-m "subsystem and not chromium and not live"` | Python 3.13 | Windows + Linux |
 | `chromium` | `-m "chromium and not live"` | Python 3.13 | Linux container |
-| `package` | `-m package`, wheel build + install (§6.1) | Python 3.13 | Linux |
+| `package` | `tests/package -m package`, wheel build + install (§6.1) | Python 3.13 × mcp {min, max} | Linux |
 | `live-serper` (nightly) | `-m "live and serper"` | — | Linux |
 | `live-extraction` (nightly) | `-m "live and extraction"` | — | Linux container |
 | `mutation` (nightly) | `mutmut run` over the §3.2 scope | — | Linux |
+| `ci-required` | aggregation only — no tests | — | Linux |
 
 `fast`, `fast-extras`, `subsystem`, `chromium` and `package` run on every push
 and PR.
+
+**One stable required check.** Requiring every matrix-generated check by name is
+brittle: adding a Python or `mcp` axis renames the checks and silently drops the
+old names from branch protection. `ci-required` runs no tests, declares `needs`
+on every job that must pass, and fails if any dependency did not succeed. **It is
+the only required check** under branch protection, so the matrix can change
+without touching repository settings.
 
 **Matrix rationale and cost control.** `requires-python = ">=3.13"`, and
 `pdf-advanced` is constrained to `python_version < '3.14'`, so 3.13 and 3.14
 behave differently and both must be covered. `pdf-advanced` gets its own job
 rather than a matrix axis so the absent-extras path — the default install — is
-what the main matrix exercises. The `mcp` {min, max} axis applies only to `fast`,
-since §4.2's schema assertions are the only thing sensitive to SDK version;
-running it across every job would multiply cost for no signal. Windows is limited
-to `fast` and `subsystem`.
+what the main matrix exercises.
+
+The `mcp` {min, max} axis applies to **`fast` and `package`**. Restricting it to
+`fast` would be wrong: §4.2's schema generation is not the only SDK-sensitive
+surface — session initialization, transport negotiation, tool invocation and the
+console entrypoints all come from the SDK, and SDK drift is the failure that
+`test_dependency_constraints.py` was written for. `package` is where those are
+exercised against a real install, so it carries the axis too. `subsystem` and
+`chromium` do not, since their subjects are this project's own process and
+browser handling. Windows is limited to `fast` and `subsystem`.
 
 **Marker exclusions must be explicit and mutually exclusive.** `live-extraction`
 needs a browser, so it would naturally carry `chromium` too — and the PR
 `chromium` job would then run a billable network test on every PR. Every job's
-selection therefore excludes `live` unless it is a live job, and `package` is
-excluded from `fast` so installed-wheel tests are never collected against the
-source checkout. Installed-wheel tests live in `tests/package/` as well as
-carrying the marker, so a mis-set marker cannot silently include them.
+selection therefore excludes `live` unless it is a live job.
+
+**Path exclusion, not just markers, for installed-wheel tests.** A marker
+exclusion only helps if the marker is present: a `tests/package/` file whose
+author forgot `@pytest.mark.package` is still collected by
+`-m "… and not package"` and would run against the source checkout, silently
+proving nothing about the wheel. Therefore every source-checkout job passes
+`--ignore=tests/package`, the `package` job targets `tests/package` explicitly,
+and a collection-policy test asserts every test under that directory carries the
+marker. Path and marker together; neither alone.
 
 **Marker registration does not prove a marker is used.** `--strict-markers`
 rejects *unknown* marks applied to tests; it says nothing about a job selecting a
-marker no test carries. Verified: `pytest -m nonexistent_marker` on a populated
-file reports "7 deselected" and **exits 0**. A specialized job that selects a
-typo'd marker would therefore pass green while running nothing. Every
-marker-selected job must assert a **minimum collected count** — e.g. a
-`--collect-only` count check, or `pytest ... || [ $? -ne 5 ]` inverted to *fail*
-on zero — as an explicit step.
+marker no test carries.
+
+**The exact failure mode is "too few", not "zero".** Measured, capturing pytest's
+own exit status rather than a pipeline's:
+
+| Command | Exit |
+|---|---|
+| `pytest -m typod` (nothing matches) | **5** — already fails CI |
+| `pytest -m slow` (1 selected, 5 expected, no guard) | **0** — passes silently |
+
+A selector matching *nothing* is safe by default: pytest returns
+`EXIT_NOTESTSCOLLECTED` (5) and the step fails. The dangerous case is a selector
+that matches a handful of tests when it should match forty — a renamed marker
+left on two files, say. That exits 0 and the job is green.
+
+Do **not** paper over this with `pytest … || [ $? -ne 5 ]`. The construct is
+broken in both directions: on exit 0 the `||` short-circuits and the
+under-selected run passes anyway, and on exit 1 — real test failures — the guard
+runs, `[ 1 -ne 5 ]` succeeds, and a **failing job is converted into a green one**.
+
+Enforce the count inside pytest, where collection is authoritative and the test
+exit code is preserved:
+
+```python
+# tests/conftest.py
+def pytest_addoption(parser):
+    parser.addoption("--min-selected", type=int, default=0,
+                     help="Fail if fewer than N tests are selected.")
+
+def pytest_collection_finish(session):
+    minimum = session.config.getoption("--min-selected")
+    if minimum and len(session.items) < minimum:
+        raise pytest.UsageError(
+            f"selected {len(session.items)} tests, expected at least {minimum}; "
+            "check the -m expression against the registered markers"
+        )
+```
+
+**`pytest_collection_finish`, not `pytest_collection_modifyitems`.** Verified: the
+`modifyitems` variant sees the full collected list *before* mark-based
+deselection, so `len(items)` is 3 when `-m` selects none, and the guard never
+fires. `collection_finish` reads `session.items` after deselection and reports the
+true selected count.
+
+Every marker-selected job passes `--min-selected=<n>`. Measured behaviour:
+under-selection fails at collection (exit 4, with the count in the message),
+while a genuine test failure keeps its own exit 1 — no shell arithmetic in
+between.
 
 **Secrets.** `SERPER_API_KEY` is a repository Actions secret.
 
@@ -669,38 +766,48 @@ checks** under branch protection on `main`.
 ### 10.4 Coverage
 
 No absolute percentage target: a percentage rewards executing lines and can be
-satisfied by deleting tests. The controls are:
+satisfied by deleting tests. Two enforced controls, plus reporting.
 
-- **Branch coverage** (`branch = true`), reported every run.
-- **A no-regression ratchet**, operationally defined below.
-- **Diff coverage** on changed lines per PR, via `diff-cover`, which puts the
-  requirement where a reviewer can act on it.
-- **Mutation testing** (§3.2) where correctness is the product.
+**1. Diff coverage — the PR gate.** `diff-cover --fail-under=80` over the changed
+lines of each PR. This is the control that does the work: it is unambiguous,
+needs no historical comparison, and puts the requirement where a reviewer can act
+on it. New code is covered or the PR is red.
 
-**Ratchet definition.** Ambiguity here makes the control unenforceable, so:
+**2. A committed baseline that may not decrease.** Total branch coverage is
+written to `coverage-baseline.txt`, committed. CI measures head once and fails if
+the measured total is **below** the committed number; when it is above, the job
+prints the new value for the author to commit.
 
-- **Combination.** `coverage combine` over `fast` (Linux, Python 3.13, mcp max),
-  `subsystem` (Linux) and `chromium`. Windows and the matrix's other axes are
-  reported but excluded from the ratchet, so a platform-conditional branch cannot
-  ratchet the number up and then fail another job.
-- **Comparison.** Head is measured in the same workflow run as a fresh
-  measurement of the merge-base, not against a stored number, so both sides use
-  identical configuration and tool versions.
-- **Path normalization.** `[paths]` in `.coveragerc` maps Windows and Linux
-  checkouts to one root; without it combined data double-counts.
-- **Precision and tolerance.** Two decimal places; a drop of more than 0.10
-  percentage points fails. The tolerance absorbs measurement noise from
-  ordering, not real deletions.
-- **Exclusions.** `tests/` itself, `if TYPE_CHECKING:` blocks, and `__main__`
-  guards. Nothing else — in particular, no blanket exclusion of `scrape/`.
+This is deliberately a stored baseline rather than a re-measured merge base. A
+fresh merge-base measurement means checking out, installing, running and
+combining three revisions per side — six runs — and immediately raises a question
+with no good answer: does the base revision run *its* tests or *head's*? Each
+choice measures something different and neither is what the control is for. A
+committed number sidesteps both. Lowering it requires editing a tracked file in
+the PR, which is visible in review — which is the actual goal, since silent
+erosion, not any particular percentage, is the risk.
+
+There is **no tolerance band.** A tolerance is what turns a ratchet into a
+bounded-regression policy that compounds across PRs: twenty PRs each losing 0.09
+points lose nearly two points with every job green. Measurement is deterministic
+for a fixed job set, so no band is needed.
+
+**Measurement definition.** `coverage combine` over `fast` (Linux, Python 3.13,
+`mcp` max), `subsystem` (Linux) and `chromium` — one fixed set, so a
+platform-conditional branch cannot inflate the number in one job and fail in
+another. Windows and the other matrix axes are reported but excluded.
+`branch = true`. `[paths]` in `.coveragerc` maps Windows and Linux checkouts to a
+single root so combined data does not double-count. Exclusions: `tests/` itself,
+`if TYPE_CHECKING:` blocks and `__main__` guards — nothing else, and in
+particular no blanket exclusion of `scrape/`.
 
 **What coverage would and would not have caught.** The stale tests raise
 `TypeError` before `_fetch_html`'s body runs, so a coverage *report* would show
-that function dark to anyone reading it. A global ratchet is a weaker instrument:
-losing eleven tests' worth of lines might or might not exceed a whole-project
-threshold. Coverage is a diagnostic that would have made this visible on
-inspection; the ratchet is what makes silent deletion fail. Neither replaces the
-other.
+that function dark to anyone who looked. The baseline check is weaker: losing
+eleven tests' worth of lines may or may not move the whole-project total enough
+to trip it. Coverage is a diagnostic that would have made this visible on
+inspection; the baseline is what makes silent erosion fail; mutation testing
+(§3.2) is what judges assertion quality. None substitutes for another.
 
 ### 10.5 pytest configuration
 
@@ -746,11 +853,22 @@ Needed by §5.2. `fetch_html_via_nodriver` hardcodes its child command
 base_cmd = [executable, "-m", "kindly_web_search_mcp_server.scrape.nodriver_worker", ...]
 ```
 
-There is no way to point it at a fixture child. Extract the command construction
-into a builder used by production, and have the spawn path accept an
-already-built command. Tests then pass a fixture command through the real spawn,
-stream and termination code, while production keeps one builder that L1 can
-assert on directly.
+There is no way to point it at a fixture child. Split the function in two:
+
+- `_build_worker_command(...) -> list[str]` — the production command builder, a
+  pure function that L1 asserts on directly.
+- `_run_worker_command(command, *, timeout, diagnostics, ...)` — **private** —
+  containing the spawn, stream, heartbeat and termination logic that §5.2 tests.
+
+`fetch_html_via_nodriver` keeps its current signature and **always builds its own
+command**, calling the builder and passing the result to the runner. Tests reach
+`_run_worker_command` directly with a fixture command.
+
+**The command must not become a parameter of the public fetch API.** Adding a
+`command=` argument to `fetch_html_via_nodriver` would turn "execute an arbitrary
+process" into a supported input of a function whose URL argument is already
+attacker-influenced (§7.2). Keeping the seam private and the public entry point
+command-free costs nothing and closes that path.
 
 The alternative — monkeypatching `asyncio.create_subprocess_exec` — reproduces
 exactly the opaque coupling that let `_FakeProc` drift, and is ruled out.
@@ -791,7 +909,8 @@ stderr writer would leave the MCP response — the more exposed path — raw.
 injection point in shipped code is a permanent risk on an unauthenticated server;
 a local SearXNG-contract server is a test-only artefact.
 
-**No absolute coverage target, but a defined ratchet and diff coverage (§10.4).**
+**No absolute coverage target, but an enforced diff-coverage gate and a committed
+baseline (§10.4).**
 Stated explicitly so the omission is not mistaken for an oversight.
 
 ---
@@ -811,7 +930,7 @@ document.
    This is an API change with client impact.
 3. **Owners in the risk matrix (§9).** Assigning maintainers is not this
    document's call; the column is otherwise complete.
-4. **Per-module coverage minimums.** The ratchet and diff coverage are adopted
+4. **Per-module coverage minimums.** Diff coverage and the committed baseline are adopted
    (§10.4); fixed per-module floors are not, because no coverage measurement
    exists in this repo yet and any number chosen now would be invented. Revisit
    once workstream A produces a measured baseline.
@@ -830,10 +949,11 @@ unknown-version case; until then there is nothing to test.
   testing a system whose "To Be" design was never written down, so component
   boundaries are inferred from code. §13.1 is the first thing that design should
   settle.
-- **No per-task requirements history.** `.requirements/` — the per-task
-  `<datetime>_<feature_name>/REQUIREMENTS.md` convention this project uses — does
-  not exist, so §6's acceptance scenarios are reverse-engineered from tool
-  docstrings rather than derived from stated acceptance criteria.
+- **No per-task requirements artefacts of any kind.** The repository contains
+  neither a root `REQUIREMENTS.md` nor a `.requirements/` directory, so §6's
+  acceptance scenarios are reverse-engineered from tool docstrings rather than
+  derived from stated acceptance criteria. Which convention should apply is a
+  separate question from this document; the gap is the same either way.
 - **`nodriver` and Chromium version drift** is untested at any layer. The worker
   carries compatibility shims (`_patch_nodriver_network_encoding`,
   `_is_snap_browser`), which implies breakage has happened and will recur.
