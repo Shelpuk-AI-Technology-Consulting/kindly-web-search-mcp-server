@@ -134,9 +134,9 @@ asyncio_mode = "auto"
 # release, and it would land on E11, the step that converts the whole suite.
 # "function" is the announced future default, chosen so the flip is a no-op.
 asyncio_default_fixture_loop_scope = "function"
-# All seven of §10.5. `slow` is registered ahead of its first real user and is
-# currently exercised only as the control case in
-# `tests/test_pytest_configuration.py`; it is not dead.
+# All seven of §10.5. `slow` now has a real user --
+# `tests/test_baseline_failure_ledger.py`, which spawns a child run of the whole
+# suite -- alongside the control case in `tests/test_pytest_configuration.py`.
 markers = [
     "live: hits the real network; needs KINDLY_RUN_LIVE_TESTS=1",
     "subsystem: needs a real socket or child process; portable",
