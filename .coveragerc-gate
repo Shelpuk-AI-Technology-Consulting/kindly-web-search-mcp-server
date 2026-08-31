@@ -1,0 +1,38 @@
+# Gating coverage configuration -- the declared gating scope, which feeds
+# controls 2 (diff coverage) and 3 (the committed baseline) of section 10.4 of
+# `.system_design/TEST_SUITE.md`.
+#
+# This is `.coveragerc` plus an `omit` list and nothing else. The two views are
+# taken from the same coverage run and are only comparable if they differ in
+# that one setting, so a change made here must be made there too.
+
+[run]
+source_pkgs = kindly_web_search_mcp_server
+branch = true
+relative_files = true
+
+# The modules with no hermetic seam. Under `source_pkgs` their statements are
+# reported at zero, and left inside the gating scope those zeros are not
+# harmless: diff-cover counts changed ones as uncovered, and adding L3-only
+# statements grows the baseline's denominator while the numerator stands still.
+# Ordinary worker or pool development would fail both gates, pushing authors
+# either to write hermetic tests for code that has no hermetic seam or to reach
+# for the baseline-reset escape hatch.
+#
+# Omission is not forgiveness. Each of these must still show non-zero coverage in
+# the observational L3 report, which is where they are actually exercised.
+#
+# `scrape/worker_runner.py` does not exist yet: it is the process-management
+# module extracted from `universal_html.py` by a later step. It is listed now
+# because `omit` works at file granularity, which is precisely what forces that
+# extraction -- the runner cannot be exempted while it still lives inside a
+# module that must stay in the gating scope.
+omit =
+    */scrape/nodriver_worker.py
+    */scrape/chromium_pool.py
+    */scrape/worker_runner.py
+
+[paths]
+source =
+    src/kindly_web_search_mcp_server
+    */site-packages/kindly_web_search_mcp_server

@@ -1254,9 +1254,20 @@ patch = subprocess
 ```
 
 Each job selects one by **absolute `COVERAGE_RCFILE`**, never by discovery.
-Discovery walks up from the working directory, and §6.1 deliberately runs the
-package tests from outside the checkout, where the file would not be found.
-`COVERAGE_FILE` is likewise set to an absolute path.
+Discovery does *not* walk up the tree — an earlier draft said it did. coverage.py
+looks only in the directory it is run from, trying `.coveragerc`, then
+`.coveragerc.toml`, `setup.cfg`, `tox.ini` and `pyproject.toml`, and takes the
+first that carries coverage settings. §6.1 deliberately runs the package tests
+from outside the checkout, so none of ours would be found there — and the failure
+is worse than falling back to defaults, because a `setup.cfg`, `tox.ini` or
+`pyproject.toml` belonging to some unrelated directory is a perfectly acceptable
+answer to that search. `COVERAGE_FILE` is likewise set to an absolute path.
+
+One more reason the path must be absolute, and a genuinely surprising one:
+`config_files_to_try` special-cases the literal string `".coveragerc"` to mean
+"no file specified", and the unspecified branch then reads `COVERAGE_RCFILE`
+from the environment. Passing the bare relative name therefore does not select
+this repository's file — it selects whatever the environment already pointed at.
 
 `patch = subprocess` implies `parallel = true`, so those jobs write suffixed data
 files and **must run a local `coverage combine` before reporting** — reporting does
@@ -1266,6 +1277,18 @@ cross-job fan-in removed above.
 The `[paths]` mapping stays in the gating configs even though that lane runs from a
 source checkout, because §6.1's package tests do install a wheel and their
 observational report needs the mapping to line up with the tree.
+
+**`.coveragerc-subprocess` has no `[paths]` mapping, and one of its two consumers
+is a wheel job.** `subsystem` runs from a source checkout, where recorded paths
+already match the tree; `chromium` does not — §10.3 has it install the PR's wheel
+and assert the package resolves to that wheel, so its paths land under
+`site-packages` with nothing mapping them back to `src/…`. This is accepted, not
+overlooked: that report feeds neither `diff-cover` nor the committed baseline,
+which are the two places an unmapped path silently reads as "no coverage". The
+cost is confined to the per-module summary this lane publishes, whose module
+names come out wheel-shaped. If that summary is ever wanted keyed to source
+paths, the mapping has to be added here — a change to this section, not a fix to
+make in passing.
 
 The `[paths]` mapping matters wherever a wheel is involved. The gating lane runs
 from a source checkout, so its own paths already match `git diff`; §6.1's package
@@ -1398,9 +1421,10 @@ under coverage does not instrument it — so without configuration the worker's 
 code reads as uncovered no matter how thoroughly the subsystem tests exercise it,
 and a PR touching it would be charged by control 2 for lines it cannot cover.
 
-The `subsystem` and `chromium` jobs therefore set `parallel = true` with
-`patch = subprocess` in `.coveragerc` and `coverage combine` the child data files
-before publishing their **observational** report. The floor is **7.10.3**, not
+The `subsystem` and `chromium` jobs therefore run under
+`.coveragerc-subprocess`, which sets `parallel = true` with `patch = subprocess`,
+and `coverage combine` the child data files before publishing their
+**observational** report. The floor is **7.10.3**, not
 7.10.0: the option arrived in 7.10.0, but 7.10.3 fixed missed nested children, data
 stranded when a child changes working directory, Windows startup failures and
 incomplete configuration propagation to children — every one of which this design's

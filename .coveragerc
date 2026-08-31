@@ -1,0 +1,53 @@
+# Base coverage configuration -- the whole-package view, which feeds control 1
+# of section 10.4 of `.system_design/TEST_SUITE.md`.
+#
+# Every job selects its configuration by an absolute `COVERAGE_RCFILE` and never
+# by discovery. Discovery does not search upwards: coverage.py looks only in the
+# directory it is run from, trying `.coveragerc`, `.coveragerc.toml`, `setup.cfg`,
+# `tox.ini` and `pyproject.toml`, and takes the first carrying coverage settings.
+# The package tests deliberately run from outside the checkout, so this file
+# would not be found there -- and an unrelated directory's `setup.cfg` or
+# `pyproject.toml` is a perfectly acceptable answer to that search, which is
+# worse than falling back to defaults. `COVERAGE_FILE` is absolute for the same
+# reason, and note that passing the bare string `.coveragerc` to coverage's API
+# means "no file specified", which makes it read `COVERAGE_RCFILE` instead.
+#
+# Three separate files rather than one `[tool.coverage.*]` table in
+# `pyproject.toml`: coverage.py reads exactly one configuration per run, and the
+# three views need different `[run]` sections, which a single table cannot
+# express. The consequence is worth knowing, because pytest's configuration went
+# the other way and lives in `pyproject.toml`: coverage.py consults
+# `.coveragerc` first and, having found it, never looks at `pyproject.toml` at
+# all. A `[tool.coverage.*]` table added there later would be dead text with no
+# error to say so.
+
+[run]
+# The setting that closes this project's worst measurement gap. By default
+# coverage.py reports only files it observed being executed, so a module no test
+# ever imports -- `scrape/chromium_pool.py`, 213 statements with no test file --
+# is absent from the report entirely rather than present and visibly at zero. It
+# would drag nothing down and nobody would see it. `source_pkgs` is what makes
+# never-executed files appear.
+source_pkgs = kindly_web_search_mcp_server
+
+# Branch coverage rather than statement coverage. The committed baseline is a
+# combined statement-and-branch measure, and most of what is untested in this
+# package is a fallback or retry *branch* through a statement some other test
+# already runs.
+branch = true
+
+# Keeps recorded paths comparable across jobs and platforms, and in the form
+# `git diff` produces, which is what diff-cover matches its changed lines
+# against.
+relative_files = true
+
+[paths]
+# Coverage recorded against an installed wheel lands under `site-packages` and
+# unmapped it never joins the source tree's own paths: the totals double-count
+# and diff-cover finds no coverage for any changed line, passing silently. The
+# mapping stays in this file even though the gating lane runs from a source
+# checkout, because the package tests install a wheel and their observational
+# report needs it.
+source =
+    src/kindly_web_search_mcp_server
+    */site-packages/kindly_web_search_mcp_server

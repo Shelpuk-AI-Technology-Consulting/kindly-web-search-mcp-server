@@ -1,0 +1,40 @@
+# Subprocess coverage configuration -- observational L3 jobs only, per section
+# 10.4 of `.system_design/TEST_SUITE.md`. It gates nothing.
+#
+# This lane exists because the worker runs in a child interpreter, and a child
+# started under `coverage run` is not instrumented by inheritance: without the
+# patch below its lines are never recorded at all, and the observational report
+# for the very modules the lane was built to cover reads zero.
+
+[run]
+source_pkgs = kindly_web_search_mcp_server
+branch = true
+relative_files = true
+
+# `patch = subprocess` implies `parallel`, but it is declared rather than
+# inherited: a job that writes suffixed data files and a job that does not need
+# different post-processing, and that fact should be legible in the file rather
+# than deduced from another setting.
+parallel = true
+
+# Instruments every child process this package spawns. The jobs using this file
+# must run a local `coverage combine` before reporting -- reporting does not
+# implicitly combine the suffixed data files, and a job that skips it reports the
+# parent's coverage alone while looking like it worked. That combine is local to
+# the job; nothing is combined across jobs.
+#
+# A forcibly killed child does not flush its data, so its lines are missing from
+# the report. That gap is expected and must not be papered over with an exclusion
+# that would also hide genuinely untested code.
+patch = subprocess
+
+# No `[paths]` section. Shipped exactly as section 10.4 specifies, and the reason
+# differs between this file's two consumers: the `subsystem` job runs from a
+# source checkout, where recorded paths already match the tree, but the
+# `chromium` job installs the PR's wheel and asserts the package resolves to it,
+# so its paths land under `site-packages` unmapped. That is accepted because this
+# lane is observational -- it feeds neither diff-cover nor the committed baseline,
+# the two places an unmapped path silently reads as "no coverage". If the
+# per-module summary this lane publishes is ever wanted keyed to source paths,
+# adding the mapping here is a section 10.4 change, not a fix to be made in
+# passing.
