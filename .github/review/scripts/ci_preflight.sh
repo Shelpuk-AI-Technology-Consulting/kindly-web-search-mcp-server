@@ -7,32 +7,44 @@
 # byte-identical on purpose, so a fix made upstream can be carried across by copying
 # the body.
 #
-# A self-hosted capability label (`cap-main`, `cap-light`, `cap-nano`, `cap-pico`)
-# declares MEMORY and nothing else. So nothing has checked that the machine which
-# picked the job up carries the TOOLS the job invokes, and this is what checks it at
-# run time.
+# Nothing in a runner label tells you which TOOLS the machine carries, and this is
+# what checks that at run time, before the step that needs them.
 #
-# 🔴 Why this matters more than its size suggests. The fleet is NOT homogeneous:
-# upstream measured `unzip` present on `one runner` and absent on
-# `another runner` one day apart. A missing tool therefore does not fail a job --
-# it fails it only when placement is unlucky, and the re-run passes. That is the
-# most expensive failure class a shared fleet has: upstream's upstream cost five days
-# of undeployable frontends before anyone identified a missing Docker daemon as the
-# cause.
+# 🔴 Why this matters more than its size suggests. Upstream measured `unzip` present
+# on one runner and absent on another one day apart, across a heterogeneous
+# self-hosted fleet. A missing tool therefore does not fail a job -- it fails it only
+# when placement is unlucky, and the re-run passes. That is the most expensive failure
+# class a shared fleet has: one upstream incident cost five days of undeployable
+# frontends before anyone identified a missing Docker daemon as the cause.
 #
-# ⚠️ **The measurement above is INHERITED, not re-derived on this repository.** It is
-# quoted because it is what sizes the risk, and it is the reason this script exists
-# here at all -- the fleet is the same fleet. Nobody has probed a runner from this
-# repository to confirm the same machines are still in the pool.
+# ⚠️ **That measurement is INHERITED and describes a fleet this repository does not
+# use.** This repository's workflows run on a GitHub-hosted runner, which is uniform
+# per label rather than heterogeneous -- so the "unlucky placement" shape does not
+# apply here.
+#
+# 🔴 **The risk it is kept for is different and just as real: a SLIM IMAGE.** Being
+# slim is precisely a claim to carry fewer packages than the full image, and `unzip`
+# -- which `anthropics/claude-code-action` shells out to, two levels down, without
+# ever naming it in this repository -- is exactly what gets trimmed. Uniform means
+# every run fails the same way rather than one in three, which is easier to diagnose
+# and no less broken.
+#
+# ⚠️ On a GitHub-hosted runner this should SELF-HEAL rather than fail: the job has
+# passwordless sudo, so a missing package is installed and a warning emitted. Read
+# that warning as a finding about the image -- it costs every run the download.
 #
 # 🔴 **THE OTHER HALF OF THE UPSTREAM GUARANTEE IS ABSENT HERE, AND THAT IS THE THING
-# TO KNOW.** Upstream pairs this with two `lint`-job guards -- `check_runner_assignment.py`
-# (the job asks for a capability label that exists) and `check_job_preflight.py` (every
-# job that needs a capability actually calls this script). This repository has no `lint`
-# job and neither guard, so `claude-code-review.yml` calling this is a CONVENTION rather
-# than an enforced invariant: a future job that needs `unzip` and forgets the call fails
-# the way this script exists to prevent, and nothing goes red to say so. Port the two
-# guards the day a second workflow lands here; until then this comment is the enforcement.
+# TO KNOW.** Upstream pairs this with two `lint`-job guards -- one proving a job asks
+# for a runner label that exists, and one proving every job that needs a capability
+# actually calls this script. This repository has neither, so `claude-code-review.yml`
+# calling this is a CONVENTION rather than an enforced invariant: a future job that
+# needs `unzip` and forgets the call fails the way this script exists to prevent, and
+# nothing goes red to say so.
+#
+# ⚠️ `test_the_review_job_names_a_known_runner_as_a_literal` covers a slice of the
+# first guard -- it refuses a label outside a written-down set -- but it cannot tell
+# whether that label is actually OFFERED to this repository, which is the half that
+# queues for ever in silence. Port the real guards the day a third workflow lands.
 #
 # ⚠️ **Shell, not Python, and that is a claim about this script's LANGUAGE, not its
 # position.** A job may need a capability BEFORE it provisions an interpreter -- and

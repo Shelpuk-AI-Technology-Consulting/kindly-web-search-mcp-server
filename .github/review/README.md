@@ -89,16 +89,21 @@ To enable the workflow on this repository:
 
 1. Grant this repository access to the three settings above (organisation
    settings → Secrets and variables → Actions → each item → repository access).
-2. Grant this repository a self-hosted **runner group** containing machines that
-   carry the `cap-light` and `noble` labels.
+2. Nothing to do for runners — the workflows use the GitHub-hosted
+   `ubuntu-slim` label, so no runner group has to be granted.
 
-   ⚠️ **This is the step that is easy to miss, because skipping it looks like
-   nothing at all.** A job whose labels no granted machine carries sits `queued`
-   indefinitely: no error, no annotation, no timeout. Measured here on the first
-   run — three jobs queued over fifteen minutes while a GitHub-hosted job on the
-   same pull request finished in 55 seconds, with the fleet busy serving another
-   repository the whole time. A misspelled capability label is indistinguishable
-   from a missing grant, so check the grant before you touch the label.
+   ⚠️ **Why not the self-hosted fleet, since the organisation has one:** a runner
+   group carries an *"Allow public repositories"* setting that is **off by
+   default**, and this repository is public. Opening a shared fleet to a public
+   repository means anyone who can open a pull request gets closer to those
+   machines; taking the hosted runner avoids that decision entirely.
+
+   ⚠️ **If a job is queued and never starts, suspect the label first.** An
+   unreachable runner label is completely silent — no error, no annotation, no
+   timeout. Measured here before the move: three jobs queued for over fifteen
+   minutes while a GitHub-hosted job on the same pull request finished in 55
+   seconds. `ubuntu-slim` is organisation-configured, so if the org stops
+   offering it this returns; `ubuntu-latest` is the always-available fallback.
 3. Open a pull request. The `review` check appears on it.
 4. Once it has run green once, make `review` a required status check on `main`.
 
@@ -124,10 +129,15 @@ a per-attempt table. The two outcomes mean different things:
   JSON, and an egress document that parses but disables the gateway.
 
 One case is worth knowing in advance because it is easy to misdiagnose: **if the
-job starts failing at `Install kitty-bridge and Claude CLI`, that is the runner
-tier, not the settings.** It is reported as `fatal` and points at the `KITTY_*`
-settings, which will all be fine. Move the job up a tier — `cap-light` to
-`cap-main`.
+job starts failing at `Install kitty-bridge and Claude CLI`, that is the runner,
+not the settings.** It is reported as `fatal` and points at the `KITTY_*`
+settings, which will all be fine. On a slim image the likely cause is a missing
+package — check the preflight step's warnings first — and `ubuntu-latest` is the
+fuller image to compare against.
+
+And one that is not a failure at all: **a check that never appears, or appears
+and stays queued for ever, is a runner-label problem, not a review problem.** See
+step 2 above.
 
 ---
 

@@ -4056,15 +4056,48 @@ class TestWorkflowConfiguration(unittest.TestCase):
             len(set(budgets)), 1, f"budgets disagree: {sorted(set(budgets))}"
         )
 
-    def test_the_review_job_runs_on_a_self_hosted_runner_group(self):
-        """The review job asks for `cap-light` on our own runners.
+    #: Runner labels this repository is prepared to name. Two families, both
+    #: deliberate:
+    #:
+    #: * the GitHub-hosted labels it uses today -- `ubuntu-slim` is the
+    #:   organisation-configured one, the rest are GitHub's own always-available
+    #:   labels and are the fallback when an org label is not offered;
+    #: * the self-hosted capability form the upstream repository uses, kept so a
+    #:   move back does not have to fight this test.
+    #:
+    #: 🔴 **Spelled out rather than written as `\S+`, and that is the whole point of
+    #: the test.** An unknown runner label does not fail loudly on GitHub: the job
+    #: QUEUES FOR EVER, with no error, no annotation and no timeout. A pattern
+    #: accepting any word would pass a typo straight through into that silence.
+    KNOWN_RUNNERS = (
+        r"ubuntu-slim",
+        r"ubuntu-latest",
+        r"ubuntu-24\.04",
+        r"ubuntu-22\.04",
+        r"\[self-hosted, cap-(?:main|light|nano|pico), noble\]",
+    )
 
-        ⚠️ **The specific thing this forbids is an expression-valued runner**, which is
-        why it is asserted here as well as in `scripts/check_runner_assignment.py`. This
-        job declared `runs-on: ${{ vars.CLAUDE_REVIEW_RUNNER || 'ubuntu-latest' }}` until
-        upstream. A repository variable is invisible to every offline check — the guard
-        reads only the `|| 'literal'` fallback — so that one job was the single place the
-        runner policy could be moved without any check noticing.
+    def test_the_review_job_names_a_known_runner_as_a_literal(self):
+        """The review job names its runner as a LITERAL, from a known set.
+
+        ⚠️ **The first thing this forbids is an expression-valued runner.** This job
+        declared `runs-on: ${{ vars.CLAUDE_REVIEW_RUNNER || 'ubuntu-latest' }}` upstream
+        until it was retired. A repository variable is invisible to every offline check
+        — the guard reads only the `|| 'literal'` fallback — so that one line was the
+        single place the runner policy could move without any check noticing.
+
+        🔴 **The second thing it forbids is a label nothing offers**, which is a
+        different failure and a quieter one. Measured on this repository: three jobs
+        asking for a self-hosted capability sat `queued` for over fifteen minutes with
+        no error, no annotation and no timeout, while a GitHub-hosted job on the same
+        pull request finished in 55 seconds. A typo in a label is indistinguishable
+        from a runner nobody granted, and neither says anything at all.
+
+        ⚠️ **What this test CANNOT check, said plainly so a green run is not
+        over-read:** whether the label it accepts is actually offered to this
+        repository. `ubuntu-slim` is organisation-configured, so its availability is a
+        property of the org, invisible from inside the repository. This test proves the
+        label is one somebody wrote down on purpose — never that a machine will answer.
 
         ⚠️ Matched with a regex rather than parsed, deliberately: this suite runs on a
         bare interpreter with **no dependency install**, so importing PyYAML here would
@@ -4076,29 +4109,14 @@ class TestWorkflowConfiguration(unittest.TestCase):
             inline,
             [],
             f"the review job declares an EXPRESSION runner {inline!r}; it must be a "
-            "capability list form, so that no repository variable can move it "
-            "somewhere no offline check can see",
+            "literal, so that no repository variable can move it somewhere no "
+            "offline check can see",
         )
-        # 🔴 **The capability is NOT pinned, and that is deliberate.** This asserted
-        # `cap-light` exactly, which made a legitimate re-routing fail as though it were
-        # a policy breach: measure the review at less than a `cap-light`'s worth of work,
-        # move it to `cap-nano`, and this test goes red with a message about self-hosted
-        # runners. The property this file is responsible for is "our runners, a real
-        # capability, and the OS pin" -- WHICH tier is a sizing decision, reviewed in the
-        # workflow, and `scripts/check_runner_assignment.py` already refuses an unknown
-        # capability estate-wide. Pinning it here duplicated that guard and added a
-        # false failure the guard does not have.
-        #
-        # ⚠️ The alternation is spelled out rather than written `cap-\w+`: an unknown
-        # capability does not fail loudly on GitHub, it QUEUES FOR EVER with no error,
-        # so a pattern that accepts any `cap-` word would pass a typo straight through.
-        # `(?m)` inline rather than an `re.M` argument: `assertRegex` takes no flags.
         self.assertRegex(
             self.workflow,
-            r"(?m)^ {4}runs-on: \[self-hosted, cap-(?:main|light|nano|pico), noble\]"
-            r"[ \t]*$",
-            "the review job does not ask for a known capability on a self-hosted "
-            "runner carrying the `noble` OS pin",
+            r"(?m)^ {4}runs-on: (?:" + "|".join(self.KNOWN_RUNNERS) + r")[ \t]*$",
+            "the review job does not name a runner from the known set; an unknown "
+            "label does not error, it queues for ever in silence",
         )
 
     def test_the_review_has_no_step_cap_and_a_job_cap_that_clears_the_measurement(self):

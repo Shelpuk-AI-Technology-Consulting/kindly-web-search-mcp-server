@@ -121,18 +121,24 @@ that overrides the child's endpoint and credentials.
 
 ## Runner and caps
 
-- `runs-on: [self-hosted, cap-light, noble]`. The labels are cumulative and
-  declare **memory**: `cap-pico` ≥ 900 MB, `cap-nano` ≥ 1.9 GB, `cap-light` ≥ 3.9 GB,
-  `cap-main` ≥ 7.7 GB. This is the tier upstream uses, because the Bun and CLI
-  install wants the memory. **If a change moves it, the direction and the reason
-  both need stating** — and an OOM during the install is what a too-small tier
-  looks like, not a slow review, so a move DOWN needs a measured peak RSS rather
-  than an argument.
-- **A label is not access.** A runner group is granted per repository, and a job
-  asking for a label no granted machine carries queues **for ever** — no error, no
-  annotation, no timeout. A misspelled capability does exactly the same thing. So
-  an indefinitely queued job is never evidence about the tier on its own; check
-  the grant first.
+- `runs-on: ubuntu-slim` — GitHub-hosted, **not** the self-hosted fleet the
+  upstream repository uses. This repository is public, and a runner group's
+  "Allow public repositories" setting is off by default, so it reaches no
+  self-hosted group at all. A change that moves this back to `[self-hosted, ...]`
+  needs to say what changed about that grant, or it will silently never run.
+- 🔴 **An unreachable runner label is completely silent, and that is the most
+  expensive thing to know about this file.** A job asking for a label nothing
+  offers queues **for ever** — no error, no annotation, no timeout. A typo and an
+  ungranted runner are indistinguishable. Measured here: three jobs queued over
+  fifteen minutes while a GitHub-hosted job on the same pull request finished in
+  55 seconds. So flag any change to a `runs-on:` label that the pull request does
+  not explain, and treat "the check never appeared" as a label question first.
+  `ubuntu-latest` is the always-available fallback.
+- **A slim image is the one most likely to be missing a tool the action shells
+  out to.** `unzip` is the known case and the preflight step covers it. A change
+  that adds a step invoking a new tool should add it to that preflight call —
+  nothing else will catch it, and it will fail inside a third-party action's log
+  rather than at a step that names the package.
 - A capability label declares memory and **nothing else**, which is why
   `ci_preflight.sh` probes for `unzip` before the action shells out to it. The
   fleet is not homogeneous. A new job that invokes a tool without a preflight call

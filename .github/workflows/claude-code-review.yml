@@ -193,6 +193,13 @@ env:
   # workflow-level binding is what reaches both the verification step and the CLI
   # the action spawns through the wrapper, which inherits the step environment.
   #
+  # ⚠️ **The threat this closes is SMALLER on a GitHub-hosted runner, and the binding
+  # stays anyway.** It was written for a self-hosted fleet with a persistent `$HOME`,
+  # where the runner's environment is not ours to assume; a hosted runner is fresh
+  # per job, so there is nothing pre-seeded to override. It is kept because it costs
+  # one line, because it is what makes the guarantee independent of WHERE the job
+  # runs, and because a move back to self-hosted must not silently re-open a hole.
+  #
   # ⚠️ **HALF OF THIS IS MEASURED AND HALF IS NOT, and the unmeasured half is the
   # load-bearing one.** What was measured is KITTY's side: empty -> falls through
   # to the file. What was NOT is GITHUB's side -- that a workflow-level `env:` with
@@ -221,45 +228,39 @@ jobs:
     # assignment nothing can ever police, and this file is the only record of where the
     # job runs. Change the literal, in a pull request, where it is reviewed.
     #
-    # 🔴 **`cap-light`, WHICH IS THE REFERENCE'S OWN TIER FOR THIS JOB.** The labels
-    # are cumulative and declare MEMORY and nothing else -- `cap-pico` >= 900 MB,
-    # `cap-nano` >= 1.9 GB, `cap-light` >= 3.9 GB, `cap-main` >= 7.7 GB -- so asking for
-    # a smaller capability reaches strictly more machines, and asking for a larger one
-    # is the only way to guarantee the memory.
+    # 🔴 **GITHUB-HOSTED, BECAUSE THIS REPOSITORY IS PUBLIC AND THE SELF-HOSTED FLEET
+    # CANNOT SERVE IT.** The reference repository runs this job on its own
+    # `[self-hosted, cap-light, noble]` machines. That is unavailable here, and not for
+    # a reason a label change could fix: a runner group carries an **"Allow public
+    # repositories"** setting that is OFF by default, so a public repository reaches no
+    # group until somebody deliberately opens one to it. Opening a shared fleet to a
+    # public repository is a decision with a real blast radius -- anyone who can open a
+    # pull request gets closer to those machines -- so this takes the hosted runner
+    # instead of asking for that.
     #
-    # This job briefly asked for `cap-nano`, to keep the machine as small as the work
-    # allows. It is back at `cap-light` for the reason the reference gives, which is a
-    # claim about the INSTALL and is therefore identical here -- same action, same Bun,
-    # same CLI: "installs Bun and the Claude CLI, then spends the rest of its time
-    # waiting on the network; cores buy nothing here, the install wants the memory."
-    # Nobody has measured this job's peak RSS on either fleet, so `cap-nano` was a guess
-    # in the direction that fails, and `cap-light` is a guess in the direction that
-    # merely costs a slightly larger machine.
+    # 🔴 **WHAT THAT FAILURE LOOKED LIKE, because it is the reason this comment is
+    # long.** Three jobs sat `queued` for over fifteen minutes with **no error, no
+    # annotation and no timeout**, while a GitHub-hosted job on the same pull request
+    # finished in 55 seconds. Proved rather than inferred: a throwaway workflow asking
+    # for the bare `self-hosted` label -- no capability, no OS pin, which matches every
+    # runner in every group a repository can see -- was never claimed either. Nothing
+    # claimed it, so that set was empty.
     #
-    # ⚠️ **What a too-small tier looks like, so it is never misdiagnosed:** an OOM during
-    # `Install kitty-bridge and Claude CLI`, or the action's own Bun step dying, NOT a
-    # slow review. That failure composes into the review path (`continue-on-error`) and
-    # is reported as `fatal` -- which sends an operator to check the KITTY_* settings,
-    # all of which will be fine. Going DOWN a tier is what re-opens that; do it only
-    # with a measured peak RSS, not with a plausible argument.
+    # ⚠️ **AN UNREACHABLE LABEL IS SILENT, AND THAT IS THE THING TO REMEMBER HERE.** It
+    # is true of this runner too: if `ubuntu-slim` is not a label this organisation
+    # actually offers, this job queues for ever exactly as the self-hosted one did, and
+    # nothing anywhere says so. `ubuntu-slim` is NOT one of GitHub's standard public
+    # labels (`ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`) -- it is an
+    # organisation-configured runner, so its availability is a property of the org and
+    # cannot be checked from inside this file.
     #
-    # 🔴 **A LABEL IS NOT ACCESS, AND THE TWO FAIL IDENTICALLY.** Measured on this
-    # repository's first run: three jobs asking for `cap-nano` sat `queued` for over
-    # fifteen minutes with no error, no annotation and no timeout, while a
-    # GitHub-hosted job on the same pull request finished in 55 seconds. The labels
-    # were valid and the fleet was busy serving another repository throughout. The
-    # cause is that a runner GROUP is granted per repository, and this one had none.
+    # **If this job is queued and never starts, the label is the first thing to
+    # suspect, and `ubuntu-latest` is the one-word fallback that is always available.**
     #
-    # ⚠️ So an indefinite queue here means one of two things and they look the same:
-    # the tier label is misspelled (an unknown capability queues for ever rather than
-    # erroring), or this repository has not been granted a runner group that contains a
-    # machine carrying the label. Check the grant before touching the label --
-    # `.github/review/README.md` has the setup checklist.
-    #
-    # ⚠️ **This repository is PUBLIC and these runners are self-hosted and shared.** The
-    # `if:` below -- same-repository, non-draft -- is therefore a security control, not a
-    # convenience. See the note there.
-    runs-on: [self-hosted, cap-light, noble]
+    # ⚠️ A slim image is also the one most likely to be missing `unzip`, which the
+    # action shells out to. That is what the preflight step below exists for, and it is
+    # now load-bearing rather than defensive -- see its own comment.
+    runs-on: ubuntu-slim
     # 🔴 **22 -> 25, and the STEP cap below is deleted (upstream).** This review died at
     # exactly 20m12s against a 20-minute step cap. a sibling repository runs the same
     # model at the same `--effort max` and, at the time, the same turn budget -- 150,
@@ -826,6 +827,17 @@ jobs:
         # invariant -- a future job that needs a tool and forgets to probe for it fails only
         # when placement is unlucky, and the re-run passes.
         #
+        # 🔴 **MORE load-bearing on `ubuntu-slim`, not less.** The measurement above is from a
+        # heterogeneous self-hosted fleet, where the package was present on one machine and
+        # absent on another. A SLIM image is a different and more predictable version of the
+        # same risk: being slim is precisely a claim that it carries fewer packages than the
+        # full `ubuntu-latest`, and `unzip` is exactly the sort of thing trimmed from one.
+        #
+        # ⚠️ It should self-heal here rather than fail: a GitHub-hosted runner gives the job
+        # passwordless sudo, so the script installs the package and emits a WARNING. Read
+        # that warning as a real finding about the image, not as noise -- it costs every run
+        # on this label the download.
+        #
         # ⚠️ This step is a WORKAROUND, deliberately shaped to expire: the right fix is
         # `unzip` in the runner image. It is a no-op once that happens, and if the image gets
         # neither `unzip` nor passwordless sudo it fails HERE, naming the package, instead of
@@ -836,16 +848,20 @@ jobs:
         # this repository that has a CI preflight to run.
         run: bash .github/review/scripts/ci_preflight.sh unzip
 
-      # Both logs are per-RUNNER, not per-run: the wrapper writes to a fixed
-      # path under RUNNER_TEMP and the cleanup step below KEEPS them when a run
-      # fails, deliberately. So a previous failure's evidence is sitting there
-      # when this run starts, and the stderr log is appended to rather than
-      # truncated.
+      # Both logs are written to a fixed path under RUNNER_TEMP, and the cleanup
+      # step below KEEPS them when a run fails, deliberately.
       #
-      # Purging here rather than in cleanup is what bounds it: a hard-killed run
-      # never reaches its own cleanup, so "delete afterwards" leaves a log that
-      # the NEXT run's diagnostic would quote as its own. At most one run's
-      # evidence exists on a machine, and it is always this run's.
+      # ⚠️ **On a self-hosted runner that makes them per-MACHINE rather than
+      # per-run**, so a previous failure's evidence would be sitting there when
+      # this run starts, and the stderr log would be appended to rather than
+      # truncated. Purging here rather than in cleanup is what bounded it: a
+      # hard-killed run never reaches its own cleanup, so "delete afterwards"
+      # leaves a log the NEXT run's diagnostic would quote as its own.
+      #
+      # ⚠️ **A GitHub-hosted runner is destroyed after the job, so this step is a
+      # no-op here.** It is kept because it costs one `rm -f`, and because it is
+      # the half of the invariant that survives a move back to a persistent
+      # runner. Do not delete it as dead code; it is dead only for this label.
       - name: Purge stale Kitty Bridge logs
         if: steps.kitty.outputs.available == 'true'
         shell: bash
@@ -1762,7 +1778,12 @@ jobs:
             rm -f "$debug_log"
             echo "review succeeded; removed the bridge debug log"
           else
-            echo "::notice::The model step did not succeed (${CLAUDE_OUTCOME:-did not run}). Kept the Kitty Bridge debug log at $debug_log ($(wc -c < "$debug_log") bytes) on this runner. It contains the bridge token and the full prompt, so it is NOT uploaded; the filtered timeline is in the run artifacts. The next review run on this machine purges it."
+            # ⚠️ The notice says the log was kept on the runner, which is true and is
+            # useful ONLY where the runner outlives the job. On a GitHub-hosted runner
+            # the machine is destroyed with the job, so nothing is recoverable
+            # afterwards and the filtered timeline in the artifacts is the whole of the
+            # evidence. Said plainly rather than promising a file nobody can reach.
+            echo "::notice::The model step did not succeed (${CLAUDE_OUTCOME:-did not run}). Kept the Kitty Bridge debug log at $debug_log ($(wc -c < "$debug_log") bytes) for the rest of this job. It contains the bridge token and the full prompt, so it is NOT uploaded; the filtered timeline in the run artifacts is what travels. On a GitHub-hosted runner this machine is destroyed when the job ends, so the log is gone with it."
           fi
 
       - name: Upload review artifacts
