@@ -1,0 +1,33 @@
+# Subprocess coverage configuration -- observational L3 jobs only, per section
+# 10.4 of `.system_design/TEST_SUITE.md`. It gates nothing.
+#
+# This lane exists because the worker runs in a child interpreter, and a child
+# started under `coverage run` is not instrumented by inheritance: without the
+# patch below its lines are never recorded at all, and the observational report
+# for the very modules the lane was built to cover reads zero.
+
+[run]
+source_pkgs = kindly_web_search_mcp_server
+branch = true
+relative_files = true
+
+# `patch = subprocess` implies `parallel`, but it is declared rather than
+# inherited: a job that writes suffixed data files and a job that does not need
+# different post-processing, and that fact should be legible in the file rather
+# than deduced from another setting.
+parallel = true
+
+# Instruments every child process this package spawns. The jobs using this file
+# must run a local `coverage combine` before reporting -- reporting does not
+# implicitly combine the suffixed data files, and a job that skips it reports the
+# parent's coverage alone while looking like it worked. That combine is local to
+# the job; nothing is combined across jobs.
+#
+# A forcibly killed child does not flush its data, so its lines are missing from
+# the report. That gap is expected and must not be papered over with an exclusion
+# that would also hide genuinely untested code.
+patch = subprocess
+
+# No `[paths]` section, deliberately. The mapping matters only where a wheel is
+# involved, and the jobs that use this file run from a source checkout, where
+# recorded paths already match the tree.
