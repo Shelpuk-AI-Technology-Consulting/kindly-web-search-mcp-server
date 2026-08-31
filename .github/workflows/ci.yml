@@ -1,0 +1,123 @@
+name: CI
+
+# The two checks that keep the automatic review honest.
+#
+# `claude-code-review.yml` cannot test itself: a broken rule selector still
+# produces a green review, just a shallower one, and a broken classifier still
+# posts a comment, just the wrong one. Both failures look exactly like success.
+# So the review system's own tests run here, in a job the review workflow cannot
+# influence.
+#
+# ⚠️ **This file is deliberately NOT this repository's test suite.** It does not
+# run `pytest`, `ruff`, or anything under `tests/`. That is a real gap and it is
+# named here rather than left to be discovered: this repository has no CI for its
+# own code, and adding it is a separate piece of work with its own decisions
+# (which Python versions, what to do about the tests that need a browser, how to
+# gate the live-network tests). Nothing below should be read as covering it.
+#
+# ⚠️ **The upstream repository gates both jobs on a `changes` job** that computes
+# path filters, and carries a guard proving every job is either gated or
+# explicitly exempt. There is no `changes` job here: this repository is small
+# enough that both jobs run in seconds, and a path filter is a second place for
+# the file list to drift out of step with `select_rules.py`. If a third job ever
+# lands here, revisit that.
+#
+# 🔴 **Both jobs run on GitHub-hosted `ubuntu-slim`, not on the self-hosted fleet the
+# upstream repository uses.** A runner group carries an "Allow public repositories"
+# setting that is OFF by default, and this repository is public, so it reaches no
+# self-hosted group. Measured before the move: jobs sat `queued` for over fifteen
+# minutes with no error, no annotation and no timeout. **An unreachable runner label
+# is completely silent** -- if either job here is queued and never starts, suspect
+# the label first; `ubuntu-latest` is the always-available fallback.
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  review-scripts:
+    # The Claude review system's own tests -- 482 of them, covering the rule
+    # selector, the result classifier, the failure notices, the prompt redactor,
+    # the findings schema and the workflow's own wiring.
+    #
+    # Pure Python and subprocesses, no service container, no pip install at all --
+    # the suite runs in about a second.
+    #
+    # Same runner as the review workflow, so both of this repository's workflows
+    # depend on exactly ONE label being available. Two jobs that queue for different
+    # reasons is the shape that wastes an afternoon.
+    runs-on: ubuntu-slim
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          # 🔴 **3.12, deliberately NOT this repository's own `requires-python`
+          # floor of 3.13.** These scripts are the diagnosis path for a broken
+          # review, so they must run on whatever interpreter is to hand rather
+          # than only on the newest one -- and 3.12 is what
+          # `claude-code-review.yml` provisions, so testing on it is testing what
+          # actually runs. The package under review has no bearing on the version
+          # here; nothing in this job imports it.
+          python-version: "3.12"
+      - name: Run the review-script tests
+        # No dependency install, deliberately. The suite is written to run on a
+        # bare interpreter so a broken review workflow can be diagnosed without
+        # first provisioning anything; installing here would let that property rot
+        # unnoticed.
+        #
+        # Invoked as a file rather than through `unittest discover`: discovery
+        # imports the start directory as a package, and `.github` is not a valid
+        # package name.
+        run: '"$pythonLocation/bin/python" .github/review/tests/test_review_scripts.py'
+
+  review_replies:
+    # Blocks the merge when a review finding was closed with no answer anybody
+    # else can read: a thread marked resolved whose every comment has one author.
+    # That is either a finding dismissed without a word, or a reply that never
+    # left its author's draft -- `addPullRequestReviewThreadReply` parks replies
+    # in a PENDING review, visible only to whoever wrote it. The two are
+    # indistinguishable from outside and neither is safe to merge.
+    #
+    # 🔴 **Only meaningful because the reply convention is written down with it.**
+    # Measured upstream before that convention existed: 404 review threads across
+    # 20 pull requests, every one single-author, none resolved -- answers were
+    # written as top-level comments, so this state was one keypress away from
+    # being ordinary rather than anomalous. `.github/review/README.md` is where
+    # the convention lives here, and a test asserts it stays written.
+    #
+    # ⚠️ **NOT gated on a path filter, deliberately** -- a thread can be left
+    # unanswered on a pull request touching any path, and a skipped job reports
+    # success.
+    #
+    # `pull_request` only: this workflow also offers `workflow_dispatch`, where
+    # there is no pull request to ask about, and a gate that failed when it could
+    # not check would turn a manual run into a red check for no reason.
+    if: github.event_name == 'pull_request'
+    # One Python script and one `gh` call. Same runner as the job above, for the
+    # same one-label reason.
+    runs-on: ubuntu-slim
+    timeout-minutes: 20
+    # 🔴 Declared, not inherited. This file has no workflow-level `permissions:`,
+    # so a job inherits the organisation default -- and a **read** default grants
+    # `contents` and `packages` while leaving `pull-requests` at `none`. Without
+    # this block the GraphQL query 403s, the gate fails closed, and every pull
+    # request in the repository is blocked with no in-repo remedy. Naming any
+    # permission zeroes the rest, so the block is complete rather than partial.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check that every resolved thread carries a published answer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$pythonLocation/bin/python" .github/review/scripts/check_review_replies.py \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.pull_request.number }}"
