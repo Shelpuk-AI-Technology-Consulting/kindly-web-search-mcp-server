@@ -47,13 +47,27 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_collection_finish(session: pytest.Session) -> None:
     """Record every node id that survived selection.
 
+    ``pytest_collection_finish``, not ``pytest_collection_modifyitems``, for the
+    reason ``tests/conftest.py`` already records about its own hook: ``modifyitems``
+    receives the collected list *before* mark-based deselection. Measured on
+    pytest 9.1.1 with ``-m "not slow"`` over two tests, ``modifyitems`` sees two
+    items and ``session.items`` sees one.
+
+    It matters for what a deselected test is called. The child passes no ``-m``
+    today, but the ledger's own measurement command gains marker selection in a
+    later workstream. Under ``modifyitems``, a documented test that was
+    *deselected* would appear as collected, not failing and not skipped -- which
+    is the guard's signature for "ran and passed, delete the id". That is the one
+    diagnosis the ledger exists to prevent.
+
     Args:
-        items: The selected items, injected by pytest after deselection.
+        session: The collection session, injected by pytest. Its ``items`` are the
+            tests that will actually run.
     """
-    _collected.update(item.nodeid for item in items)
+    _collected.update(item.nodeid for item in session.items)
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

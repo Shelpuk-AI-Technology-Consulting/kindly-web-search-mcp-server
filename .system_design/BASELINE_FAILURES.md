@@ -89,7 +89,9 @@ fail — and the Linux comparison passes against the ids recorded from the plain
 run, which is the check rather than the claim.
 
 The child's environment is swept of everything this project reads —
-`KINDLY_*`, the provider credentials, `PYTEST_*`, `COVERAGE_*` and the rest — so
+`KINDLY_*`, `PYTHON*`, `PYTEST_*`, `COVERAGE_*` and the other project prefixes,
+plus the provider credentials, the proxy variables and the browser-path
+variables that carry no common prefix — so
 the numbers below are the **offline** baseline and are reproducible regardless of
 what a developer has exported. That is not cosmetic: measured on Linux at commit
 `3af0563`, exporting `RUN_LIVE_TESTS=1` alone adds a thirteenth failure,
@@ -97,6 +99,18 @@ what a developer has exported. That is not cosmetic: measured on Linux at commit
 reaches the network and fails on the dummy credential `tests/conftest.py`
 installs. Without the sweep the guard would be red on any machine configured for
 live tests.
+
+The sweep is held honest by a check that scans the source tree for every string
+literal shaped like an environment variable name and asserts none survives.
+Anchoring that scan on `os.environ.get("...")` call sites was tried and measured
+wrong: `CHROME_BIN`, `CHROME_PATH`, `BROWSER_EXECUTABLE_PATH` and `no_proxy` are
+read through a *loop variable* over a tuple of literals, and others through
+`_get_int_env(key, ...)` helpers, so no call-site pattern can see them. The shape
+scan over-collects instead — the safe direction, since a false positive costs one
+allow-list entry while a false negative costs a silently steerable baseline. Two
+of those browser-path variables steer `_resolve_browser_executable_path`, whose
+tests are two of the twelve ids below, so the gap would have become a real
+divergence the moment those repairs landed on a machine with `CHROME_BIN` set.
 
 The results are read from a plugin (`tests/_baseline_probe.py`), not from
 pytest's short summary. On pytest 9.1.1 a failing `unittest` subtest prints a

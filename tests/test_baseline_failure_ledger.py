@@ -43,11 +43,13 @@ and deleting it would give the twelve repaired tests room to rot again.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -95,6 +97,7 @@ COMMAND_HEADING = "## The measurement command"
 # the variables the source tree actually reads and asserts that none survives
 # this sweep. That is what keeps the sweep honest as variables are added.
 CLEARED_ENVIRONMENT_PREFIXES = (
+    "PYTHON",
     "KINDLY_",
     "SEARXNG_",
     "FASTMCP_",
@@ -114,12 +117,46 @@ CLEARED_ENVIRONMENT_NAMES = (
     "TAVILY_API_KEY",
     "LOG_LEVEL",
     "NO_PROXY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "BROWSER_EXECUTABLE_PATH",
+    "CHROME_BIN",
+    "CHROME_PATH",
 )
 
-# Matches the three forms this repository reads an environment variable through.
-ENVIRONMENT_READ_PATTERN = re.compile(
-    r"""os\.(?:environ\.get|getenv)\(["']([A-Z][A-Z0-9_]*)["']"""
-    r"""|os\.environ\[["']([A-Z][A-Z0-9_]*)["']"""
+# An environment variable name, by shape: upper case with at least one
+# underscore. Every string literal in the tree of this shape is treated as a
+# candidate, rather than only those appearing inside an ``os.environ.get("...")``
+# call. Anchoring on the call form was measured wrong: this repository reads
+# ``CHROME_BIN``, ``CHROME_PATH``, ``BROWSER_EXECUTABLE_PATH`` and ``no_proxy``
+# through a *loop variable* over a tuple of literals, and reads others through
+# ``_get_int_env(key, ...)`` helpers, so no call-site pattern can see them. A
+# shape scan over-collects instead, which is the safe direction: a name that is
+# not an environment variable costs one allow-list entry, while a name that is
+# and was missed costs a silently steerable baseline.
+ENVIRONMENT_NAME_SHAPE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+
+# Literals of that shape which are not environment variables. Each has to be
+# named here deliberately, which is what makes the scan un-rottable: a new
+# environment variable added to the tree is either swept or fails the check, and
+# the only way to silence it is to claim in this list that it is not one.
+NOT_ENVIRONMENT_VARIABLES = frozenset(
+    {
+        # Windows process-creation and ShowWindow constants.
+        "CREATE_NEW_PROCESS_GROUP",
+        "CREATE_NO_WINDOW",
+        "STARTF_USESHOWWINDOW",
+        "SW_HIDE",
+        # A GitHub reaction name.
+        "THUMBS_UP",
+        # Fixture values in the diagnostics-masking and GitHub tests.
+        "AUTH_BEARER",
+        "SOME_URL",
+        "C_1",
+        "D_1",
+        "R_1",
+    }
 )
 
 # Generous next to the 120 seconds the other child-process guards allow, because
@@ -332,34 +369,41 @@ def _child_environment() -> dict[str, str]:
     Returns:
         The environment the child is spawned with.
     """
+    # Matched upper-cased: ``nodriver_worker`` reads both ``NO_PROXY`` and
+    # ``no_proxy``, and a case-sensitive sweep would drop one and keep the other.
     environment = {
         name: value
         for name, value in os.environ.items()
-        if not name.startswith(CLEARED_ENVIRONMENT_PREFIXES)
-        and name not in CLEARED_ENVIRONMENT_NAMES
+        if not name.upper().startswith(CLEARED_ENVIRONMENT_PREFIXES)
+        and name.upper() not in CLEARED_ENVIRONMENT_NAMES
     }
     environment["PYTHONIOENCODING"] = "utf-8"
     return environment
 
 
 def _environment_variables_the_project_reads() -> set[str]:
-    """Recover the environment variable names the source tree reads.
+    """Recover the environment variable names the source tree could read.
 
-    Args:
-        None.
+    Parsed rather than grepped, so a name inside a comment cannot register while
+    one built across a line continuation goes missing.
 
     Returns:
-        Every name appearing in an ``os.environ.get``, ``os.getenv`` or
-        ``os.environ[...]`` expression under ``src/`` or ``tests/``.
+        Every string literal under ``src/`` or ``tests/`` shaped like an
+        environment variable name, less those declared in
+        :data:`NOT_ENVIRONMENT_VARIABLES`.
     """
     sources = (*(REPO_ROOT / "src").rglob("*.py"), *(REPO_ROOT / "tests").rglob("*.py"))
     names: set[str] = set()
     for source in sources:
-        for getter, subscript in ENVIRONMENT_READ_PATTERN.findall(
-            source.read_text(encoding="utf-8")
-        ):
-            names.add(getter or subscript)
-    return names
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and ENVIRONMENT_NAME_SHAPE.match(node.value)
+            ):
+                names.add(node.value)
+    return names - NOT_ENVIRONMENT_VARIABLES
 
 
 def _run_suite_in_child(probe_path: Path) -> subprocess.CompletedProcess[str]:
@@ -389,6 +433,7 @@ def _run_suite_in_child(probe_path: Path) -> subprocess.CompletedProcess[str]:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             cwd=REPO_ROOT,
             env=_child_environment(),
             timeout=CHILD_TIMEOUT_SECONDS,
@@ -593,9 +638,13 @@ def test_child_environment_drops_every_variable_the_project_reads() -> None:
         "has stopped matching, so this check would pass vacuously."
     )
     original = os.environ.copy()
+    # Both cases, since the reads are not all upper case and the sweep claims to
+    # cover either.
     os.environ.update({name: "planted" for name in names})
+    os.environ.update({name.lower(): "planted" for name in names})
     try:
-        survivors = sorted(names & set(_child_environment()))
+        surviving = {name.upper() for name in _child_environment()}
+        survivors = sorted(names & surviving)
     finally:
         os.environ.clear()
         os.environ.update(original)
@@ -607,26 +656,43 @@ def test_child_environment_drops_every_variable_the_project_reads() -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "expectation"),
+    ("text", "check", "expectation"),
     [
-        pytest.param(_synthetic_ledger(["b::t", "a::t"]), "sorted", id="unsorted"),
-        pytest.param(_synthetic_ledger(["a::t", "a::t"]), "sorted", id="duplicated"),
         pytest.param(
-            _synthetic_ledger(["a::t"], recorded=9), "records 9", id="count-mismatch"
+            _synthetic_ledger(["b::t", "a::t"]),
+            _assert_block_is_sorted_and_unique,
+            "sorted",
+            id="unsorted",
+        ),
+        pytest.param(
+            _synthetic_ledger(["a::t", "a::t"]),
+            _assert_block_is_sorted_and_unique,
+            "sorted",
+            id="duplicated",
+        ),
+        pytest.param(
+            _synthetic_ledger(["a::t"], recorded=9),
+            _assert_count_matches_node_ids,
+            "records 9",
+            id="count-mismatch",
         ),
         pytest.param(
             _synthetic_ledger(["a::t"], extra_block=True),
+            _assert_block_is_sorted_and_unique,
             "requires exactly one",
             id="two-blocks",
         ),
         pytest.param(
             "# Synthetic\n\n## Windows\n\n- **Result:** 0 failed\n\n```text\n```\n",
+            _assert_block_is_sorted_and_unique,
             "no longer contains",
             id="missing-heading",
         ),
     ],
 )
-def test_parsers_reject_a_malformed_section(text: str, expectation: str) -> None:
+def test_parsers_reject_a_malformed_section(
+    text: str, check: Callable[[str, str], None], expectation: str
+) -> None:
     """Assert each malformed document shape is rejected, with a legible message.
 
     These are the shapes a repair step will actually produce -- a deleted id
@@ -634,14 +700,17 @@ def test_parsers_reject_a_malformed_section(text: str, expectation: str) -> None
     against synthetic documents rather than confirmed once by hand against the
     real one.
 
+    The assertion under test is a parameter rather than a call chain: with both
+    helpers invoked in sequence, only the count case ever reached the second, and
+    nothing said so.
+
     Args:
         text: The synthetic document.
+        check: The assertion this shape is expected to trip.
         expectation: A phrase the rejection message must contain.
     """
-    heading = "## Linux"
     with pytest.raises(AssertionError, match=expectation):
-        _assert_block_is_sorted_and_unique(text, heading)
-        _assert_count_matches_node_ids(text, heading)
+        check(text, "## Linux")
 
 
 def test_parsers_accept_a_drained_section() -> None:
@@ -718,7 +787,7 @@ def test_live_outcome_matches_the_ledger(tmp_path: Path) -> None:
             documented - outcome["collected"]
         ),
         "In the ledger and now skipped (it stopped running; that is not a "
-        "repair either)": sorted(documented & outcome["skipped"]),
+        "repair either)": sorted(documented & outcome["skipped"] - outcome["failed"]),
         "In the ledger, ran, and passed (a repair; delete the id)": sorted(
             documented & outcome["collected"] - outcome["failed"] - outcome["skipped"]
         ),
