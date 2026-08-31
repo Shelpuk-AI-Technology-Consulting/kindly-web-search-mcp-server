@@ -44,7 +44,7 @@
 
 ## The guard tests — treat these as load-bearing
 
-Five tests exist to hold an invariant that nothing else enforces. A pull request
+Six tests exist to hold an invariant that nothing else enforces. A pull request
 that changes what they guard, without changing them, is a finding; a pull request
 that *weakens* one to make a change pass is a critical finding.
 
@@ -55,6 +55,13 @@ that *weakens* one to make a change pass is a critical finding.
 | `test_tool_descriptions.py` | the tool docstrings the calling model receives |
 | `test_diagnostics_masking.py` | that credentials do not reach diagnostics output |
 | `test_pytest_configuration.py` | that `[tool.pytest.ini_options]` matches TEST_SUITE.md §10.5, that the running pytest actually loaded it, and that `strict_markers` / `asyncio_mode` have their effect and not merely their declaration |
+| `test_min_selected_guard.py` | that the `--min-selected` collection floor in `tests/conftest.py` matches TEST_SUITE.md §10.3 and still fires — an under-selected marker job exits 4 and names both counts, while a genuine failure keeps exit 1 and a collection error keeps its own diagnosis |
+
+These two are coupled: `test_min_selected_guard.py` imports `_section_body` from
+`test_pytest_configuration.py` rather than keeping a second copy of the
+fence-aware section bound, which exists because the naive heading regex was
+measured wrong. A change to that helper's name or behaviour breaks both guards,
+so it is not the private detail its underscore suggests.
 
 Plus `test_worker_launch_args_redaction.py` for the subprocess command line — the
 same class of guard, one layer down.

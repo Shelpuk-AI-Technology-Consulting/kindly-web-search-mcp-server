@@ -450,8 +450,11 @@ fixture server, so §5.4's anti-flake rules apply here in full, plus two
 requirements specific to testing an installed artefact:
 
 - **A fresh virtual environment**, and a working directory **outside the
-  checkout**. Running from the repo root puts `src/` on `sys.path` ahead of the
-  installed package on some invocations.
+  checkout** — necessary but **not sufficient**. `tests/conftest.py` inserts
+  `<checkout>/src` at `sys.path[0]` unconditionally, so any invocation that loads
+  it shadows the installed package from every working directory, and the cwd is
+  not the mechanism. Measured; see §10.3, where the unresolved conflict and its
+  two candidate resolutions are recorded.
 - **Assert the import actually resolves to the wheel.** The test asserts the
   server module's `__file__` lies under the venv's `site-packages` and not under
   the checkout. Without it the job can pass while exercising the source tree — a
@@ -1054,7 +1057,7 @@ def pytest_addoption(parser):
 
 def pytest_collection_finish(session):
     minimum = session.config.getoption("--min-selected")
-    if minimum and len(session.items) < minimum:
+    if minimum and not session.testsfailed and len(session.items) < minimum:
         raise pytest.UsageError(
             f"selected {len(session.items)} tests, expected at least {minimum}; "
             "check the -m expression against the registered markers"
@@ -1066,6 +1069,92 @@ def pytest_collection_finish(session):
 deselection, so `len(items)` is 3 when `-m` selects none, and the guard never
 fires. `collection_finish` reads `session.items` after deselection and reports the
 true selected count.
+
+**The guard stands down when the run has already failed.** `not
+session.testsfailed` is not defensive padding; it is the difference between an
+accurate alarm and a misleading one. Measured: a module that fails to import
+leaves `session.testsfailed` at 1 *and* lowers `len(session.items)`, so without
+the condition the guard fires on top of the collection error. The engineer's
+headline becomes `selected 1 tests, expected at least 2; check the -m expression
+against the registered markers` — blaming an innocent selector for an unrelated
+import break, with the real `ModuleNotFoundError` buried above it, and pytest's
+own exit 2 replaced by exit 4. The guard exists to turn a **green** run red. A
+run that is already red needs nothing from it, and no safety is lost by the
+silence: every suppressed case still fails the job.
+
+**The option exists only for invocations targeting `tests/`.** `pytest_addoption`
+is honoured in *initial* conftests only, and `tests/conftest.py` is one by virtue
+of `testpaths = ["tests"]` and of any argument resolving under `tests/`. Measured
+on pytest 9.1.1: `pytest --min-selected=1 src/` exits 4 with `unrecognized
+arguments`, from inside the checkout and from outside it alike. Every job in the
+table above selects by marker over `tests/`, so every one of them has the option;
+the constraint binds nothing that exists today, and is recorded because a job
+pointed anywhere else would fail with a message about a flag rather than about a
+selector. `test_min_selected_guard.py` asserts the negative, so the day this
+stops being true a test says so.
+
+**A repository-root `conftest.py` was measured, not merely declined.** It does
+register the option universally, but it solves nothing: with an argument of
+`<checkout>/tests/package` the rootdir is still the checkout, so the root file
+loads *and* `tests/conftest.py` loads, because it sits between the rootdir and
+the argument. The package still resolved to the checkout's `src/`. The cost of
+the extra file is real but small — hatchling builds the wheel from `src/`, so a
+root file would reach only the sdist, which already carries `tests/conftest.py` —
+so the reason to reject it is simply that it buys nothing.
+
+**Unresolved, and named here rather than discovered in CI: `tests/conftest.py`
+shadows any installed copy of the package.** Line 8 of that file inserts
+`<checkout>/src` at `sys.path[0]` and line 10 then imports the package, caching
+the checkout's copy in `sys.modules` before the first test runs. Position 0 beats
+site-packages, so this happens from **every** working directory. §6.1's "run from
+outside the checkout" is necessary but not sufficient. Measured from a directory
+outside the checkout with the package installed in the active environment:
+`kindly_web_search_mcp_server.__file__` resolved to `<checkout>/src/…`, and the
+result was identical with `--min-selected` present and absent — so this is **not**
+a consequence of the floor. The floor merely made the collision visible, by
+forcing the question of how a job outside `tests/` would spell its target.
+
+Two assertions in this document therefore cannot hold as written while that line
+stands: §6.1's "`__file__` under the venv's `site-packages` and not the checkout"
+for the `package` job, and the identical claim made above for the `chromium` job,
+which selects `-m "chromium and not live"` over `tests/` and so loads the same
+conftest. The mirror-image assertion in the `coverage` job's step 1 is affected in
+the opposite direction: it passes *because* of line 8, whether or not the editable
+install succeeded, so it currently measures nothing.
+
+**The resolution belongs to the step that builds the wheel harness, not here.**
+This step neither introduced the conflict nor can settle it without changing the
+`sys.path` convention every existing test module depends on, and settling it in a
+bootstrap step would be a decision made where its consequences cannot be observed.
+Two candidates were measured and both work, so the choice is a decision and not a
+research task:
+
+- **An explicit opt-out on the insert.** `tests/conftest.py` skips line 8 when the
+  job sets, say, `KINDLY_TEST_INSTALLED=1`. The installed copy then wins,
+  `--min-selected` still exists, and no other invocation changes. It is the only
+  candidate that also fixes `chromium`, whose tests stay under `tests/`. An
+  implicit form — insert only if the package is not already importable — is
+  rejected: a developer with a stale `pip install .` in their virtualenv would
+  silently start testing the wrong tree.
+- **Moving the wheel tests to a sibling of `tests/`.** Works, and plain `pytest`
+  is unaffected because `testpaths = ["tests"]`. But it contradicts the
+  `tests/package/` location this document assumes throughout, including every
+  `--ignore=tests/package`, and it leaves `chromium` broken.
+
+`--confcutdir=<checkout>/tests/package` also works — the parent conftest is not
+loaded and the installed copy wins — but only if the option is registered in
+`tests/package/conftest.py`, and registering it in both files is a hard
+`ValueError: option names {'--min-selected'} already added` on any run that loads
+both, including a bare `pytest`. Recorded so it is not tried a second time.
+
+Until that is settled, **this section deliberately does not tell the `package` job
+how to spell its target.** An earlier draft did, and the advice was wrong: it
+would have set that job up to fail its own §6.1 assertion.
+
+Only a positive floor arms the guard. Zero is the default and disables it, which
+is what keeps every existing invocation unaffected; a negative value disables it
+just as silently, so a job computing its floor in the shell should not let one
+through.
 
 Every marker-selected job passes `--min-selected=<n>`. Measured behaviour:
 under-selection fails at collection (exit 4, with the count in the message),
