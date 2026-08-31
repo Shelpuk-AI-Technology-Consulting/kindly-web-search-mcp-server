@@ -7,6 +7,15 @@
 # found -- the run would then silently fall back to coverage.py's defaults, which
 # is the one failure this file exists to prevent. `COVERAGE_FILE` is set to an
 # absolute path for the same reason.
+#
+# Three separate files rather than one `[tool.coverage.*]` table in
+# `pyproject.toml`: coverage.py reads exactly one configuration per run, and the
+# three views need different `[run]` sections, which a single table cannot
+# express. The consequence is worth knowing, because pytest's configuration went
+# the other way and lives in `pyproject.toml`: coverage.py consults
+# `.coveragerc` first and, having found it, never looks at `pyproject.toml` at
+# all. A `[tool.coverage.*]` table added there later would be dead text with no
+# error to say so.
 
 [run]
 # The setting that closes this project's worst measurement gap. By default

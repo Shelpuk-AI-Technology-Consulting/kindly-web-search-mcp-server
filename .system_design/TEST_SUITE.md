@@ -1398,9 +1398,10 @@ under coverage does not instrument it — so without configuration the worker's 
 code reads as uncovered no matter how thoroughly the subsystem tests exercise it,
 and a PR touching it would be charged by control 2 for lines it cannot cover.
 
-The `subsystem` and `chromium` jobs therefore set `parallel = true` with
-`patch = subprocess` in `.coveragerc` and `coverage combine` the child data files
-before publishing their **observational** report. The floor is **7.10.3**, not
+The `subsystem` and `chromium` jobs therefore run under
+`.coveragerc-subprocess`, which sets `parallel = true` with `patch = subprocess`,
+and `coverage combine` the child data files before publishing their
+**observational** report. The floor is **7.10.3**, not
 7.10.0: the option arrived in 7.10.0, but 7.10.3 fixed missed nested children, data
 stranded when a child changes working directory, Windows startup failures and
 incomplete configuration propagation to children — every one of which this design's

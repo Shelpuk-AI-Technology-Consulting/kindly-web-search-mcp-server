@@ -20,10 +20,17 @@ Two things about this module's assertions are deliberate and load-bearing:
   to a shipped file that this module does not name would otherwise take effect
   unnoticed.
 
-The three behavioural cases at the end run real coverage in a child process,
-because section 10.4's central claim -- that a module no test imports is reported
-at zero rather than being absent -- is a claim about what coverage.py *does*, and
-no amount of reading the configuration file can establish it.
+The behavioural cases at the end run real coverage in a child process, because
+section 10.4's central claim -- that a module no test imports is reported at zero
+rather than being absent -- is a claim about what coverage.py *does*, and no
+amount of reading the configuration file can establish it.
+
+Every measurement quoted here was taken on **both 7.13.5 and 7.16.0** and agreed.
+Those are the two ends that matter: section 10.2 bounds the project at
+``coverage>=7.10.3,<8``, the pinned lane that runs the controls installs
+``7.13.5`` exactly, and a developer's ``dev`` environment resolves to whatever is
+current. The versions are named so that an engineer meeting a failure after a
+coverage bump reads it as new behaviour rather than as a puzzle.
 """
 
 from __future__ import annotations
@@ -108,10 +115,14 @@ PROVENANCE_ATTRIBUTES = frozenset(
     {"config_file", "config_files_attempted", "config_files_read"}
 )
 
-# The module the probe imports. Any module the package can import without side
-# effects would do; this one is a plain dataclass module with no I/O.
-PROBE_MODULE = f"{PACKAGE}.models"
-PROBE_REPORT_PATH = f"src/{PACKAGE}/models.py"
+# The module the probe imports. Chosen for two properties, both of which keep a
+# failure here meaning what it says: it imports nothing outside the standard
+# library, so a broken runtime dependency cannot turn this guard red for a reason
+# that has nothing to do with coverage configuration; and importing it only
+# defines a function, so the probe has no side effects. It is also outside
+# ``scrape/``, where the omit patterns live.
+PROBE_MODULE = f"{PACKAGE}.utils.logging"
+PROBE_REPORT_PATH = f"src/{PACKAGE}/utils/logging.py"
 
 # The module with no test file anywhere -- 213 statements, and the concrete gap
 # that made control 1 necessary. It is the observable for both the whole-package
@@ -215,30 +226,58 @@ def test_the_gate_configuration_is_the_base_plus_only_an_omit_list() -> None:
     )
 
 
-def _design_document_block(name: str) -> str:
-    """Extract one of section 10.4's three ``ini`` blocks from ``TEST_SUITE.md``.
+def test_the_subprocess_configuration_is_the_base_run_settings_plus_patching() -> None:
+    """Assert the third config differs from the base only as section 10.4 says
+
+    Stated as the same kind of relationship as the case above, so the three files
+    read as one table rather than as three unrelated value lists. Two differences
+    are expected and no others: the process patching this lane exists for, and
+    the absent ``[paths]`` mapping -- which is a real difference, deliberately
+    made, and so is asserted rather than left to be noticed.
+    """
+    base = _resolved_settings(_config_path(BASE_CONFIG))
+    subprocess_settings = _resolved_settings(_config_path(SUBPROCESS_CONFIG))
+
+    assert subprocess_settings.pop("parallel", None) is True, (
+        f"{SUBPROCESS_CONFIG} does not set parallel; the suffixed data files "
+        "its jobs combine would not be written."
+    )
+    assert subprocess_settings.pop("patch", None) == ["subprocess"], (
+        f"{SUBPROCESS_CONFIG} does not patch subprocess, which is the only "
+        "reason this configuration exists."
+    )
+    assert base.pop("paths", None) == EXPECTED_PATHS, (
+        f"{BASE_CONFIG} no longer carries section 10.4's paths mapping."
+    )
+
+    assert subprocess_settings == base, (
+        f"{SUBPROCESS_CONFIG} differs from {BASE_CONFIG}'s [run] settings in "
+        f"more than the process patching: {subprocess_settings!r} against "
+        f"{base!r}."
+    )
+
+
+def _design_document_blocks() -> dict[str, str]:
+    """Extract every ``ini`` block in section 10.4, keyed by the file it names.
 
     The section is bounded with :func:`tests.test_pytest_configuration._section_body`
     rather than a fresh heading regex; that helper exists because the naive bound
     was measured wrong on this very section, whose blocks open with a ``#``
-    comment at column 0. A second copy here would drift from it.
+    comment at column 0 that a heading pattern cannot tell from a heading. A
+    second copy here would drift from it.
 
-    Within the section the block is chosen by the file name in its opening
-    comment. Section 10.4 holds four fenced blocks -- these three and a shell
-    sample -- so neither "the only block" nor "the only ``ini`` block" selects
-    one, and position would silently start comparing against the wrong file the
-    day the order changes.
-
-    Args:
-        name: The configuration file the block documents.
+    Blocks are keyed by the file name in their opening comment rather than by
+    position. Section 10.4 holds a shell sample as well as these, so neither
+    "the only block" nor "the only ``ini`` block" selects one, and position would
+    silently start comparing against the wrong file the day the order changes.
 
     Returns:
-        The block's contents, ready to be written out and parsed.
+        Each block's contents, keyed by the configuration file it documents.
 
     Raises:
-        AssertionError: When the heading, or exactly one block naming that file,
-            cannot be found -- either of which would silently disable the
-            comparison.
+        AssertionError: When the heading is gone, when a block does not open with
+            a comment naming a file, or when two blocks name the same file --
+            each of which would silently disable part of the comparison.
     """
     text = TEST_SUITE_PATH.read_text(encoding="utf-8")
     assert DESIGN_SECTION_HEADING in text.splitlines(), (
@@ -247,17 +286,67 @@ def _design_document_block(name: str) -> str:
         "it would silently disable the check."
     )
     section = _section_body(text, DESIGN_SECTION_HEADING)
-    blocks = [
-        block
-        for block in re.findall(r"```ini\n(.*?)```", section, re.DOTALL)
-        if block.splitlines()[0].split()[1:2] == [name]
-    ]
-    assert len(blocks) == 1, (
-        f"Section 10.4 of {TEST_SUITE_PATH.name} contains {len(blocks)} ini "
-        f"blocks whose opening comment names {name}; this guard requires "
-        "exactly one."
+    named: dict[str, str] = {}
+    for block in re.findall(r"```ini\n(.*?)```", section, re.DOTALL):
+        opening = block.splitlines()[0].split()
+        assert opening[:1] == ["#"] and len(opening) > 1, (
+            f"An ini block in section 10.4 of {TEST_SUITE_PATH.name} does not "
+            f"open with a comment naming its file: {opening!r}"
+        )
+        assert opening[1] not in named, (
+            f"Section 10.4 of {TEST_SUITE_PATH.name} has two ini blocks naming "
+            f"{opening[1]}; this guard cannot tell which one ships."
+        )
+        named[opening[1]] = block
+    return named
+
+
+def _design_document_block(name: str) -> str:
+    """Return section 10.4's block for one configuration file.
+
+    Args:
+        name: The configuration file the block documents.
+
+    Returns:
+        The block's contents, ready to be written out and parsed.
+
+    Raises:
+        AssertionError: When the section documents no such file.
+    """
+    blocks = _design_document_blocks()
+    assert name in blocks, (
+        f"Section 10.4 of {TEST_SUITE_PATH.name} has no ini block for {name}; "
+        f"it documents {sorted(blocks)}."
     )
-    return blocks[0]
+    return blocks[name]
+
+
+def test_the_document_and_the_repository_agree_on_which_configurations_exist() -> None:
+    """Assert the documented set, the shipped set and this module's table are one set
+
+    The per-file comparisons each answer "does this pair agree?". None of them
+    notices a file with no block, a block with no file, or a fourth
+    configuration that no case in this module has ever heard of -- all three of
+    which leave the document and the tree diverged with the suite green. That is
+    the same reason the section bound requires *exactly* one match rather than at
+    least one.
+
+    The shipped set is read by globbing rather than from this module's own table,
+    so adding a `.coveragerc-something` without adding it to section 10.4 and to
+    :data:`EXPECTED_CONFIGURATIONS` fails here.
+    """
+    documented = set(_design_document_blocks())
+    shipped = {path.name for path in REPO_ROOT.glob(".coveragerc*")}
+    expected = set(EXPECTED_CONFIGURATIONS)
+
+    assert documented == expected, (
+        f"Section 10.4 of {TEST_SUITE_PATH.name} documents {sorted(documented)} "
+        f"but this guard knows {sorted(expected)}."
+    )
+    assert shipped == expected, (
+        f"The repository root holds {sorted(shipped)} but section 10.4 "
+        f"specifies {sorted(expected)}."
+    )
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_CONFIGURATIONS))
@@ -312,6 +401,41 @@ def test_configuration_file_uses_no_option_coverage_does_not_recognise(
     assert not unrecognised, (
         f"coverage.py does not recognise every option in {name}, and ignores "
         f"the ones it does not: {unrecognised}."
+    )
+
+
+def test_a_mistyped_option_is_warned_about_and_then_ignored(tmp_path: Path) -> None:
+    """Assert the premise the case above rests on, and the whole module's approach
+
+    The case above can only mean something if coverage.py really does warn about
+    an option it does not know, and really does carry on without it. Both halves
+    are demonstrated here against a deliberately mistyped file, so "no warnings"
+    is a fact about the shipped configurations rather than a fact about a warning
+    that never fires.
+
+    The second half is the more important one: ``source_pkg`` is *absent* from
+    the resolved settings. That is why every comparison in this module reads
+    coverage.py's resolved values instead of the file's text -- a text comparison
+    would find this typo identical on both sides and pass.
+
+    Args:
+        tmp_path: pytest's per-test temporary directory.
+    """
+    mistyped = tmp_path / ".coveragerc"
+    mistyped.write_text(f"[run]\nsource_pkg = {PACKAGE}\n", encoding="utf-8")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", CoverageWarning)
+        settings = _resolved_settings(mistyped)
+
+    assert any("Unrecognized option" in str(w.message) for w in caught), (
+        "coverage.py no longer warns about an unknown option, so the "
+        "no-warnings case above has stopped being able to fail. "
+        f"Warnings seen: {[str(w.message) for w in caught]}"
+    )
+    assert "source_pkgs" not in settings, (
+        "coverage.py accepted a mistyped option name, which would make the "
+        f"whole-package view work by accident. Resolved: {settings!r}"
     )
 
 
@@ -521,6 +645,28 @@ def test_the_subprocess_configuration_captures_a_child_process(
     reported as covered, proves the child's data survived ``coverage combine``.
     A module neither process imported is asserted at zero in the same report, so
     a report that somehow marked everything covered could not pass.
+
+    Three environmental facts this case depends on, recorded because each fails
+    it for a reason that has nothing to do with the configuration:
+
+    * ``patch = subprocess`` works by writing a ``.pth`` file into a
+      site-packages directory at run time and exporting
+      ``COVERAGE_PROCESS_START``. It therefore needs a **writable**
+      site-packages -- a virtual environment has one; a read-only or
+      system-managed interpreter does not, and this case fails rather than skips
+      there.
+    * The probe spawns its child with **no explicit** ``env=``, so the child
+      inherits the variable coverage exported. Passing a dict built before
+      coverage patched the environment would leave the child unmeasured and fail
+      this case for a reason the message would not explain.
+    * Under CI this case runs inside a job that is itself measured, so its
+      children are nested one level deeper than usual. The nested-child handling
+      that makes that safe is what the 7.10.3 floor in section 10.2 buys.
+
+    Unlike the omit list, whose breakage is self-revealing, a broken subprocess
+    patch is silent until the epic that first publishes an observational L3
+    report -- months of merges away. That gap is why this case is here rather
+    than deferred to the job that consumes the configuration.
 
     Args:
         tmp_path: pytest's per-test temporary directory.
