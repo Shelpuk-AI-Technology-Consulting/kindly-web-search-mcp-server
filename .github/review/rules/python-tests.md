@@ -44,7 +44,7 @@
 
 ## The guard tests — treat these as load-bearing
 
-Four tests exist to hold an invariant that nothing else enforces. A pull request
+Five tests exist to hold an invariant that nothing else enforces. A pull request
 that changes what they guard, without changing them, is a finding; a pull request
 that *weakens* one to make a change pass is a critical finding.
 
@@ -54,6 +54,7 @@ that *weakens* one to make a change pass is a critical finding.
 | `test_provider_registry_consistency.py` | `PROVIDERS` stays in step with the router, the startup check and the documentation |
 | `test_tool_descriptions.py` | the tool docstrings the calling model receives |
 | `test_diagnostics_masking.py` | that credentials do not reach diagnostics output |
+| `test_pytest_configuration.py` | that `[tool.pytest.ini_options]` matches TEST_SUITE.md §10.5, that the running pytest actually loaded it, and that `strict_markers` / `asyncio_mode` have their effect and not merely their declaration |
 
 Plus `test_worker_launch_args_redaction.py` for the subprocess command line — the
 same class of guard, one layer down.
