@@ -337,11 +337,11 @@ def test_design_document_hook_behaves_identically(
 ) -> None:
     """Assert the documented and shipped hooks agree on one collection state
 
-    The four states are the whole behaviour: fire, do not fire at the boundary,
-    do not fire when disabled, and do not fire on an already-failed run. Where
-    both raise, the messages are compared too -- the message is what an engineer
-    reads in CI, and a document whose snippet says something else has stopped
-    describing what ships.
+    The five states are the whole behaviour: fire, do not fire at the boundary,
+    do not fire when disabled, do not fire on an already-failed run, and do not
+    fire on a negative floor. Where both raise, the messages are compared too --
+    the message is what an engineer reads in CI, and a document whose snippet
+    says something else has stopped describing what ships.
 
     Args:
         selected: Items surviving deselection.
