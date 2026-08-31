@@ -151,11 +151,26 @@ that overrides the child's endpoint and credentials.
 
 ## Forks
 
-The job runs only for same-repository, non-draft pull requests. **This repository
-is public and the runners are self-hosted**, so that condition is a security
-control, not a convenience: a fork PR must never place a job on this fleet.
-Weakening the `if:` — adding `pull_request_target`, or dropping the head-repo
-comparison — is a **critical** finding.
+The job runs only for same-repository, non-draft pull requests, and **on a public
+repository that condition is a security control rather than a convenience.**
+
+GitHub already refuses to pass secrets to a workflow triggered from a fork — the
+`GITHUB_TOKEN` is the only exception — so a stranger's pull request could not
+reach the bridge credentials in any case. What the `if:` adds is that such a run
+does not start at all, instead of starting and failing in a way that reads like a
+misconfiguration.
+
+⚠️ **The runners are GitHub-hosted, not self-hosted** — this paragraph said
+otherwise until the first automated review of the pull request that added it
+caught the contradiction. The distinction matters for how you weigh a change
+here: on a self-hosted fleet a fork run is an *arbitrary-code-on-our-machines*
+problem, and on a hosted runner it is a *secrets and spend* problem. Both justify
+the guard; only the first justifies it as the sole line of defence.
+
+Weakening the `if:` is a **critical** finding either way. Two specific forms:
+adding `pull_request_target`, which runs in the base-branch context **with**
+secrets and is the classic exfiltration vector; and dropping the head-repository
+comparison.
 
 ## Actions and pinning
 

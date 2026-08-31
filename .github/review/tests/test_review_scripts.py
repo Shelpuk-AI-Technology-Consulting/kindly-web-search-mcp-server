@@ -574,8 +574,15 @@ class NoPrivateReferenceLeaksTests(unittest.TestCase):
     ⚠️ **What this does NOT cover, said plainly so a green run is not
     over-read:** runner hostnames, internal URLs, and personal names have no
     shape a regex can separate from legitimate text. Those were removed by hand
-    and nothing here will notice them coming back. If you are carrying a comment
-    across, read it.
+    and nothing here will notice them coming back.
+
+    🔴 **Nor does it catch a BARE issue-key prefix** -- `ABC-` with no number.
+    That is not hypothetical: exactly one slipped through into `.requirements/`
+    and was found by hand, not here. The ticket rule requires digits because
+    dropping that requirement matches `UTF-`, `SHA-`, and every hyphenated
+    capital in ordinary prose, which would make the guard unusable. The trade is
+    deliberate and this is the note that records it. **If you are carrying a
+    comment across, read it.**
     """
 
     #: This repository, from which "a sibling of this repository" is derived.
@@ -645,24 +652,42 @@ class NoPrivateReferenceLeaksTests(unittest.TestCase):
                 if repo.lower() != self.REPO.lower():
                     yield lineno, f"{self.OWNER}/{repo}", line.strip()[:100]
 
-    def test_nothing_under_github_names_a_private_project(self):
+    #: Directories walked by the sweep below. Both carry prose adopted from, or
+    #: written about, a private repository, and both are tracked and public.
+    #:
+    #: 🔴 `.requirements/` was NOT here originally, and a real leak lived in it:
+    #: a sentence naming the private project's issue-key namespace, in the very
+    #: document that records this port. Two independent gaps let it through --
+    #: this list, and the digits the ticket rule requires -- which is why the
+    #: scope is a list of tracked doc directories rather than one of them.
+    SWEPT_DIRS = (".github", ".requirements")
+
+    def test_no_tracked_document_names_a_private_project(self):
         """Every file the review system ships, walked rather than enumerated.
 
         Derived by walking the tree, not by listing the files: an enumerated list
         guards the files somebody thought of, and the next script added lands
         unguarded while the guard still passes.
+
+        ⚠️ **The DIRECTORIES are still enumerated**, which is the same shape one
+        level up. `SWEPT_DIRS` is the list to extend the day a third tracked
+        prose directory appears; nothing will fail to tell you it is missing.
         """
 
-        root = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         offences = []
-        for path in sorted(root.rglob("*")):
-            if not path.is_file() or "__pycache__" in path.parts:
+        for directory in self.SWEPT_DIRS:
+            base = repo / directory
+            if not base.is_dir():
                 continue
-            for lineno, token, line in self._offences(path):
-                offences.append(
-                    f"{path.relative_to(root.parent).as_posix()}:{lineno}: "
-                    f"{token!r} in {line}"
-                )
+            for path in sorted(base.rglob("*")):
+                if not path.is_file() or "__pycache__" in path.parts:
+                    continue
+                for lineno, token, line in self._offences(path):
+                    offences.append(
+                        f"{path.relative_to(repo).as_posix()}:{lineno}: "
+                        f"{token!r} in {line}"
+                    )
 
         self.assertFalse(
             offences,

@@ -50,8 +50,17 @@ gateway.** A run that could reach a provider directly must not produce a review.
 which of the two failure classes it was: `exhausted` (the provider could not
 serve it — top up or wait) or `fatal` (the workflow or its settings).
 
-**R7 — Keep the runner as small as the work allows**, on the shared self-hosted
-fleet.
+**R7 — Keep the runner as small as the work allows.**
+
+🔴 **Amended mid-implementation, and the original is kept because the reason is
+the finding.** This was first written as *"on the shared self-hosted fleet"*,
+matching the repository this system was adopted from. That turned out to be
+unachievable rather than merely undesirable: a self-hosted runner group carries
+an **"Allow public repositories"** setting that is off by default, and this
+repository is public, so it reaches no group at all. Granting one would open a
+shared fleet to anyone who can open a pull request — a decision with a real blast
+radius, and not one this task should make silently. The requirement is therefore
+satisfied on a GitHub-hosted runner instead.
 
 **R8 — Leak nothing about the private repository this was adopted from.** This
 repository is public.
@@ -103,12 +112,27 @@ Neither (2) nor (3) may be deleted as redundant: an empty `proxy_url` loads, so
 request and superseded on a later successful run. No rendered surface asserts
 that a re-run cannot help.
 
-**R7** — `runs-on: [self-hosted, cap-nano, noble]`, one tier below the
-reference's `cap-light`, with the trade-off and its failure signature recorded at
-the declaration.
+**R7** — `runs-on: ubuntu-slim` on all three jobs, named as a **literal** and
+drawn from a written-down set, with the reasoning recorded at the declaration.
+`test_the_review_job_names_a_known_runner_as_a_literal` enforces both halves: no
+expression-valued runner, and no label outside the known set.
+
+⚠️ **What that test cannot check, and neither can any offline guard:** whether
+the label is actually offered to this repository. That is org state. It is called
+out because the failure is silent — see the note below.
+
+🔴 **An unreachable runner label is completely silent, and this cost most of a
+day.** A job asking for a label nothing offers queues **for ever**: no error, no
+annotation, no timeout. Measured here — three jobs queued over fifteen minutes
+while a GitHub-hosted job on the same pull request finished in 55 seconds, with
+the fleet demonstrably busy serving another repository throughout. Proved rather
+than inferred: a throwaway workflow asking for the bare `self-hosted` label,
+which matches every runner in every group a repository can see, was never claimed
+either. A typo and an ungranted runner are indistinguishable.
 
 **R8** — no file under `.github/` contains the private repository's name, a
-sibling repository, the `SIS-` ticket namespace, or a fleet hostname.
+sibling repository, a private project's issue-key namespace, or a fleet
+hostname.
 
 **R9** — `.github/workflows/ci.yml` runs `test_review_scripts.py` on every pull
 request, on a bare interpreter with no dependency install.
@@ -118,7 +142,7 @@ request, with `pull-requests: read` declared rather than inherited.
 
 ## Testing Plan
 
-`.github/review/tests/test_review_scripts.py` — 481 tests, `unittest`, runnable
+`.github/review/tests/test_review_scripts.py` — 482 tests, `unittest`, runnable
 on a bare interpreter with no installed dependencies (a broken review workflow
 must be diagnosable without provisioning anything first).
 
@@ -175,6 +199,13 @@ two cases fail there, so the failure is the local `bash`, not the port.
   marked as such. Nothing has been re-derived against this repository's much
   smaller pull requests.
 - **Operator step, not done here:** the three `KITTY_*` organisation settings
-  must be granted to this repository, and the `cap-nano` / `noble` runner group
-  made available to it. `.github/review/README.md` § *Setting it up* is the
-  checklist.
+  must be granted to this repository. No runner grant is needed — the workflows
+  use a GitHub-hosted label precisely so that none is. `.github/review/README.md`
+  § *Setting it up* is the checklist, and is the single place that list lives.
+
+  ⚠️ The grant is easy to miss and, like the runner, fails quietly: an ungranted
+  secret resolves to the **empty string** rather than erroring, which is why
+  `configure_kitty.py` has to detect and report it itself. Verified on this
+  repository — `GET /repos/{owner}/{repo}/actions/organization-secrets` returned
+  0 while the same call against a repository that had been granted them returned
+  all three. That endpoint is the fastest way to check the grant landed.

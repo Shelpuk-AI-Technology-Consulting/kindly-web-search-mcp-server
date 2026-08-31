@@ -187,6 +187,15 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
             "**/AGENTS.md",
             ".system_design/**/*.md",
             "**/.system_design/**/*.md",
+            # 🔴 The per-task requirements documents, which are the traceability
+            # target `REVIEW_GUIDE.md` names: "an acceptance criterion in a task's
+            # REQUIREMENTS.md". Without this they match NOTHING, so a change to
+            # the one document that states what a change was supposed to do is
+            # reviewed with zero rule files loaded -- the exact silent-gap shape
+            # this selector's own docstring warns about. Caught by the first
+            # automated review of the pull request that created the directory,
+            # which is the round it was cheapest to catch it in.
+            ".requirements/**/*.md",
             # Runnable documentation. `examples/script_run_mcp_tools.py` is the
             # worked call sequence README points at, so it is prose that happens
             # to execute -- not a test, and no `tests/` glob was going to reach
