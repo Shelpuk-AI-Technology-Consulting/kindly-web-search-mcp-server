@@ -5,27 +5,39 @@ Section 10.4 of ``.system_design/TEST_SUITE.md`` is the policy; ``.coveragerc``,
 reads. This module keeps the two in step, in the same guard shape as
 :mod:`tests.test_pytest_configuration` and :mod:`tests.test_min_selected_guard`.
 
-Two things about this module's assertions are deliberate and load-bearing:
+Each configuration is checked **two ways, and both are needed** -- the same
+two-kinds framing :mod:`tests.test_pytest_configuration` uses for the pytest
+table:
 
-* **Every configuration is read through coverage.py's own parser, never through
-  :mod:`configparser`.** Measured on coverage 7.16.0: an unrecognised key in a
-  coveragerc -- ``source_pkg`` for ``source_pkgs``, a misspelled ``patch`` --
-  produces a :class:`~coverage.exceptions.CoverageWarning` and is *otherwise
-  ignored*. The run continues with that setting silently absent. A text
-  comparison sees the typo in both the document and the file, finds them
-  identical, and passes, while the coverage run it was meant to protect measures
-  the wrong thing. Only the value coverage.py *resolved* can fail on that typo.
-* **Each configuration is compared as its whole difference from coverage's
-  defaults**, not as a list of keys someone remembered to check. An option added
-  to a shipped file that this module does not name would otherwise take effect
+* **By the values coverage.py resolved**, read through coverage.py's own parser
+  and compared as the configuration's *whole difference* from coverage's
+  defaults. An unrecognised key in a coveragerc -- ``source_pkg`` for
+  ``source_pkgs``, a misspelled ``patch`` -- produces a
+  :class:`~coverage.exceptions.CoverageWarning` and is *otherwise ignored*, so a
+  text comparison finds the typo identical in document and file and passes while
+  the coverage run measures the wrong thing. Only the resolved value can fail on
+  that. Comparing the whole difference, rather than a list of keys someone
+  remembered, also means an option added to a shipped file cannot take effect
   unnoticed.
+* **By the keys the file actually declares**, read with :mod:`configparser`.
+  Resolved values alone are not enough, because coverage.py *derives* some of
+  them: ``post_process`` sets ``parallel`` whenever ``patch`` contains
+  ``subprocess``, so ``parallel = true`` could be deleted from
+  ``.coveragerc-subprocess`` and every resolved-value comparison would still
+  pass. That file states in its own comment that the setting is declared rather
+  than inherited so the fact is legible; nothing but a declared-key check can
+  hold it.
+
+Neither kind implies the other. A declared key can be a typo coverage ignores; a
+resolved value can be one coverage supplied by itself.
 
 The behavioural cases at the end run real coverage in a child process, because
 section 10.4's central claim -- that a module no test imports is reported at zero
 rather than being absent -- is a claim about what coverage.py *does*, and no
 amount of reading the configuration file can establish it.
 
-Every measurement quoted here was taken on **both 7.13.5 and 7.16.0** and agreed.
+Every measurement quoted in this module was taken on **both 7.13.5 and 7.16.0**
+and agreed; individual claims below do not repeat the versions.
 Those are the two ends that matter: section 10.2 bounds the project at
 ``coverage>=7.10.3,<8``, the pinned lane that runs the controls installs
 ``7.13.5`` exactly, and a developer's ``dev`` environment resolves to whatever is
@@ -35,6 +47,7 @@ coverage bump reads it as new behaviour rather than as a puzzle.
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import re
@@ -72,10 +85,10 @@ COMMON_RUN_SETTINGS: dict[str, object] = {
     "relative_files": True,
 }
 
-# Section 10.4's ``[paths]`` mapping. Present in the two gating configurations
-# and deliberately absent from the subprocess one: the mapping matters only where
-# a wheel is involved, and the observational subsystem jobs run from a source
-# checkout.
+# Section 10.4's ``[paths]`` mapping. Present in the two gating configurations and
+# deliberately absent from the subprocess one; that absence has a reason worth
+# reading and it is kept in one place, the trailing comment in
+# ``.coveragerc-subprocess``, rather than restated here where it would drift.
 EXPECTED_PATHS: dict[str, list[str]] = {
     "source": [f"src/{PACKAGE}", f"*/site-packages/{PACKAGE}"]
 }
@@ -115,6 +128,57 @@ PROVENANCE_ATTRIBUTES = frozenset(
     {"config_file", "config_files_attempted", "config_files_read"}
 )
 
+# Attributes that are not settings a coveragerc declares: the file's own raw
+# bytes, and the two that only a ``Coverage(...)`` constructor argument can set.
+# Named explicitly rather than filtered by leading underscore, which is the
+# obvious shape and the wrong one: ``CONFIG_FILE_OPTIONS`` contains
+# ``("_crash", "run:_crash")``, a genuine file-settable option that makes
+# coverage raise on a matching call stack. An underscore filter hides it, and a
+# ``_crash`` added to a shipped file would pass both kinds of check here while
+# breaking the coverage job outright. Excluding ``_config_contents`` is
+# load-bearing rather than cosmetic: the shipped files carry comments the design
+# document's blocks do not, so the document comparison cannot pass with it in.
+DERIVED_ATTRIBUTES = frozenset({"_config_contents", "_include", "_omit"})
+
+# The keys each file must *declare*, section by section, as configparser reads
+# them. The counterpart to the resolved-value table above, and the only check
+# that can see a declared setting coverage would have derived anyway.
+EXPECTED_DECLARED_KEYS: dict[str, dict[str, set[str]]] = {
+    BASE_CONFIG: {
+        "run": {"source_pkgs", "branch", "relative_files"},
+        "paths": {"source"},
+    },
+    GATE_CONFIG: {
+        "run": {"source_pkgs", "branch", "relative_files", "omit"},
+        "paths": {"source"},
+    },
+    SUBPROCESS_CONFIG: {
+        "run": {"source_pkgs", "branch", "relative_files", "parallel", "patch"},
+    },
+}
+
+# Environment variables coverage.py applies *after* the configuration file, and
+# which therefore mask a file setting of the same name. Measured: with
+# ``COVERAGE_FILE`` exported, a shipped ``data_file =`` vanishes from the
+# comparison entirely, because both sides of the diff get the same override. That
+# is not academic -- section 10.4 requires every job to set ``COVERAGE_FILE`` to
+# an absolute path, so without this scrubbing the guard would be weaker in CI
+# than on the machine it was written on.
+MASKING_VARIABLES = (
+    "COVERAGE_FILE",
+    "COVERAGE_CORE",
+    "COVERAGE_DEBUG",
+)
+
+# Variables the coverage ``.pth`` hook reads to auto-start measurement in any
+# child process. A CI job running this suite under ``.coveragerc-subprocess``
+# exports them, and an inherited value would silently start a second, differently
+# configured coverage inside every child these cases spawn.
+INHERITED_COVERAGE_STARTUP_VARIABLES = (
+    "COVERAGE_PROCESS_CONFIG",
+    "COVERAGE_PROCESS_START",
+)
+
 # The module the probe imports. Chosen for two properties, both of which keep a
 # failure here meaning what it says: it imports nothing outside the standard
 # library, so a broken runtime dependency cannot turn this guard red for a reason
@@ -128,6 +192,11 @@ PROBE_REPORT_PATH = f"src/{PACKAGE}/utils/logging.py"
 # that made control 1 necessary. It is the observable for both the whole-package
 # claim and the exemption claim.
 UNEXECUTED_REPORT_PATH = f"src/{PACKAGE}/scrape/chromium_pool.py"
+
+# The opening of coverage.py's warning for an option it does not know. Spelled
+# once so the check and its control cannot drift onto different substrings, at
+# which point the control would stop controlling anything.
+UNRECOGNISED_OPTION = "Unrecognized option"
 EXEMPT_REPORT_PATH = f"src/{PACKAGE}/scrape/nodriver_worker.py"
 
 
@@ -138,6 +207,14 @@ def _config_path(name: str) -> Path:
     with a :class:`~coverage.exceptions.ConfigError` traceback. Every case in
     this module is meaningless without the file, so all of them reach it through
     this helper and fail with one sentence naming the document that requires it.
+
+    It returns an **absolute** path, and that is not merely tidiness.
+    ``config_files_to_try`` special-cases the literal string ``".coveragerc"`` to
+    mean "no file specified", and the unspecified branch then reads
+    ``COVERAGE_RCFILE`` from the environment. Every job section 10.4 defines
+    exports that variable, so a guard passing the bare relative name would
+    quietly assert against whatever the job pointed at -- three times over, and
+    green.
 
     Args:
         name: The configuration file's name at the repository root.
@@ -167,20 +244,84 @@ def _resolved_settings(config_path: Path) -> dict[str, object]:
     Args:
         config_path: The configuration file to load.
 
+    Two limits are worth knowing. A setting whose value happens to equal
+    coverage's default is invisible by construction -- that is the price of
+    expressing this as a difference at all. And a setting coverage *derives*
+    rather than reads looks identical to one the file declared, which is why
+    :func:`_declared_keys` exists alongside this.
+
+    The baseline is read from :data:`os.devnull`, which is accepted rather than
+    raising ``Couldn't read ... as a config file``: ``from_file`` counts a
+    specified file as read whatever it contains.
+
     Returns:
         Every non-default setting, keyed by coverage.py's own attribute name.
     """
-    # The baseline is read from a file rather than from ``config_file=False`` so
-    # that both sides go down the identical code path; only the contents differ.
-    defaults = coverage.Coverage(config_file=os.devnull).config
-    actual = coverage.Coverage(config_file=str(config_path)).config
+    # Both objects are built with the masking variables removed, so a shipped
+    # setting cannot hide behind an override that lands on either side equally.
+    # Restored by hand rather than with ``unittest.mock.patch.dict``: importing
+    # anything from ``unittest`` makes the plan validator read this pytest-native
+    # module as unittest-style and demand a migration batch for it.
+    saved = {name: os.environ.pop(name, None) for name in MASKING_VARIABLES}
+    try:
+        # The baseline is read from a file rather than from ``config_file=False``
+        # so that both sides go down the identical code path.
+        defaults = coverage.Coverage(config_file=os.devnull).config
+        actual = coverage.Coverage(config_file=str(config_path)).config
+    finally:
+        os.environ.update({k: v for k, v in saved.items() if v is not None})
     return {
         name: value
         for name, value in vars(actual).items()
-        if not name.startswith("_")
+        if name not in DERIVED_ATTRIBUTES
         and name not in PROVENANCE_ATTRIBUTES
         and value != getattr(defaults, name, None)
     }
+
+
+def _declared_keys(config_path: Path) -> dict[str, set[str]]:
+    """Return the sections and keys a coveragerc literally declares.
+
+    Read with :mod:`configparser` rather than through coverage.py, which is the
+    one job coverage.py cannot do here: it reports the configuration *after*
+    ``post_process``, where ``parallel`` has been set from ``patch`` and a
+    declared key is indistinguishable from a derived one.
+
+    Args:
+        config_path: The configuration file to read.
+
+    Returns:
+        Each section's option names, keyed by section name.
+    """
+    parser = configparser.ConfigParser()
+    parser.read(config_path, encoding="utf-8")
+    return {section: set(parser.options(section)) for section in parser.sections()}
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_DECLARED_KEYS))
+def test_configuration_file_declares_the_expected_keys(name: str) -> None:
+    """Assert one shipped coveragerc spells out exactly section 10.4's keys
+
+    The companion to the resolved-value case below, and not redundant with it.
+    ``parallel`` is the concrete reason: coverage derives it from
+    ``patch = subprocess``, so deleting the line from
+    ``.coveragerc-subprocess`` changes no resolved value and no behaviour --
+    only the file's stated intent that the setting be legible rather than
+    inferred. Nothing but this case can fail on that.
+
+    It also catches the mirror image: a key deleted from a file and from section
+    10.4 together, which the document comparison cannot see because both sides
+    move.
+
+    Args:
+        name: The configuration file's name at the repository root.
+    """
+    declared = _declared_keys(_config_path(name))
+
+    assert declared == EXPECTED_DECLARED_KEYS[name], (
+        f"{name} declares {declared!r}, but section 10.4 of "
+        f"{TEST_SUITE_PATH.name} spells out {EXPECTED_DECLARED_KEYS[name]!r}."
+    )
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_CONFIGURATIONS))
@@ -270,6 +411,12 @@ def _design_document_blocks() -> dict[str, str]:
     position. Section 10.4 holds a shell sample as well as these, so neither
     "the only block" nor "the only ``ini`` block" selects one, and position would
     silently start comparing against the wrong file the day the order changes.
+
+    This imposes a constraint on the document worth stating: **every** ``ini``
+    fence in section 10.4 must open with a comment naming a shipped file, so the
+    section cannot carry an illustrative ini snippet. That is deliberate -- an
+    unnamed block is indistinguishable from a configuration someone forgot to
+    ship -- but it is a rule a future author would otherwise meet as a puzzle.
 
     Returns:
         Each block's contents, keyed by the configuration file it documents.
@@ -369,13 +516,21 @@ def test_design_document_declares_the_same_configuration(
     documented_path = tmp_path / name
     documented_path.write_text(_design_document_block(name), encoding="utf-8")
 
-    documented = _resolved_settings(documented_path)
-    shipped = _resolved_settings(_config_path(name))
+    shipped_path = _config_path(name)
 
-    assert documented == shipped, (
-        f"Section 10.4 of {TEST_SUITE_PATH.name} declares {documented!r} for "
-        f"{name} but the file resolves to {shipped!r}. Change both in the same "
-        "pull request."
+    assert _resolved_settings(documented_path) == _resolved_settings(shipped_path), (
+        f"Section 10.4 of {TEST_SUITE_PATH.name} declares "
+        f"{_resolved_settings(documented_path)!r} for {name} but the file "
+        f"resolves to {_resolved_settings(shipped_path)!r}. Change both in the "
+        "same pull request."
+    )
+    # Compared as well as the resolved values, so the document cannot keep a
+    # setting the shipped file dropped when coverage would have derived it
+    # anyway -- ``parallel`` being exactly that case.
+    assert _declared_keys(documented_path) == _declared_keys(shipped_path), (
+        f"Section 10.4 of {TEST_SUITE_PATH.name} spells out "
+        f"{_declared_keys(documented_path)!r} for {name} but the file spells "
+        f"out {_declared_keys(shipped_path)!r}."
     )
 
 
@@ -397,7 +552,9 @@ def test_configuration_file_uses_no_option_coverage_does_not_recognise(
         warnings.simplefilter("always", CoverageWarning)
         coverage.Coverage(config_file=str(_config_path(name)))
 
-    unrecognised = [str(w.message) for w in caught if "Unrecognized" in str(w.message)]
+    unrecognised = [
+        str(w.message) for w in caught if UNRECOGNISED_OPTION in str(w.message)
+    ]
     assert not unrecognised, (
         f"coverage.py does not recognise every option in {name}, and ignores "
         f"the ones it does not: {unrecognised}."
@@ -428,7 +585,7 @@ def test_a_mistyped_option_is_warned_about_and_then_ignored(tmp_path: Path) -> N
         warnings.simplefilter("always", CoverageWarning)
         settings = _resolved_settings(mistyped)
 
-    assert any("Unrecognized option" in str(w.message) for w in caught), (
+    assert any(UNRECOGNISED_OPTION in str(w.message) for w in caught), (
         "coverage.py no longer warns about an unknown option, so the "
         "no-warnings case above has stopped being able to fail. "
         f"Warnings seen: {[str(w.message) for w in caught]}"
@@ -456,9 +613,14 @@ def _child_environment(config_path: Path, data_path: Path) -> dict[str, str]:
         A copy of the current environment, cleaned and pointed at those files.
     """
     environment = dict(os.environ)
-    # Inherited from the parent this would silently change the child's run,
-    # which is the one thing these cases measure.
-    environment.pop("PYTEST_ADDOPTS", None)
+    # Inherited from the parent, each of these would silently change the child's
+    # run, which is the one thing these cases measure. The coverage startup
+    # variables matter for a specific arrangement section 10.4 prescribes: once
+    # the subsystem job runs this suite under ``.coveragerc-subprocess``, it
+    # exports them, and the installed ``.pth`` would then auto-start a second,
+    # differently configured coverage inside every child spawned here.
+    for leaked in ("PYTEST_ADDOPTS", *INHERITED_COVERAGE_STARTUP_VARIABLES):
+        environment.pop(leaked, None)
     environment["PYTHONIOENCODING"] = "utf-8"
     # The package is imported from the checkout rather than from an install:
     # ``source_pkgs`` resolves the package by importing it, so the child needs it
@@ -532,7 +694,28 @@ def _report_under(config_name: str, probe: Path, tmp_path: Path) -> dict[str, An
         f"coverage json failed under {config_name}.\n{report.stdout}\n"
         f"{report.stderr}"
     )
-    return json.loads(report_path.read_text(encoding="utf-8"))["files"]
+    return _report_files(report_path)
+
+
+def _report_files(report_path: Path) -> dict[str, Any]:
+    """Read a ``coverage json`` report and return its files, keyed POSIX-style.
+
+    The keys come from ``FileReporter.relative_filename()``, which slices the
+    **native** absolute path -- so on Windows they are separated by backslashes
+    while every expected path in this module is written with forward slashes.
+    The ``omit`` patterns themselves are unaffected (coverage matches either
+    separator), so this is purely about what the assertions compare against, and
+    it matters because section 10.3 schedules the ``subsystem`` marker on Windows
+    as well as Linux and ``pyproject.toml`` documents that marker as portable.
+
+    Args:
+        report_path: The ``coverage json`` output to read.
+
+    Returns:
+        The report's ``files`` mapping with separators normalised.
+    """
+    files = json.loads(report_path.read_text(encoding="utf-8"))["files"]
+    return {key.replace(os.sep, "/"): value for key, value in files.items()}
 
 
 def _write_probe(tmp_path: Path, body: str) -> Path:
@@ -636,9 +819,9 @@ def test_the_subprocess_configuration_captures_a_child_process(
     The worker runs in a child interpreter, and a child started under ``coverage
     run`` is not instrumented by inheritance -- without ``patch = subprocess``
     its lines are simply never recorded, and the observational report for the
-    very modules it was meant to cover reads zero. Measured on coverage 7.16.0:
-    under the base configuration this same parent produces one data file and a
-    report with nothing in it.
+    very modules it was meant to cover reads zero. Measured: under the base
+    configuration this same parent produces one data file and a report with
+    nothing in it.
 
     Both halves are asserted. More than one data file proves the child was
     instrumented at all; a module the child imported and the parent did not,
@@ -649,12 +832,14 @@ def test_the_subprocess_configuration_captures_a_child_process(
     Three environmental facts this case depends on, recorded because each fails
     it for a reason that has nothing to do with the configuration:
 
-    * ``patch = subprocess`` works by writing a ``.pth`` file into a
-      site-packages directory at run time and exporting
-      ``COVERAGE_PROCESS_START``. It therefore needs a **writable**
-      site-packages -- a virtual environment has one; a read-only or
-      system-managed interpreter does not, and this case fails rather than skips
-      there.
+    * ``patch = subprocess`` exports ``COVERAGE_PROCESS_CONFIG``; the ``.pth``
+      that reads it, ``a1_coverage.pth``, ships **in the coverage wheel** and is
+      run by ``site`` at child startup. Nothing is written at run time, so
+      site-packages need not be writable -- but coverage must be *installed*
+      into a site-processed site-packages rather than merely reachable on
+      ``PYTHONPATH``. Measured: an otherwise identical child started with
+      ``-S`` produces one data file instead of two, because ``site`` never runs
+      and the hook never fires.
     * The probe spawns its child with **no explicit** ``env=``, so the child
       inherits the variable coverage exported. Passing a dict built before
       coverage patched the environment would leave the child unmeasured and fail
@@ -662,6 +847,12 @@ def test_the_subprocess_configuration_captures_a_child_process(
     * Under CI this case runs inside a job that is itself measured, so its
       children are nested one level deeper than usual. The nested-child handling
       that makes that safe is what the 7.10.3 floor in section 10.2 buys.
+
+    All three were measured on Linux. Section 10.3 schedules the ``subsystem``
+    marker on Windows too, and 7.10.3 is the floor partly because it fixed
+    *Windows* startup failures in this same feature -- so the platform is known
+    to matter here. Windows behaviour is therefore unproven until the CI epic
+    runs the job there; that is recorded rather than assumed away.
 
     Unlike the omit list, whose breakage is self-revealing, a broken subprocess
     patch is silent until the epic that first publishes an observational L3
@@ -704,7 +895,13 @@ def test_the_subprocess_configuration_captures_a_child_process(
         f"coverage json failed.\n{report.stdout}\n{report.stderr}"
     )
 
-    files = json.loads(report_path.read_text(encoding="utf-8"))["files"]
+    files = _report_files(report_path)
+    for required in (PROBE_REPORT_PATH, UNEXECUTED_REPORT_PATH):
+        assert required in files, (
+            f"{required} is missing from the combined report, so the assertions "
+            f"below would raise KeyError rather than explain themselves. "
+            f"Reported: {sorted(files)}"
+        )
     assert files[PROBE_REPORT_PATH]["summary"]["covered_lines"] > 0, (
         f"{PROBE_REPORT_PATH} ran only in the child and is reported uncovered, "
         "so the child's data never reached the combined report."

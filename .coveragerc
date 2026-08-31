@@ -2,11 +2,15 @@
 # of section 10.4 of `.system_design/TEST_SUITE.md`.
 #
 # Every job selects its configuration by an absolute `COVERAGE_RCFILE` and never
-# by discovery. Discovery walks up from the working directory, and the package
-# tests deliberately run from outside the checkout, where this file would not be
-# found -- the run would then silently fall back to coverage.py's defaults, which
-# is the one failure this file exists to prevent. `COVERAGE_FILE` is set to an
-# absolute path for the same reason.
+# by discovery. Discovery does not search upwards: coverage.py looks only in the
+# directory it is run from, trying `.coveragerc`, `.coveragerc.toml`, `setup.cfg`,
+# `tox.ini` and `pyproject.toml`, and takes the first carrying coverage settings.
+# The package tests deliberately run from outside the checkout, so this file
+# would not be found there -- and an unrelated directory's `setup.cfg` or
+# `pyproject.toml` is a perfectly acceptable answer to that search, which is
+# worse than falling back to defaults. `COVERAGE_FILE` is absolute for the same
+# reason, and note that passing the bare string `.coveragerc` to coverage's API
+# means "no file specified", which makes it read `COVERAGE_RCFILE` instead.
 #
 # Three separate files rather than one `[tool.coverage.*]` table in
 # `pyproject.toml`: coverage.py reads exactly one configuration per run, and the
