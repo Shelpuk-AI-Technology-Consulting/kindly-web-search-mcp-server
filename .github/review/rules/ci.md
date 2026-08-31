@@ -121,13 +121,18 @@ that overrides the child's endpoint and credentials.
 
 ## Runner and caps
 
-- `runs-on: [self-hosted, cap-nano, noble]`. The labels are cumulative and
+- `runs-on: [self-hosted, cap-light, noble]`. The labels are cumulative and
   declare **memory**: `cap-pico` ≥ 900 MB, `cap-nano` ≥ 1.9 GB, `cap-light` ≥ 3.9 GB,
-  `cap-main` ≥ 7.7 GB. Upstream runs this same job on `cap-light` because the Bun
-  and CLI install wants the memory; this repository is much smaller and steps
-  down one tier deliberately. **If a change moves it, the direction and the reason
+  `cap-main` ≥ 7.7 GB. This is the tier upstream uses, because the Bun and CLI
+  install wants the memory. **If a change moves it, the direction and the reason
   both need stating** — and an OOM during the install is what a too-small tier
-  looks like, not a slow review.
+  looks like, not a slow review, so a move DOWN needs a measured peak RSS rather
+  than an argument.
+- **A label is not access.** A runner group is granted per repository, and a job
+  asking for a label no granted machine carries queues **for ever** — no error, no
+  annotation, no timeout. A misspelled capability does exactly the same thing. So
+  an indefinitely queued job is never evidence about the tier on its own; check
+  the grant first.
 - A capability label declares memory and **nothing else**, which is why
   `ci_preflight.sh` probes for `unzip` before the action shells out to it. The
   fleet is not homogeneous. A new job that invokes a tool without a preflight call

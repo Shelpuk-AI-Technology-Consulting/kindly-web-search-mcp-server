@@ -89,8 +89,16 @@ To enable the workflow on this repository:
 
 1. Grant this repository access to the three settings above (organisation
    settings → Secrets and variables → Actions → each item → repository access).
-2. Make sure this repository can use the self-hosted runner group carrying the
-   `cap-nano` and `noble` labels.
+2. Grant this repository a self-hosted **runner group** containing machines that
+   carry the `cap-light` and `noble` labels.
+
+   ⚠️ **This is the step that is easy to miss, because skipping it looks like
+   nothing at all.** A job whose labels no granted machine carries sits `queued`
+   indefinitely: no error, no annotation, no timeout. Measured here on the first
+   run — three jobs queued over fifteen minutes while a GitHub-hosted job on the
+   same pull request finished in 55 seconds, with the fleet busy serving another
+   repository the whole time. A misspelled capability label is indistinguishable
+   from a missing grant, so check the grant before you touch the label.
 3. Open a pull request. The `review` check appears on it.
 4. Once it has run green once, make `review` a required status check on `main`.
 
@@ -118,14 +126,15 @@ a per-attempt table. The two outcomes mean different things:
 One case is worth knowing in advance because it is easy to misdiagnose: **if the
 job starts failing at `Install kitty-bridge and Claude CLI`, that is the runner
 tier, not the settings.** It is reported as `fatal` and points at the `KITTY_*`
-settings, which will all be fine. Move the job from `cap-nano` to `cap-light`.
+settings, which will all be fine. Move the job up a tier — `cap-light` to
+`cap-main`.
 
 ---
 
 ## Changing the review system
 
 `.github/workflows/ci.yml` runs `tests/test_review_scripts.py` on every pull
-request — 492 tests over the selector, the classifier, the notices, the redactor,
+request — 482 tests over the selector, the classifier, the notices, the redactor,
 the schema and the workflow's own wiring. Run them locally the same way:
 
 ```bash

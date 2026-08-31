@@ -221,37 +221,45 @@ jobs:
     # assignment nothing can ever police, and this file is the only record of where the
     # job runs. Change the literal, in a pull request, where it is reviewed.
     #
-    # 🔴 **THIS IS ONE TIER SMALLER THAN THE REFERENCE, AND THAT IS A DELIBERATE,
-    # UNMEASURED CHOICE.** The labels are cumulative and declare MEMORY and nothing
-    # else -- `cap-pico` >= 900 MB, `cap-nano` >= 1.9 GB, `cap-light` >= 3.9 GB,
-    # `cap-main` >= 7.7 GB -- so asking for a smaller capability reaches strictly more
-    # machines, and asking for a larger one is the only way to guarantee the memory.
+    # 🔴 **`cap-light`, WHICH IS THE REFERENCE'S OWN TIER FOR THIS JOB.** The labels
+    # are cumulative and declare MEMORY and nothing else -- `cap-pico` >= 900 MB,
+    # `cap-nano` >= 1.9 GB, `cap-light` >= 3.9 GB, `cap-main` >= 7.7 GB -- so asking for
+    # a smaller capability reaches strictly more machines, and asking for a larger one
+    # is the only way to guarantee the memory.
     #
-    # The reference repository runs this same job on `cap-light`, with the judgement
-    # "installs Bun and the Claude CLI, then spends the rest of its time waiting on the
-    # network; cores buy nothing here, the install wants the memory". That judgement is
-    # about the INSTALL, which is identical here -- the same action, the same Bun, the
-    # same CLI -- so the honest statement is that the reason for `cap-light` has not
-    # gone away; the ask was for the smallest VM that can do the work, and this steps
-    # down one tier towards it.
+    # This job briefly asked for `cap-nano`, to keep the machine as small as the work
+    # allows. It is back at `cap-light` for the reason the reference gives, which is a
+    # claim about the INSTALL and is therefore identical here -- same action, same Bun,
+    # same CLI: "installs Bun and the Claude CLI, then spends the rest of its time
+    # waiting on the network; cores buy nothing here, the install wants the memory."
+    # Nobody has measured this job's peak RSS on either fleet, so `cap-nano` was a guess
+    # in the direction that fails, and `cap-light` is a guess in the direction that
+    # merely costs a slightly larger machine.
     #
-    # ⚠️ **What a too-small tier looks like, so it is not misdiagnosed:** an OOM during
+    # ⚠️ **What a too-small tier looks like, so it is never misdiagnosed:** an OOM during
     # `Install kitty-bridge and Claude CLI`, or the action's own Bun step dying, NOT a
     # slow review. That failure composes into the review path (`continue-on-error`) and
     # is reported as `fatal` -- which sends an operator to check the KITTY_* settings,
-    # all of which will be fine. **If this job starts failing at the install step, move
-    # it to `cap-light` before investigating anything else.**
+    # all of which will be fine. Going DOWN a tier is what re-opens that; do it only
+    # with a measured peak RSS, not with a plausible argument.
     #
-    # ⚠️ `cap-pico` (>= 900 MB) was NOT chosen even though it is smaller still. A Node
-    # or Bun agentic loop over a prompt of this size in under 900 MB is not something
-    # anybody has observed working, and the cost of being wrong is the misdiagnosis
-    # above rather than a clean failure. `cap-nano` is the smaller of the two defensible
-    # answers; `cap-pico` would be a guess.
+    # 🔴 **A LABEL IS NOT ACCESS, AND THE TWO FAIL IDENTICALLY.** Measured on this
+    # repository's first run: three jobs asking for `cap-nano` sat `queued` for over
+    # fifteen minutes with no error, no annotation and no timeout, while a
+    # GitHub-hosted job on the same pull request finished in 55 seconds. The labels
+    # were valid and the fleet was busy serving another repository throughout. The
+    # cause is that a runner GROUP is granted per repository, and this one had none.
+    #
+    # ⚠️ So an indefinite queue here means one of two things and they look the same:
+    # the tier label is misspelled (an unknown capability queues for ever rather than
+    # erroring), or this repository has not been granted a runner group that contains a
+    # machine carrying the label. Check the grant before touching the label --
+    # `.github/review/README.md` has the setup checklist.
     #
     # ⚠️ **This repository is PUBLIC and these runners are self-hosted and shared.** The
     # `if:` below -- same-repository, non-draft -- is therefore a security control, not a
     # convenience. See the note there.
-    runs-on: [self-hosted, cap-nano, noble]
+    runs-on: [self-hosted, cap-light, noble]
     # 🔴 **22 -> 25, and the STEP cap below is deleted (upstream).** This review died at
     # exactly 20m12s against a 20-minute step cap. a sibling repository runs the same
     # model at the same `--effort max` and, at the time, the same turn budget -- 150,
