@@ -95,3 +95,54 @@ mcp-server = "kindly_web_search_mcp_server.server:main"
 mcp-web-search = "kindly_web_search_mcp_server.server:main"
 kindly-web-search = "kindly_web_search_mcp_server.server:main"
 kindly-web-search-mcp-server = "kindly_web_search_mcp_server.cli:main"
+
+# Section 10.5 of `.system_design/TEST_SUITE.md`. That section is the policy and
+# this table is what the runner reads; `tests/test_pytest_configuration.py`
+# asserts they agree in both directions, so a docs-only edit there turns the
+# suite red. Change both in the same PR.
+[tool.pytest.ini_options]
+# Forward-looking: nothing outside `tests/` is collected today either, because
+# pytest's default `norecursedirs` already skips `.github/`. It matters once
+# E3-5 adds `tests/package/`, which §10.3's jobs select and deselect explicitly.
+testpaths = ["tests"]
+# The ini option, NOT `addopts = "--strict-markers"` as earlier drafts of §10.5
+# had it. pytest 9.0.0 through 9.0.3 silently ignore strictness flags that arrive
+# through `addopts` (pytest#14442, fixed in 9.1.0), and `pytest>=9,<10` allows
+# them. Measured across 9.0.0-9.1.1: on every 9.0.x the `addopts` form leaves an
+# unregistered marker passing at exit 0; this form aborts collection at exit 2 on
+# all of them. A marker that is
+# accepted but unregistered is the worst case available here -- the test it
+# labels is excluded from every marker-selected job while still reporting green.
+strict_markers = true
+# Makes an unknown or misspelled ini option a hard error rather than a warning
+# nobody reads. Concretely: without it, an environment missing `pytest-asyncio`
+# degrades `asyncio_mode` to a `PytestConfigWarning` and then fails every async
+# test with "async def functions are not natively supported" -- a symptom three
+# steps removed from the cause. With it, the run stops at
+# `ERROR: Unknown config option: asyncio_mode`.
+strict_config = true
+# §10.1: the project is pure asyncio, so the `asyncio` marker is noise. The
+# existing `unittest.IsolatedAsyncioTestCase` classes are unaffected --
+# pytest-asyncio does not handle unittest classes at all -- so this changes no
+# result today and is what E11's migration lands onto.
+asyncio_mode = "auto"
+# Set explicitly because leaving it unset is not neutral: pytest-asyncio 1.4
+# raises a `PytestDeprecationWarning` during `pytest_configure` -- before the
+# warnings plugin can capture it, so it never reaches the warnings summary --
+# announcing that a future release will flip the async-fixture loop default from
+# "fixture" caching scope to "function". `pytest-asyncio>=1.4,<2` allows that
+# release, and it would land on E11, the step that converts the whole suite.
+# "function" is the announced future default, chosen so the flip is a no-op.
+asyncio_default_fixture_loop_scope = "function"
+# All seven of §10.5. `slow` is registered ahead of its first real user and is
+# currently exercised only as the control case in
+# `tests/test_pytest_configuration.py`; it is not dead.
+markers = [
+    "live: hits the real network; needs KINDLY_RUN_LIVE_TESTS=1",
+    "subsystem: needs a real socket or child process; portable",
+    "chromium: needs a real browser; Linux container only",
+    "package: runs against an installed wheel, not the source tree",
+    "serper: live test requiring SERPER_API_KEY",
+    "extraction: live content-extraction canary; browser, no credential",
+    "slow: over a second",
+]

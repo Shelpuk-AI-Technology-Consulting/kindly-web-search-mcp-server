@@ -1494,8 +1494,10 @@ mean anything. None substitutes for another.
 ```toml
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers"
+strict_markers = true
+strict_config = true
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "live: hits the real network; needs KINDLY_RUN_LIVE_TESTS=1",
     "subsystem: needs a real socket or child process; portable",
@@ -1506,6 +1508,60 @@ markers = [
     "slow: over a second",
 ]
 ```
+
+**This block is machine-checked.** `tests/test_pytest_configuration.py` parses
+it out of this section and fails if it and `pyproject.toml` disagree in either
+direction, so a docs-only edit here turns CI red. Change both in the same PR.
+The guard requires this section to keep its heading and to contain exactly one
+fenced `toml` block. `pyproject.toml` may carry comments the block does not; the
+comparison is between parsed tables, not text.
+
+**`strict_markers`, not `addopts = "--strict-markers"`.** An earlier draft of
+this section used the flag. pytest **9.0.0 through 9.0.3 silently ignore**
+`--strict-markers` and `--strict-config` when they arrive through `addopts`
+([pytest#14442](https://github.com/pytest-dev/pytest/issues/14442), fixed in
+9.1.0), and §10.2's bound is `pytest>=9,<10`, so those releases are installable.
+Measured across 9.0.0, 9.0.1, 9.0.2, 9.0.3, 9.1.0 and 9.1.1: every 9.0.x lets an
+unregistered marker pass at exit 0 under the `addopts` form, while
+`strict_markers = true` aborts collection at exit 2 on all six. The failure the flag exists
+to prevent is precisely a silent one — a marker accepted but unregistered labels
+a test that every marker-selected job then skips, while it still reports green —
+so a spelling that can itself fail silently is the wrong one. The ini options
+were added in pytest 9.0 (#13823) and work across the whole allowed range;
+upstream recommends them when targeting pytest ≥ 9. The same release added a
+`strict = true` umbrella covering `strict_config`, `strict_markers`,
+`strict_parametrization_ids` and `strict_xfail`. It is **not** used here: it
+opts this repository into every strictness option pytest adds in future, which
+upstream itself says to take only on a pinned version. §10.2 deliberately bounds
+rather than pins, so the two options wanted are named explicitly.
+`test_pytest_configuration.py`
+asserts no `--strict*` entry returns to `addopts`, because CI resolves a pytest
+where both spellings work and would not otherwise notice.
+
+**`strict_config` turns a missing plugin into an error rather than a symptom.**
+Without it, an environment lacking `pytest-asyncio` degrades `asyncio_mode` to a
+`PytestConfigWarning` and then fails every async test with `async def functions
+are not natively supported` — a symptom three steps from its cause. With it the
+run stops at `ERROR: Unknown config option: asyncio_mode`.
+
+**`asyncio_default_fixture_loop_scope` is set because unset is not neutral.**
+pytest-asyncio 1.4 raises a `PytestDeprecationWarning` when it is unset,
+announcing that a future release will change the async-fixture event-loop
+default from the `fixture` caching scope to `function`. `pytest-asyncio>=1.4,<2`
+admits that release, and it would land on §10.1's migration, which converts the
+whole suite at once. The warning is raised during `pytest_configure`, before the
+warnings plugin captures, so it never reaches the warnings summary and nobody
+would see it coming. `"function"` is the announced future default, chosen so the
+change is a no-op here.
+
+**Auto mode changes nothing about the existing suite.** pytest-asyncio does not
+handle `unittest` classes, so the `IsolatedAsyncioTestCase` tests are unaffected
+and the counts in §1.1 are unchanged by this block. Its effect is on the plain
+`async def` tests §10.1's migration produces. Measured on pytest 9.1.1: an
+unmarked `async def` test **fails** with `async def functions are not natively
+supported` when the mode is unset — it does not pass silently — so
+`test_pytest_configuration.py` carries one unmarked `async def` case whose
+passing is the observable that auto mode is in effect.
 
 ---
 
