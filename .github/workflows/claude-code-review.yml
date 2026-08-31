@@ -183,9 +183,9 @@ env:
   #
   # ⚠️ That would also defeat the verification step below, which is the reason it
   # is closed here rather than left as a documented hazard: the gate would pass
-  # while the review left through an address nobody configured. The fleet is
-  # self-hosted with a persistent `$HOME`, so the runner's environment is not
-  # ours to assume.
+  # while the review left through an address nobody configured. On a self-hosted
+  # fleet with a persistent `$HOME` -- which is what this reasoning was written
+  # against -- the runner's environment is not ours to assume.
   #
   # An EMPTY value is the correct neutraliser, not an unset one: kitty reads it
   # as `os.environ.get(...).strip()` and falls through to the file when falsy
@@ -319,19 +319,38 @@ jobs:
     # instruction, not merely a wrong verdict. So this stays generous until there is a
     # measured distribution from this repository to replace it with.
     timeout-minutes: 60
-    # 🔴 **Same-repository, non-draft pull requests only, and here that is a SECURITY
-    # CONTROL rather than a convenience.** In the reference repository -- private, with
-    # no outside contributors -- the reasoning was only that a fork receives neither
-    # secrets nor a writable token, so the run would fail confusingly rather than
-    # usefully. That is still true. **This repository is public and these runners are
-    # self-hosted and shared**, so the condition is also what stops an arbitrary
-    # stranger's branch from executing on the fleet.
+    # 🔴 **Same-repository, non-draft pull requests only, and on a PUBLIC repository
+    # that is a SECURITY CONTROL rather than a convenience.** In the reference
+    # repository -- private, with no outside contributors -- the reasoning was only
+    # that a fork receives neither secrets nor a writable token, so the run would fail
+    # confusingly rather than usefully. That is still true, and here it is not the
+    # whole reason.
+    #
+    # GitHub already refuses to pass secrets to a fork-triggered workflow -- the
+    # `GITHUB_TOKEN` is the only exception -- so a stranger's pull request could not
+    # reach the bridge credentials in any case. What this `if:` adds is that such a run
+    # does not START, rather than starting and failing in a way that reads like a
+    # misconfiguration.
+    #
+    # ⚠️ **The runners are GITHUB-HOSTED, and an earlier draft of this block said
+    # self-hosted.** It was wrong from the moment the runner moved, and it survived the
+    # commit that fixed the identical sentence in `.github/review/rules/ci.md` -- the
+    # rule file's runner section was corrected and this parallel block was not. The
+    # automated review caught it here on the very next round. That is the partial-fix
+    # pattern `ci.md` now warns about, demonstrated on this file; when a claim about the
+    # runner changes, `grep -rn 'self-hosted' .github/` before calling it done.
+    #
+    # The distinction is worth keeping rather than deleting, because it changes what
+    # this guard is FOR: on a self-hosted fleet a fork run is arbitrary code on our
+    # machines; on a hosted runner it is secrets and spend. Both justify the guard, and
+    # only the first would justify it as the sole line of defence.
     #
     # ⚠️ Do NOT "fix" an unreviewed fork pull request by switching this to
-    # `pull_request_target` or by dropping the head-repository comparison. Both hand
-    # the fork's code the secrets and the runner. A fork contribution goes unreviewed
-    # by this workflow, on purpose; review it by hand, or push the branch to this
-    # repository first.
+    # `pull_request_target` or by dropping the head-repository comparison.
+    # `pull_request_target` runs in the BASE branch's context WITH secrets, which is the
+    # classic exfiltration vector and is exactly what the paragraph above says GitHub
+    # otherwise prevents. A fork contribution goes unreviewed by this workflow, on
+    # purpose; review it by hand, or push the branch to this repository first.
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository

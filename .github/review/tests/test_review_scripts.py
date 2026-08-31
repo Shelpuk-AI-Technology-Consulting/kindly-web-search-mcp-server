@@ -9364,7 +9364,13 @@ class RetryGateWiringTests(unittest.TestCase):
 
         The binding must be EMPTY, not absent: kitty reads it with `.strip()` and
         falls through to the file when falsy. An unset variable cannot neutralise
-        one the runner already has, and this fleet is self-hosted.
+        one the runner already has -- which is the case on a self-hosted runner
+        with a persistent `$HOME`, the fleet this reasoning was written against.
+
+        ⚠️ This repository runs on a GitHub-hosted runner, fresh per job, so there
+        is nothing pre-seeded for the binding to override. It is asserted anyway:
+        the guarantee should not depend on WHERE the job runs, and a move back to
+        a persistent runner must not silently re-open the hole.
 
         ⚠️ **Asserted against the WORKFLOW-LEVEL block, not as a whole-file
         substring.** A bare `assertIn('KITTY_EGRESS_PROXY: ""', text)` also passes
