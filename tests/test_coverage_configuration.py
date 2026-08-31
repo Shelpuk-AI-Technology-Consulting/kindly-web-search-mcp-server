@@ -19,14 +19,15 @@ table:
   that. Comparing the whole difference, rather than a list of keys someone
   remembered, also means an option added to a shipped file cannot take effect
   unnoticed.
-* **By the keys the file actually declares**, read with :mod:`configparser`.
-  Resolved values alone are not enough, because coverage.py *derives* some of
-  them: ``post_process`` sets ``parallel`` whenever ``patch`` contains
-  ``subprocess``, so ``parallel = true`` could be deleted from
-  ``.coveragerc-subprocess`` and every resolved-value comparison would still
-  pass. That file states in its own comment that the setting is declared rather
-  than inherited so the fact is legible; nothing but a declared-key check can
-  hold it.
+* **By the settings the file actually spells out**, read with
+  :mod:`configparser` -- keys *and* values. Resolved values alone are not
+  enough, because coverage.py *derives* some of them: ``post_process`` sets
+  ``parallel`` whenever ``patch`` contains ``subprocess``. So ``parallel = true``
+  could be deleted from ``.coveragerc-subprocess``, or set to ``false``, and
+  every resolved-value comparison would still pass -- the second leaving the
+  file stating the opposite of the design it implements. That file says in its
+  own comment that the setting is declared rather than inherited so the fact is
+  legible; nothing but this check can hold it.
 
 Neither kind implies the other. A declared key can be a typo coverage ignores; a
 resolved value can be one coverage supplied by itself.
@@ -140,20 +141,45 @@ PROVENANCE_ATTRIBUTES = frozenset(
 # document's blocks do not, so the document comparison cannot pass with it in.
 DERIVED_ATTRIBUTES = frozenset({"_config_contents", "_include", "_omit"})
 
-# The keys each file must *declare*, section by section, as configparser reads
-# them. The counterpart to the resolved-value table above, and the only check
-# that can see a declared setting coverage would have derived anyway.
-EXPECTED_DECLARED_KEYS: dict[str, dict[str, set[str]]] = {
+# What each file must *declare*, section by section and value by value, as
+# configparser reads it. The counterpart to the resolved-value table above, and
+# the only check that can see a setting coverage would have derived anyway.
+#
+# Values, not just key names. Comparing key sets catches the lesser sin -- a line
+# deleted -- and misses the greater one: ``parallel = false`` states the opposite
+# of the design, and because ``post_process`` forces it back to ``True`` the
+# resolved value never moves and the key is still there. Measured: with key sets
+# alone, all nineteen cases passed against that file.
+#
+# Each value is held as its non-empty lines, stripped, so a multi-value option
+# reads as the list it is. Indentation is configparser's business and carries no
+# meaning; ``true`` against ``false`` still differs, which is the point.
+EXPECTED_DECLARED_SETTINGS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
     BASE_CONFIG: {
-        "run": {"source_pkgs", "branch", "relative_files"},
-        "paths": {"source"},
+        "run": {
+            "source_pkgs": (PACKAGE,),
+            "branch": ("true",),
+            "relative_files": ("true",),
+        },
+        "paths": {"source": tuple(EXPECTED_PATHS["source"])},
     },
     GATE_CONFIG: {
-        "run": {"source_pkgs", "branch", "relative_files", "omit"},
-        "paths": {"source"},
+        "run": {
+            "source_pkgs": (PACKAGE,),
+            "branch": ("true",),
+            "relative_files": ("true",),
+            "omit": tuple(EXPECTED_OMIT),
+        },
+        "paths": {"source": tuple(EXPECTED_PATHS["source"])},
     },
     SUBPROCESS_CONFIG: {
-        "run": {"source_pkgs", "branch", "relative_files", "parallel", "patch"},
+        "run": {
+            "source_pkgs": (PACKAGE,),
+            "branch": ("true",),
+            "relative_files": ("true",),
+            "parallel": ("true",),
+            "patch": ("subprocess",),
+        },
     },
 }
 
@@ -168,6 +194,7 @@ MASKING_VARIABLES = (
     "COVERAGE_FILE",
     "COVERAGE_CORE",
     "COVERAGE_DEBUG",
+    "COVERAGE_FORCE_CONFIG",
 )
 
 # Variables the coverage ``.pth`` hook reads to auto-start measurement in any
@@ -279,48 +306,73 @@ def _resolved_settings(config_path: Path) -> dict[str, object]:
     }
 
 
-def _declared_keys(config_path: Path) -> dict[str, set[str]]:
-    """Return the sections and keys a coveragerc literally declares.
+def _declared_settings(config_path: Path) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Return the sections, keys and values a coveragerc literally declares.
 
     Read with :mod:`configparser` rather than through coverage.py, which is the
     one job coverage.py cannot do here: it reports the configuration *after*
     ``post_process``, where ``parallel`` has been set from ``patch`` and a
-    declared key is indistinguishable from a derived one.
+    declared setting is indistinguishable from a derived one.
+
+    ``interpolation=None`` matches how coverage reads its own files. With
+    configparser's default ``BasicInterpolation`` a ``%`` in an omit pattern
+    would raise the moment a value is read -- which is a difference this guard
+    would introduce, not one the shipped configuration has.
+
+    One deliberate strictness: coverage also accepts these settings under a
+    ``[coverage:run]`` heading, which this function would report as a section
+    literally named ``coverage:run`` and so fail. That is fail-closed and
+    intended -- it pins the canonical section shape section 10.4 displays.
 
     Args:
         config_path: The configuration file to read.
 
     Returns:
-        Each section's option names, keyed by section name.
+        Each option's value as its non-empty stripped lines, keyed by section
+        and option name.
     """
-    parser = configparser.ConfigParser()
+    parser = configparser.ConfigParser(interpolation=None)
     parser.read(config_path, encoding="utf-8")
-    return {section: set(parser.options(section)) for section in parser.sections()}
+    return {
+        section: {
+            option: tuple(
+                line.strip()
+                for line in parser.get(section, option, raw=True).splitlines()
+                if line.strip()
+            )
+            for option in parser.options(section)
+        }
+        for section in parser.sections()
+    }
 
 
-@pytest.mark.parametrize("name", sorted(EXPECTED_DECLARED_KEYS))
-def test_configuration_file_declares_the_expected_keys(name: str) -> None:
-    """Assert one shipped coveragerc spells out exactly section 10.4's keys
+@pytest.mark.parametrize("name", sorted(EXPECTED_DECLARED_SETTINGS))
+def test_configuration_file_spells_out_exactly_what_the_design_shows(
+    name: str,
+) -> None:
+    """Assert one shipped coveragerc declares section 10.4's settings verbatim
 
     The companion to the resolved-value case below, and not redundant with it.
     ``parallel`` is the concrete reason: coverage derives it from
-    ``patch = subprocess``, so deleting the line from
-    ``.coveragerc-subprocess`` changes no resolved value and no behaviour --
-    only the file's stated intent that the setting be legible rather than
-    inferred. Nothing but this case can fail on that.
+    ``patch = subprocess``, so both deleting the line from
+    ``.coveragerc-subprocess`` and setting it to ``false`` leave every resolved
+    value untouched. The first loses only the file's stated intent that the
+    setting be legible rather than inferred; the second leaves the file saying
+    the opposite of the design it is supposed to implement. Nothing but this
+    case can fail on either.
 
-    It also catches the mirror image: a key deleted from a file and from section
+    It also catches the mirror image: a setting changed in a file and in section
     10.4 together, which the document comparison cannot see because both sides
     move.
 
     Args:
         name: The configuration file's name at the repository root.
     """
-    declared = _declared_keys(_config_path(name))
+    declared = _declared_settings(_config_path(name))
 
-    assert declared == EXPECTED_DECLARED_KEYS[name], (
+    assert declared == EXPECTED_DECLARED_SETTINGS[name], (
         f"{name} declares {declared!r}, but section 10.4 of "
-        f"{TEST_SUITE_PATH.name} spells out {EXPECTED_DECLARED_KEYS[name]!r}."
+        f"{TEST_SUITE_PATH.name} shows {EXPECTED_DECLARED_SETTINGS[name]!r}."
     )
 
 
@@ -517,20 +569,25 @@ def test_design_document_declares_the_same_configuration(
     documented_path.write_text(_design_document_block(name), encoding="utf-8")
 
     shipped_path = _config_path(name)
+    # Bound rather than recomputed inside the assertions: each call builds two
+    # configuration objects and edits the environment while it does so.
+    documented_resolved = _resolved_settings(documented_path)
+    shipped_resolved = _resolved_settings(shipped_path)
+    documented_declared = _declared_settings(documented_path)
+    shipped_declared = _declared_settings(shipped_path)
 
-    assert _resolved_settings(documented_path) == _resolved_settings(shipped_path), (
+    assert documented_resolved == shipped_resolved, (
         f"Section 10.4 of {TEST_SUITE_PATH.name} declares "
-        f"{_resolved_settings(documented_path)!r} for {name} but the file "
-        f"resolves to {_resolved_settings(shipped_path)!r}. Change both in the "
-        "same pull request."
+        f"{documented_resolved!r} for {name} but the file resolves to "
+        f"{shipped_resolved!r}. Change both in the same pull request."
     )
-    # Compared as well as the resolved values, so the document cannot keep a
-    # setting the shipped file dropped when coverage would have derived it
+    # Compared as well as the resolved values, so the document and the file
+    # cannot agree on a setting coverage would have derived or overridden
     # anyway -- ``parallel`` being exactly that case.
-    assert _declared_keys(documented_path) == _declared_keys(shipped_path), (
+    assert documented_declared == shipped_declared, (
         f"Section 10.4 of {TEST_SUITE_PATH.name} spells out "
-        f"{_declared_keys(documented_path)!r} for {name} but the file spells "
-        f"out {_declared_keys(shipped_path)!r}."
+        f"{documented_declared!r} for {name} but the file spells out "
+        f"{shipped_declared!r}."
     )
 
 
