@@ -311,14 +311,48 @@ async def test_asyncio_auto_mode_awaits_a_plain_async_test() -> None:
     assert asyncio.get_running_loop().is_running()
 
 
+def _section_body(text: str, heading: str) -> str:
+    """Return the lines of one Markdown section, ignoring fenced code blocks.
+
+    Bounded by walking lines and tracking fence state rather than by splitting
+    on a heading pattern. A regex cannot tell a heading from a ``#`` comment at
+    column 0 inside a fence, and this document is full of both -- section 10.4's
+    samples open with ``# tests/conftest.py`` and ``# .coveragerc``, and section
+    10.5's own prose invites a TOML comment inside its block. Splitting on the
+    pattern would truncate the section at that comment, leaving the closing
+    fence outside it and failing with a fence count that points away from the
+    cause.
+
+    Args:
+        text: The whole document.
+        heading: The exact heading line the section starts at.
+
+    Returns:
+        Everything after ``heading`` up to the next heading of level 1-3 that is
+        not inside a fence, or to the end of the document.
+    """
+    lines = text.splitlines()
+    start = lines.index(heading) + 1
+    body: list[str] = []
+    fenced = False
+    for line in lines[start:]:
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and re.match(r"#{1,3} ", line):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
 def _design_document_ini_options() -> dict:
     """Parse section 10.5's TOML block out of ``TEST_SUITE.md``.
 
     The block is read as TOML rather than scraped line by line, so a formatting
     change to the document that preserves its meaning does not fail the
-    comparison. The search is bounded to the section and requires exactly one
-    fenced block inside it: an unbounded search would silently start comparing
-    against some later section's TOML the day one is added.
+    comparison. The search is bounded to the section by :func:`_section_body`
+    and requires exactly one fenced block inside it: an unbounded search would
+    silently start comparing against some later section's TOML the day one is
+    added.
 
     Returns:
         The ``[tool.pytest.ini_options]`` table the design document declares.
@@ -328,15 +362,12 @@ def _design_document_ini_options() -> dict:
             cannot be found.
     """
     text = TEST_SUITE_PATH.read_text(encoding="utf-8")
-    assert DESIGN_SECTION_HEADING in text, (
+    assert DESIGN_SECTION_HEADING in text.splitlines(), (
         f"{TEST_SUITE_PATH.name} no longer contains '{DESIGN_SECTION_HEADING}'. "
         "This guard parses that section; renaming it would silently disable the "
         "check."
     )
-    # Bound the search to this section: everything up to the next heading of the
-    # same or higher level, or end of file if it is the last one.
-    section = text.split(DESIGN_SECTION_HEADING, 1)[1]
-    section = re.split(r"\n#{1,3} ", section, maxsplit=1)[0]
+    section = _section_body(text, DESIGN_SECTION_HEADING)
     blocks = re.findall(r"```toml\n(.*?)```", section, re.DOTALL)
     assert len(blocks) == 1, (
         f"Section 10.5 of {TEST_SUITE_PATH.name} contains {len(blocks)} fenced "
@@ -366,6 +397,56 @@ def test_design_document_declares_the_same_configuration() -> None:
         f"{_design_document_ini_options()!r} but {PYPROJECT_PATH.name} declares "
         f"{_pyproject_ini_options()!r}. Change both in the same pull request."
     )
+
+
+# A miniature document exercising both bounds at once: a ``#`` comment at column
+# 0 inside the fence, which must NOT end the section, and a following heading,
+# which must.
+_SECTION_FIXTURE = """\
+### 10.5 pytest configuration
+
+```toml
+# a comment the section bound must not trip on
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+```
+
+Trailing prose.
+
+## 11. Next section
+
+```toml
+[tool.something.else]
+ignored = true
+```
+"""
+
+
+def test_section_bound_ignores_a_comment_inside_the_fence() -> None:
+    """Assert a ``#`` comment in the block does not truncate the section
+
+    Section 10.5's prose invites comments, and a heading-shaped regex cannot
+    tell one from a heading. Getting this wrong fails the guard with a fence
+    count that points away from the cause, so it is asserted directly.
+    """
+    section = _section_body(_SECTION_FIXTURE, DESIGN_SECTION_HEADING)
+
+    assert "# a comment the section bound must not trip on" in section
+    assert "Trailing prose." in section
+
+
+def test_section_bound_stops_at_the_next_heading() -> None:
+    """Assert the section really is bounded -- the control for the case above
+
+    Without this, :func:`_section_body` could satisfy the previous case by never
+    terminating at all, and the guard would start comparing against whatever
+    TOML a later section grows.
+    """
+    section = _section_body(_SECTION_FIXTURE, DESIGN_SECTION_HEADING)
+
+    assert "## 11. Next section" not in section
+    assert "tool.something.else" not in section
+    assert len(re.findall(r"```toml\n(.*?)```", section, re.DOTALL)) == 1
 
 
 @pytest.mark.subsystem
