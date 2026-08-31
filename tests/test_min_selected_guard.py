@@ -654,8 +654,18 @@ def test_a_collection_error_is_not_rediagnosed_as_under_selection(
     A module that fails to import lowers the selected count, so an unconditional
     guard fires on top of it and the engineer's headline blames a marker
     expression that is innocent. Both halves are asserted: pytest's own exit 2
-    survives, and the guard's message is *absent* -- the second is the part that
-    would regress silently if the arming condition were simplified.
+    survives, and the guard's message is *absent*.
+
+    The arming condition reads ``session.testsfailed``, which is pytest's own
+    counter rather than a documented contract. Measured non-zero at
+    ``pytest_collection_finish`` on **pytest 9.1.1**, the version this was written
+    against; §10.2 bounds the project at ``pytest>=9,<10``, so a minor release
+    could in principle move when it is set. That is not a silent risk: were it to
+    change, the guard would re-fire on the collection error and this case fails on
+    its *first* assertion with ``Expected exit 2 …, got 4`` -- verified by
+    simulating exactly that regression. The version is named here so the engineer
+    who meets that failure after a pytest bump reads it as the deliberate decision
+    it is, rather than as a puzzle.
 
     Args:
         tmp_path: pytest's per-test temporary directory.
