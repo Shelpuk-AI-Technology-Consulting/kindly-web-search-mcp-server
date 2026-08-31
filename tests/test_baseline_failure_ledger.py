@@ -126,7 +126,14 @@ CLEARED_ENVIRONMENT_NAMES = (
 )
 
 # An environment variable name, by shape: upper case with at least one
-# underscore. Every string literal in the tree of this shape is treated as a
+# underscore. Upper case **only**, deliberately. Widening the shape to lower case
+# was measured before being rejected: it admits 139 more literals, of which 137
+# have no upper-case counterpart anywhere in the tree and are ordinary dictionary
+# keys and field names. That would trade a precise check for a 137-entry
+# allow-list nobody maintains -- rot arriving faster than the rot it prevents.
+# The lower-case reads this project does have (``no_proxy``) are covered from the
+# other side instead: :func:`_child_environment` matches upper-cased, so one
+# listed name covers both spellings, and the check below plants both. Every string literal in the tree of this shape is treated as a
 # candidate, rather than only those appearing inside an ``os.environ.get("...")``
 # call. Anchoring on the call form was measured wrong: this repository reads
 # ``CHROME_BIN``, ``CHROME_PATH``, ``BROWSER_EXECUTABLE_PATH`` and ``no_proxy``
@@ -648,6 +655,16 @@ def test_child_environment_drops_every_variable_the_project_reads() -> None:
     finally:
         os.environ.clear()
         os.environ.update(original)
+    # An explicit control for the case that motivated the case-insensitive match.
+    # The scan's shape is upper case only, so `no_proxy` can never arrive through
+    # `names`; naming it here means the one lower-case variable this project
+    # actually reads has a test of its own rather than incidental coverage.
+    assert "no_proxy" not in _child_environment(), (
+        "`no_proxy` survives the sweep. It is read at scrape/nodriver_worker.py "
+        "and scrape/universal_html.py alongside `NO_PROXY`, and the sweep is "
+        "case-insensitive precisely so that listing the upper-case name covers "
+        "both spellings."
+    )
     assert not survivors, (
         "The child run would inherit project environment variables "
         f"{survivors}, so its failing set is steerable from outside. Add each to "
