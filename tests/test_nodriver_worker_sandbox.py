@@ -64,9 +64,17 @@ import nodriver
 
 from kindly_web_search_mcp_server.scrape import nodriver_worker
 
-#: Every environment variable `_fetch_html` and the resolvers it calls consult.
+#: Every environment variable this worker module reads — a deliberate **superset**
+#: of what `_fetch_html` itself consults. Two are read only by the module's own
+#: entry point and never on any path reachable from `_fetch_html`:
+#: ``KINDLY_HTML_TOTAL_TIMEOUT_SECONDS`` (via ``_resolve_worker_timeout_details``)
+#: and ``KINDLY_DIAGNOSTICS`` (via ``_diagnostics_enabled``). They are cleared
+#: anyway because over-clearing errs in the safe direction, and because a future
+#: change that routes either into `_fetch_html` should not quietly make these
+#: cases steerable. Do not read the list as the set `_fetch_html` exercises.
+#:
 #: Cleared before each case so a case declares the whole of its own input. Four
-#: of them are browser paths that CI images and developers commonly export, and
+#: entries are browser paths that CI images and developers commonly export, and
 #: ``KINDLY_USER_AGENT`` is the one whose *absence* costs a real subprocess.
 #:
 #: This is not the whole of the ambient state, and the harness does not pretend
