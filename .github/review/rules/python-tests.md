@@ -38,9 +38,13 @@
   that runs unconditionally, or a unit test that silently becomes a live one
   because a developer had a key exported, is a finding.
 - Same for the browser: a test that launches real Chromium is not a unit test.
-  `test_nodriver_worker_sandbox.py` and `test_worker_launch_args_redaction.py`
-  assert over the *arguments and decisions*, not over a running browser. Keep new
-  tests on that side of the line.
+  `test_nodriver_worker_sandbox.py`, `test_worker_launch_args_redaction.py` and
+  `test_nodriver_worker_launch_resolvers.py` assert over the *arguments and
+  decisions*, not over a running browser. Keep new tests on that side of the
+  line. The last of those is the pattern to copy: it calls the resolvers
+  directly and pins every ambient input they read — the environment variables,
+  `os.geteuid` and `shutil.which` — so a flag decision costs no browser and no
+  patched `sys.modules`.
 
 ## The guard tests — treat these as load-bearing
 
