@@ -29,11 +29,19 @@ On the environment above: **11 failed, 169 passed, 3 skipped, 9 subtests passed.
 | 3 of 18 in `test_universal_html_loader.py` | `AttributeError: '_FakeProc' object has no attribute 'stdout'` | `fetch_html_via_nodriver` now streams `proc.stdout`; the fake process never grew one |
 | 1 in `test_server.py` | `AssertionError: 3 != 1` | patches `server.os.name` to assert a Windows concurrency cap removed from `_resolve_web_search_max_concurrency` |
 
+**This section is an As-Is record of the defect as it stood at `3af0563`, and
+is not maintained as the repairs land.** It describes eight stale callers and
+twelve failures because that is what was there; `BASELINE_FAILURES.md` is the
+current state, and it is the one with a guard behind it. Read the counts here as
+history.
+
 **The count is platform-dependent and Windows reports the smaller number.**
-`test_nodriver_worker_sandbox.py` contains **eight** stale `_fetch_html` callers.
-The eighth, `test_forces_sandbox_off_when_running_as_root`, skips on Windows
-because `os.geteuid` does not exist there (`test_nodriver_worker_sandbox.py:199`),
-so POSIX should show **12** failures.
+`test_nodriver_worker_sandbox.py` contained **eight** stale `_fetch_html`
+callers. The eighth, `test_forces_sandbox_off_when_running_as_root`, skipped on
+Windows because `os.geteuid` does not exist there, so POSIX should show **12**
+failures. (An earlier draft cited that test's line number; the citation was
+struck when E1-2 deleted the test, since a line number outlives the thing it
+points at and then points at something else.)
 
 **Measured, and it does.** On Ubuntu 24.04.4 LTS · CPython 3.13.15 · `pytest`
 9.1.1, repo at `3af0563`: **12 failed, 303 passed, 2 skipped, 9 subtests
@@ -142,9 +150,24 @@ These are **deterministic but not pure**: `_resolve_sandbox_enabled` reads
 probes `PATH` via `shutil.which`. Testing them therefore means controlling
 ambient state explicitly — `monkeypatch.setenv`/`delenv` for the variables,
 `monkeypatch.setattr(shutil, "which", …)` for PATH probing, and
-`monkeypatch.setattr(os, "geteuid", …)` for identity, with the `hasattr` branch
-covered by deleting the attribute. `test_worker_launch_args_redaction.py` is the
-working precedent for the style.
+`monkeypatch.setattr(os, "geteuid", …)` for identity, and deleting the attribute
+for the platform that has no `os.geteuid`. Pin `shutil.which` even in the cases
+that never reach it: an environment-variable case that leaves the real lookup in
+place is a case whose result depends on whether the developer has Chromium
+installed.
+
+**The `hasattr(os, "geteuid")` guard is not a testable branch.** Deleting the
+attribute exercises the *condition*, but the call sits inside a
+`try: … except Exception: pass`, so removing the guard makes the bare call raise
+`AttributeError`, which is swallowed, and the function returns the identical
+answer for every input. Measured. §3.2's mutation runs will report it as a
+permanently surviving mutant; it is equivalent, not a hole, and no test should
+be written for it.
+
+`test_worker_launch_args_redaction.py` is the working precedent for the style,
+and `test_nodriver_worker_launch_resolvers.py` is E1-2's realisation of it —
+four resolvers, every ambient input pinned, no browser and no patched
+`sys.modules`.
 
 Only **flag and default resolution** moves here. Retry and cleanup orchestration
 stays at L3 (§5.2).
@@ -360,9 +383,13 @@ stderr does not crash the parent; a non-zero exit surfaces a readable error.
 **Orchestration**, preserved from the stale sandbox tests: a retryable connect
 error is retried up to the configured attempts; each failed attempt is
 terminated before the next; a non-retryable error is not retried; the profile
-directory is cleaned up with `ignore_cleanup_errors`. These use narrow doubles
-around `_fetch_html`, built from the real interface (autospec) so a signature
-change fails loudly.
+directory is cleaned up with `ignore_cleanup_errors`; and a missing browser
+executable surfaces the install and `KINDLY_BROWSER_EXECUTABLE_PATH` guidance
+rather than an error from Chromium. That last one is here rather than at L1
+because the resolver's contribution is only `None` — the translation into
+actionable advice is `_fetch_html`'s, and it is the sole guidance a user gets
+when no browser is installed. These use narrow doubles around `_fetch_html`,
+built from the real interface (autospec) so a signature change fails loudly.
 
 **Autospec for callables, a Protocol for the process object.** Autospec validates
 call signatures, which is exactly what the eight stale tests needed and did not

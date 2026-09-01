@@ -26,9 +26,41 @@ those three outcomes separately. This is the direction that will actually be
 tripped: a repair step rewriting eight stale tests can lose one by accident far
 more easily than it can invent a new failure.
 
+**The one exception, and why it is one: a relocated claim.** E1-2 does not
+repair its five ids in place, because the layer they sit at is the defect. They
+asserted flag and default resolution by driving `_fetch_html`, so each id left
+by deletion, and the guard cannot see the difference between that and a claim
+quietly dropped — a deletion is only visible to it while the id is still listed
+here, which it is not once the same change removes it. What replaces them is
+therefore recorded rather than inferred:
+
+| Id deleted from this ledger | Claim, now asserted directly against |
+|---|---|
+| `test_disables_sandbox_by_default` | `_resolve_sandbox_enabled` — unset is off |
+| `test_allows_enabling_sandbox_via_env` | `_resolve_sandbox_enabled` — every affirmative spelling |
+| `test_forces_sandbox_off_when_running_as_root` | `_resolve_sandbox_enabled` with a patched euid, and `_build_chromium_launch_args` for `--no-sandbox` |
+| `test_resolves_browser_executable_from_path` | `_resolve_browser_executable_path` with a patched `shutil.which` |
+| `test_errors_when_no_browser_found` | `_resolve_browser_executable_path` — nothing found resolves to `None`, which is what `_fetch_html` turns into the error |
+
+`tests/test_nodriver_worker_launch_resolvers.py` holds all five, and covers each
+against mutation of the branch it names. Relocation is not a licence: an id
+leaving this ledger without either a passing run or a row in a table like this
+one is a dropped claim, whatever the pull request calls it.
+
+E1-2 evidenced the table by hand, running the guard in the intermediate state —
+tests deleted, ledger not yet drained — so that it named those five ids as *no
+longer collected* and named nothing else. That is a real proof and it is also a
+one-off: nothing re-runs it. E1-3 and E1-4 rewrite their tests rather than
+relocate them, so their ids change too and they hit the same wall. **Whichever
+of them lands first should make this table machine-readable** — a fenced block
+of `<deleted id> -> <replacement id>` — and assert that every replacement is in
+the child run's *collected* set and absent from its *failed* set. The guard
+already holds both sets; the cost is one assertion, and it converts this
+section from a promise into a check.
+
 Adding an id here is not a way to make a new failure acceptable. A new red test
-is a regression; this ledger names the pre-existing twelve, and a change that
-grows it needs a reason stated in its pull request.
+is a regression; this ledger names what is left of the pre-existing twelve, and
+a change that grows it needs a reason stated in its pull request.
 
 **The guard outlives the milestone.** Once drained, it is the cheapest available
 assertion that the suite is green — an empty ledger compared against an empty
@@ -41,22 +73,46 @@ watching them.
 
 `tests/test_baseline_failure_ledger.py` asserts **the set of failing node ids**
 for the platform it is running on, and, on every platform, that each block is
-sorted, free of duplicates, consistent with the failure count on its **Result**
-line, and different from the other platform's block only in the ways the
-difference section below explains.
+sorted, free of duplicates, consistent with the still-failing count on its
+**Remaining** line, and different from the other platform's block only in the
+ways the difference section below explains.
 
-It deliberately does **not** assert the passing, skipped or subtest counts. Those
+Each platform section therefore carries **two** summary lines, and the
+distinction between them is the point:
+
+- **Result** is the measurement. It records what the run named on the
+  **Measured** line above it actually produced, and **it is never edited
+  again** — not its failure count, not its passing count, not anything. A
+  measurement that gets edited is no longer a measurement.
+- **Remaining** is the bookkeeping. It states how many ids the block below still
+  holds, it is maintained by every repair, and it is the number the guard
+  asserts against the length of the block.
+
+The first version of this document had only the **Result** line and asserted its
+failure count. The reasoning was that a number read off the recorded run cannot
+be quietly edited to match the list. The reasoning was right; the placement was
+wrong. A repair deletes ids, so the count has to move, and moving it in place
+would have produced `7 failed, 303 passed, 2 skipped` under a **Measured** line
+naming a commit where no such run ever happened — three real figures and one
+arithmetic edit, indistinguishable on the page. `TEST_SUITE.md` §1.1 states the
+rule that forbids it: baselines are quoted from real runs, or not quoted. The
+redundancy given up is small, because the live comparison checks the block
+itself against a real run, which is stronger than any count.
+
+Nothing asserts the passing, skipped or subtest counts, on either line. Those
 move whenever any step adds a test, so asserting them would turn every ordinary
 test-adding pull request red for a reason unrelated to what it changed. **They
-are frozen to the commit named on each Result line and are not expected to match
-a later run** — this very change adds tests, so the first run after it merges
-already reports a higher passing count than the figures below. That is correct
-and is not to be "fixed".
+are frozen to the commit named on each Measured line and are not expected to
+match a later run.** Two consequences follow that are easy to misread as errors:
+a later run reports a higher passing count than the figures below, and — once a
+repair removes a test that used to *skip* on a platform — the frozen skip count
+is stale by that test. Both are correct, and neither is to be "fixed" by editing
+a measurement.
 
-The failure count *is* asserted, against the length of the block. The two agree
-only while no test fails more than once; a test whose subtests fail several times
-counts once here and several times in pytest's own total, and a ledger recording
-such a run must say so on the Result line.
+The **Remaining** count and the block agree only while no test fails more than
+once; a test whose subtests fail several times counts once here and several
+times in pytest's own total, and a ledger recording such a run must say so on
+the Result line.
 
 On a platform with no section here — macOS, say — the live comparison **skips**
 with a stated reason. The ledger claims nothing about a platform nobody measured,
@@ -109,8 +165,11 @@ read through a *loop variable* over a tuple of literals, and others through
 scan over-collects instead — the safe direction, since a false positive costs one
 allow-list entry while a false negative costs a silently steerable baseline. Two
 of those browser-path variables steer `_resolve_browser_executable_path`, whose
-tests are two of the twelve ids below, so the gap would have become a real
-divergence the moment those repairs landed on a machine with `CHROME_BIN` set.
+tests were two of the twelve ids this ledger opened with, so the gap would have
+become a real divergence the moment those repairs landed on a machine with
+`CHROME_BIN` set. Those two are now repaired, and their replacements clear all
+four browser-path variables themselves rather than relying on this sweep — the
+sweep protects the child run, not a test that calls a resolver in-process.
 
 The results are read from a plugin (`tests/_baseline_probe.py`), not from
 pytest's short summary. On pytest 9.1.1 a failing `unittest` subtest prints a
@@ -120,7 +179,7 @@ an empty failing set on a red suite, and two of this repository's three
 `subTest` sites are in `tests/test_universal_html_loader.py`, one of the files
 this ledger tracks.
 
-## What the twelve are
+## What the remaining seven are
 
 Grouped by cause, so a reviewer can tell which repair step owns which id. The
 grouping is by module rather than per id, because the blocks are sorted and so
@@ -129,22 +188,36 @@ from it.
 
 | Module | Ids | Cause | Repaired by |
 |---|---|---|---|
-| `test_nodriver_worker_sandbox.py` | 8 | `_fetch_html` grew five required keyword-only arguments; the callers were never updated | E1-2 (flags and defaults to L1), then E1-3 (retry and cleanup) |
+| `test_nodriver_worker_sandbox.py` | 3 | `_fetch_html` grew five required keyword-only arguments; the callers were never updated | E1-3 (retry and cleanup). Its other five ids were the flag-and-default half and left with E1-2 |
 | `test_universal_html_loader.py` | 3 | `fetch_html_via_nodriver` streams `proc.stdout`; `_FakeProc` never grew one | E1-4 |
 | `test_server.py` | 1 | asserts a Windows concurrency cap that `_resolve_web_search_max_concurrency` no longer has | E1-5 |
 
 ## Why the two platforms differ
 
-`test_forces_sandbox_off_when_running_as_root` skips on Windows, where
-`os.geteuid` does not exist (`test_nodriver_worker_sandbox.py:199`), so it can
-fail only on POSIX. That is the whole of the difference; every other id fails on
-both. The guard asserts this block against the actual difference between the two
-blocks above, which is what catches a repair that drains one platform and
-forgets the other — there is no Windows lane in CI until a later workstream, so
-nothing else would.
+They no longer do. `test_forces_sandbox_off_when_running_as_root` was the whole
+of the difference: it skipped on Windows, where `os.geteuid` does not exist, so
+it could fail only on POSIX. It left with E1-2, and the claim it made is now
+asserted against `_resolve_sandbox_enabled` with the euid supplied by the test
+rather than by the runner — which is why the replacement runs, and fails when
+the override is removed, on both platforms alike.
+
+The section stays, with an empty block, rather than being deleted. The empty
+block is the assertion that the two platform blocks are now identical, and it is
+the only check that runs everywhere: only one platform's live comparison can
+execute on any one machine, and there is no Windows lane in CI until a later
+workstream, so a repair that drains Linux and forgets Windows would otherwise
+pass everything that actually runs.
+
+**It is a weaker check than the one it replaces, and knowingly so.** While the
+blocks differed, this section pinned a verified Windows fact. Empty, it says
+only that the two blocks match — which two identically *wrong* blocks also
+satisfy. Combined with the Windows section being unmeasurable until the CI
+epic's Windows lane exists, that means the Windows block is now asserted by
+nothing that runs. E1-6 must not read "0 failed on both platforms" off this
+document: the Linux half is checked against a real run, the Windows half is a
+claim awaiting its lane.
 
 ```text
-linux: tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_forces_sandbox_off_when_running_as_root
 ```
 
 ## Linux
@@ -153,17 +226,17 @@ linux: tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_fo
   Linux 6.8.0-138 · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 12 failed, 303 passed, 2 skipped, 9 subtests passed
+- **Remaining:** 7 failed
 
-This is the figure §1.1 predicted from source and labelled unmeasured. It is now
-measured, and it matches: twelve, being the eight stale `_fetch_html` callers,
+This is the figure §1.1 predicted from source and labelled unmeasured. It was
+measured, and it matched: twelve, being the eight stale `_fetch_html` callers,
 the three stale loader tests and the one obsolete Windows concurrency test.
 
+Five have since left with E1-2, the flag-and-default half of the eight — hence
+seven remaining, listed below. The **Result** line keeps saying twelve because
+that is what the run said.
+
 ```text
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_allows_enabling_sandbox_via_env
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_disables_sandbox_by_default
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_errors_when_no_browser_found
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_forces_sandbox_off_when_running_as_root
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_resolves_browser_executable_from_path
 tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_and_terminates_on_devtools_timeout
 tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_on_failed_to_connect_to_browser
 tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_uses_ignore_cleanup_errors_for_profile_dir
@@ -179,6 +252,7 @@ tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_sp
   (10.0.26100) · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 11 failed, 303 passed, 3 skipped, 9 subtests passed
+- **Remaining:** 7 failed
 
 Measured on a GitHub Actions `windows-latest` runner, from a temporary workflow
 on a branch of its own that was deleted once the numbers were recorded. It
@@ -186,20 +260,23 @@ touched neither `ci.yml` nor any of the workflow regions §1.3 serialises, and i
 is not the Windows CI lane — that arrives with the CI epic. It was an instrument,
 used once.
 
-The count confirms §1.1's prediction rather than merely repeating it: eleven, and
-the eleven ids below are the Linux twelve minus the root-detection case, which
-Windows skips. The two runs also reconcile arithmetically — 303 passed on both,
-with the twelfth test counting as a failure on Linux and as the third skip here.
+The count confirmed §1.1's prediction rather than merely repeating it: eleven,
+being the Linux twelve minus the root-detection case, which Windows skipped. The
+two runs also reconciled arithmetically — 303 passed on both, with the twelfth
+test counting as a failure on Linux and as the third skip here. At the time of
+that run the **11 failed** total equalled the number of ids listed, which is the
+check worth making on any recorded run: a larger total than the list would mean
+a test failed more than once, through subtests the summary reports under a
+different word.
 
-The **11 failed** total equals the number of ids listed, which is the check worth
-making on any recorded run: a larger total than the list would mean a test failed
-more than once, through subtests the summary reports under a different word.
+Four of those eleven left with E1-2, hence seven remaining. **The frozen
+`3 skipped` is now stale by one:** the third skip *was*
+`test_forces_sandbox_off_when_running_as_root`, which E1-2 deleted. It is left
+as measured, because editing a measurement to keep it plausible is the failure
+mode the two-line split exists to prevent. There is no Windows lane in CI until
+the CI epic, so this section cannot be re-measured here.
 
 ```text
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_allows_enabling_sandbox_via_env
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_disables_sandbox_by_default
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_errors_when_no_browser_found
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_resolves_browser_executable_from_path
 tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_and_terminates_on_devtools_timeout
 tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_on_failed_to_connect_to_browser
 tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_uses_ignore_cleanup_errors_for_profile_dir

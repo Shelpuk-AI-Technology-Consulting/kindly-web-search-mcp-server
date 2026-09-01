@@ -29,7 +29,7 @@ echoes the launch.
 ## The sandbox
 
 `_resolve_sandbox_enabled` reads `KINDLY_NODRIVER_SANDBOX`, and `.env.example`
-ships it as `0`. `tests/test_nodriver_worker_sandbox.py` covers it.
+ships it as `0`. `tests/test_nodriver_worker_launch_resolvers.py` covers it.
 
 - **Running Chromium with `--no-sandbox` on untrusted pages is a real exposure**,
   and this server's whole job is loading pages chosen by a search engine. The
@@ -123,8 +123,18 @@ Markdown.
 ## Tests
 
 `test_universal_html_loader.py`, `test_nodriver_worker_sandbox.py`,
-`test_worker_launch_args_redaction.py`, `test_content_resolver_universal_fallback.py`.
+`test_nodriver_worker_launch_resolvers.py`, `test_worker_launch_args_redaction.py`,
+`test_content_resolver_universal_fallback.py`.
 These files are large and hard to test end to end — which raises rather than
 lowers the bar for testing the *decisions*: which flags are built, what gets
-redacted, what is retried, what is bounded. A change to any of those four with no
+redacted, what is retried, what is bounded. A change to any of those five with no
 test is a finding.
+
+The split between the first two is deliberate and worth keeping. Flag and
+default resolution — sandbox, browser executable, retry attempts, the Chromium
+command line — belongs in `test_nodriver_worker_launch_resolvers.py`, against
+the resolvers directly. `test_nodriver_worker_sandbox.py` keeps only what needs
+`_fetch_html` itself: retry, termination and profile cleanup. A new flag
+assertion added to the second file, or a browser started to check a boolean, is
+a finding — routing flag assertions through `_fetch_html` is what let a
+signature change silently disable eight tests at once.
