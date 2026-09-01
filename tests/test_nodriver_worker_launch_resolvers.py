@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -66,7 +67,7 @@ PROBED_BROWSER_NAMES = (
 )
 
 
-def _which_returning(found: dict[str, str]):
+def _which_returning(found: dict[str, str]) -> Callable[..., str | None]:
     """Build a :func:`shutil.which` stand-in that resolves only known names.
 
     Args:
@@ -148,6 +149,17 @@ def test_sandbox_is_disabled_by_a_negative_value(
     monkeypatch: pytest.MonkeyPatch, raw: str
 ) -> None:
     """Disable the sandbox for every accepted negative spelling
+
+    These cases cannot be made to fail by any mutation of the negative tuple,
+    and the reason is structural rather than a weakness here: the resolver's
+    fallthrough returns ``False`` too, so no input distinguishes "recognised as
+    off" from "unrecognised, defaulted to off". Deleting ``"off"``, ``"no"`` or
+    the whole tuple leaves every case in this module green — measured. The
+    branch at that line is therefore dead code today, and a mutation report will
+    say so; it is left in place because it stops being dead the day the default
+    flips, and these cases start discriminating at the same moment. They are
+    kept for that reason and as a record of which spellings are meant to be
+    accepted.
 
     Args:
         monkeypatch: pytest fixture used to scope the environment change.
@@ -238,12 +250,19 @@ def test_sandbox_request_is_honoured_when_geteuid_raises(
 ) -> None:
     """Fall through to the variable when the identity lookup itself fails
 
+    The stub raises ``RuntimeError`` rather than the ``OSError`` an identity
+    lookup would plausibly produce, deliberately: the resolver catches bare
+    ``Exception``, and only a non-``OSError`` case pins that breadth. It is the
+    premise the neighbouring note about the ``hasattr`` guard rests on — narrow
+    the catch and that guard stops being redundant — so it needs a case rather
+    than a reader's goodwill.
+
     Args:
         monkeypatch: pytest fixture used to scope the identity and environment
             changes.
     """
     def _raise() -> int:
-        raise OSError("identity unavailable")
+        raise RuntimeError("identity unavailable")
 
     monkeypatch.setattr(os, "geteuid", _raise, raising=False)
     monkeypatch.setenv("KINDLY_NODRIVER_SANDBOX", "1")
@@ -460,6 +479,13 @@ def test_retry_attempts_accept_a_value_inside_the_range(
 ) -> None:
     """Honour any value the clamp leaves untouched
 
+    The ``"  2  "`` case does not pin the resolver's ``.strip()``, and cannot:
+    :func:`int` tolerates surrounding whitespace, and an all-whitespace value
+    raises :class:`ValueError` into the same fallback the stripped empty string
+    reaches. Removing the ``.strip()`` is an equivalent mutation — measured. The
+    case is here because the resolver's *contract* accepts a padded value, which
+    is worth stating whether or not one line of it is redundant.
+
     Args:
         monkeypatch: pytest fixture used to scope the environment change.
         raw: The raw ``KINDLY_NODRIVER_RETRY_ATTEMPTS`` value under test.
@@ -519,26 +545,42 @@ def test_retry_attempts_are_clamped_down_to_five(
 # --------------------------------------------------------------------------
 
 
-def _launch_args(**overrides: object) -> list[str]:
+def _launch_args(
+    *,
+    base_browser_args: list[str] | None = None,
+    user_data_dir: str = "/tmp/profile",
+    user_agent: str = "UA",
+    host: str = "127.0.0.1",
+    port: int = 9222,
+    sandbox_enabled: bool = False,
+) -> list[str]:
     """Build a launch-argument list from a fixed baseline.
 
+    The parameters are spelled out rather than collected into ``**overrides``
+    and splatted. A splat needs a ``dict[str, object]``, which needs a
+    ``type: ignore`` on the call, which silences the type checker on exactly the
+    signature drift that disabled the eight tests this module replaces. Writing
+    them out costs six lines and keeps the call checkable.
+
     Args:
-        **overrides: Keyword arguments replacing the baseline's defaults, so a
-            case states only the input it varies.
+        base_browser_args: Arguments the caller supplies; defaults to none.
+        user_data_dir: The isolated profile directory.
+        user_agent: The user agent to advertise.
+        host: The DevTools bind host.
+        port: The DevTools port.
+        sandbox_enabled: Whether the Chromium sandbox is enabled.
 
     Returns:
         The generated Chromium command-line arguments.
     """
-    kwargs: dict[str, object] = {
-        "base_browser_args": [],
-        "user_data_dir": "/tmp/profile",
-        "user_agent": "UA",
-        "host": "127.0.0.1",
-        "port": 9222,
-        "sandbox_enabled": False,
-    }
-    kwargs.update(overrides)
-    return _build_chromium_launch_args(**kwargs)  # type: ignore[arg-type]
+    return _build_chromium_launch_args(
+        base_browser_args=[] if base_browser_args is None else base_browser_args,
+        user_data_dir=user_data_dir,
+        user_agent=user_agent,
+        host=host,
+        port=port,
+        sandbox_enabled=sandbox_enabled,
+    )
 
 
 def test_no_sandbox_is_passed_when_the_sandbox_is_disabled() -> None:
@@ -577,12 +619,27 @@ def test_the_user_agent_is_passed_through() -> None:
     )
 
 
-def test_headless_and_shared_memory_flags_are_always_present() -> None:
-    """Keep the flags that make a headless container run work at all"""
+def test_the_unconditional_flags_are_always_present() -> None:
+    """Keep every flag the builder emits regardless of its inputs
+
+    The full constant set, not a sample. Two of these earn the assertion twice
+    over: ``--headless=new`` and ``--disable-dev-shm-usage`` are what make a run
+    inside a container work at all, and ``--disable-logging`` is the flag the
+    de-duplication case below uses as its probe — a premise that was unpinned
+    until this case named it.
+    """
     args = _launch_args()
 
-    assert "--headless=new" in args
-    assert "--disable-dev-shm-usage" in args
+    for flag in (
+        "--headless=new",
+        "--window-size=1920,1080",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=AutomationControlled",
+        "--disable-logging",
+        "--log-level=3",
+    ):
+        assert flag in args, f"{flag} is no longer emitted unconditionally"
 
 
 def test_no_proxy_flags_are_emitted_when_the_proxy_is_not_configured() -> None:
