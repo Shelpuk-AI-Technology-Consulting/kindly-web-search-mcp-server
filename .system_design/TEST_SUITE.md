@@ -398,9 +398,43 @@ have. It does *not* declare instance attributes: `create_autospec` on
 (§8A step 3), so the process double is pinned by a Protocol instead. Use each for
 the failure it actually catches.
 
+**The Protocol half applies to the lifecycle group, not the orchestration one.**
+Only the lifecycle tests *consume* a process — they read its streams and its
+exit status. The orchestration tests pass it through: `_fetch_html` holds the
+object and hands it to `_terminate_process` and `_wait_for_devtools_ready`,
+both of which those tests double, so nothing reads an attribute off it. E1-3
+therefore uses a plain identifiable stub and E2-1 owns the typed definition, in
+`scrape/types.py`, in production. That ordering is deliberate: a Protocol
+declared in a test module now would be the second definition of a shape E2-1
+exists to give exactly one, which is the drift it is there to prevent.
+
 These complement the L1 flag tests of §3.1 — a fixture child cannot assert which
 Chromium flags were chosen, and a resolver test cannot assert a process tree
 died.
+
+**Open: which job runs the orchestration group.** §9 routes "Worker
+retry/termination orchestration" to the `subsystem` job, but §10.5 registers
+that marker as *"needs a real socket or child process"* — and orchestration
+tests written correctly need neither. E1-3 built them with every collaborator
+doubled: no socket, no child, ~1 s for the module. Left **unmarked** they fall
+into the `fast` job instead.
+
+That is not only a routing question. `.coveragerc-gate` omits
+`scrape/nodriver_worker.py`, and §10.4's control 1 requires every omitted module
+to show non-zero coverage in the **observational L3 report**, which the
+`subsystem` and `chromium` jobs produce and `fast` does not. So an unmarked
+orchestration group leaves that module's only evidence of being exercised in a
+report nothing collects.
+
+Three ways out, for the CI workstream to choose between rather than for a
+repair step to settle by hand: widen the `subsystem` description to cover
+"drives a subsystem's orchestration, with or without real infrastructure"; add a
+distinct marker; or have control 1 read the `fast` report too. E1-3 deliberately
+changed nothing here — the marker list is a contract guarded by
+`tests/test_pytest_configuration.py` against this document, the control that
+depends on it does not exist yet, and widening a registered meaning on
+speculation is the wrong direction. Resolve it with E4-1, whose job definitions
+force the answer anyway.
 
 ### 5.3 Chromium-specific — Linux container
 
@@ -413,7 +447,7 @@ Plus one real fetch through `_fetch_html` against a locally served page.
 
 ### 5.4 Anti-flake and cleanup requirements
 
-Every test in §5.2 and §5.3 must:
+Every test in §5.2 and §5.3 that starts something real must:
 
 - Use a **readiness handshake**, never a sleep — wait for a known line or an
   accepting port, with a timeout.
@@ -424,6 +458,19 @@ Every test in §5.2 and §5.3 must:
   for processes named `chrome`, which is vulnerable to PID reuse and would kill a
   developer's own browser.
 - Capture and attach child stdout/stderr on failure.
+
+**Four of those five do not bind a fully-doubled test**, and saying so is not a
+loophole — it is what stops the list reading as ignored. A test that starts no
+process has no endpoint to hand-shake with, no port to allocate, no pid to reap
+and no child output to capture. The **per-test timeout does still bind**, and
+harder than elsewhere: the orchestration group drives a retry loop containing
+sleeps, so an unbounded call hangs the suite instead of failing.
+
+A wall-clock bound is necessary there and not sufficient. Measured in E1-3: with
+the loop mutated to spin, a 10 s bound fired and the test still took 47 s to
+report, because mock doubles record every call and a zero-backoff loop records
+millions. Bound the *work* as well as the clock — cap the number of attempts a
+double will serve, and fail with a sentence naming the loop.
 
 ---
 
@@ -807,7 +854,7 @@ The **Today** column describes *test coverage*, not implementation status.
 | MCP tool schema stability | gap | L2 | `fast` | |
 | Parent ⇄ worker frame format | gap | L2 | `fast` | |
 | Worker lifecycle and cleanup | gap — stale | L3 portable | `subsystem` | |
-| Worker retry/termination orchestration | gap — stale | L3 portable | `subsystem` | |
+| Worker retry/termination orchestration | covered — unmarked, see §5.2 | L3 portable | `subsystem` (open) | |
 | ChromiumPool | gap — no tests | L3 Chromium | `chromium` | |
 | CLI entrypoints and `--` forwarding | covered | L1 | `fast` | |
 | Wheel build, install, console entrypoints | gap | L4 | `package` | |
