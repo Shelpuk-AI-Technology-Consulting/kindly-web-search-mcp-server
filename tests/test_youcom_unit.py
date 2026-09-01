@@ -241,6 +241,52 @@ class TestYoucomSections(unittest.TestCase):
 
         self.assertIn("3", str(caught.exception))
 
+    def test_returns_empty_when_only_unparsed_sections_carry_entries(self) -> None:
+        """A zero-hit answer stays a zero-hit answer beside an unread section
+
+        `results` may carry sections this provider does not read -- You.com
+        returns `news` only on news intent, and the surface can grow others. The
+        schema-mismatch guard must count only the sections actually parsed;
+        counting every list turns a legitimate "no web matches" response into a
+        hard error the moment an unread section appears next to it.
+        """
+        results = self._search(
+            {
+                "results": {
+                    "web": [],
+                    "images": [{"src": "https://example.org/a.png"}],
+                }
+            }
+        )
+
+        self.assertEqual(results, [])
+
+    def test_raises_when_a_parsed_section_is_entirely_unusable(self) -> None:
+        """The mismatch guard still fires for the sections that are read"""
+        from kindly_web_search_mcp_server.search.youcom import YoucomError
+
+        with self.assertRaises(YoucomError):
+            self._search(
+                {
+                    "results": {
+                        "web": [{"title": "No link"}],
+                        "images": [{"src": "https://example.org/a.png"}],
+                    }
+                }
+            )
+
+    def test_clamps_count_to_the_documented_maximum(self) -> None:
+        """`count` is documented as at most 100, so never send more
+
+        The sibling provider `sofya.py` clamps for the same reason: the API
+        rejects an out-of-range value, which would turn a large `num_results`
+        into a failed search rather than a smaller one.
+        """
+        sent: dict[str, Any] = {}
+        self._search({"results": {"web": []}}, num_results=500, sent=sent)
+
+        self.assertEqual(sent["count"], 100)
+
     def test_returns_empty_when_the_api_found_nothing(self) -> None:
         """Return no results, without error, when the query genuinely matched nothing"""
         self.assertEqual(self._search({"results": {"web": [], "news": []}}), [])

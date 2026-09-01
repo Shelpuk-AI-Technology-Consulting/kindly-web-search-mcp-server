@@ -7,6 +7,14 @@ import httpx
 
 from ..models import WebSearchResult
 
+# The API documents `count` as the per-section maximum, 1-100.
+MAX_COUNT = 100
+
+# The sections this module knows how to parse. Named once because the parser and
+# the schema-mismatch guard must agree on which sections they are: counting a
+# section the parser never reads turns a legitimate zero-hit answer into an error.
+PARSED_SECTIONS = ("web", "news")
+
 
 class YoucomError(RuntimeError):
     pass
@@ -47,7 +55,7 @@ def _collect_results(data: dict[str, Any], num_results: int) -> list[WebSearchRe
         return None
 
     results: list[WebSearchResult] = []
-    for section in ("web", "news"):
+    for section in PARSED_SECTIONS:
         entries = raw.get(section)
         if not isinstance(entries, list):
             continue
@@ -59,17 +67,14 @@ def _collect_results(data: dict[str, Any], num_results: int) -> list[WebSearchRe
             if not isinstance(title, str) or not isinstance(link, str):
                 continue
 
-            # `description` is the SERP snippet. `snippets[0]` carries a longer
-            # excerpt when the API returns one; take the first field that is
-            # actually a non-empty string rather than trusting the shape.
+            # `description` is the SERP snippet; `snippets[0]` carries a longer
+            # excerpt when the API returns one. Take the first that is actually a
+            # non-empty string rather than trusting the shape.
             snippets = item.get("snippets")
+            longest = snippets[0] if isinstance(snippets, list) and snippets else None
+            candidates = (item.get("description"), longest)
             snippet = next(
-                (
-                    value
-                    for value in (item.get("description"), snippets[0] if isinstance(snippets, list) and snippets else None)
-                    if isinstance(value, str) and value
-                ),
-                "",
+                (value for value in candidates if isinstance(value, str) and value), ""
             )
 
             # `page_content` is populated later by the MCP tool (best-effort).
@@ -109,7 +114,10 @@ async def search_youcom(
 
     api_key = _get_youcom_api_key()
     url = "https://ydc-index.io/v1/search"
-    payload = {"query": query, "count": int(num_results)}
+    # Clamped rather than passed through: the API documents 1-100 and rejects
+    # anything outside it, which would turn a large `num_results` into a failed
+    # search instead of a smaller one. `sofya.py` clamps for the same reason.
+    payload = {"query": query, "count": min(int(num_results), MAX_COUNT)}
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
 
     async def _do_request(client: httpx.AsyncClient) -> dict[str, Any]:
@@ -136,14 +144,19 @@ async def search_youcom(
     # Discarding every result means the response did not match the shape expected
     # here. Returning an empty list would be indistinguishable from "no matches"
     # and would hide the mismatch, so surface it instead.
+    # Re-read rather than asserted: `_collect_results` has already verified the
+    # shape, and an `assert` here would be stripped under `python -O`, turning a
+    # handled case into an AttributeError.
     raw = data.get("results")
-    assert isinstance(raw, dict)  # _collect_results already verified this.
-    total_entries = sum(
-        len(entries) for entries in raw.values() if isinstance(entries, list)
+    parsed_entries = sum(
+        len(entries)
+        for section, entries in (raw.items() if isinstance(raw, dict) else ())
+        if section in PARSED_SECTIONS and isinstance(entries, list)
     )
-    if total_entries and not results:
+    if parsed_entries and not results:
         raise YoucomError(
-            f"You.com returned {total_entries} result(s) but none could be parsed; "
+            f"You.com returned {parsed_entries} result(s) in {PARSED_SECTIONS} but "
+            "none could be parsed; "
             "each needs a string `title` and `url`. The response schema may have changed."
         )
 
