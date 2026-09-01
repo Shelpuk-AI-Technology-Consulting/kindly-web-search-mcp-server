@@ -1,6 +1,6 @@
 # Rule: search providers (`search/`)
 
-Five backends — Serper, SerpBase, Tavily, SearXNG and Sofya — behind one
+Six backends — Serper, SerpBase, Tavily, SearXNG, Sofya and You.com — behind one
 registry. They share a single contract, which is why they share one rule file.
 
 ## `PROVIDERS` is the single source of truth
