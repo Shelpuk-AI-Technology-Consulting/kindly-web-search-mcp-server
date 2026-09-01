@@ -66,24 +66,6 @@ PROBED_BROWSER_NAMES = (
 )
 
 
-@pytest.fixture(autouse=True)
-def pinned_ambient_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove every variable these functions read and pin the process identity.
-
-    Applied to every test in the module so a case names only the ambient state
-    it varies. ``os.geteuid`` is pinned to a non-root value because the sandbox
-    resolver short-circuits to ``False`` for euid 0: without this, every sandbox
-    case would report the right answer for the wrong reason inside a container
-    that runs as root, and the root case would prove nothing.
-
-    Args:
-        monkeypatch: pytest fixture that scopes and reverses the changes.
-    """
-    for name in READ_ENVIRONMENT_VARIABLES:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
-
-
 def _which_returning(found: dict[str, str]):
     """Build a :func:`shutil.which` stand-in that resolves only known names.
 
@@ -99,6 +81,40 @@ def _which_returning(found: dict[str, str]):
         return found.get(name)
 
     return _which
+
+
+@pytest.fixture(autouse=True)
+def pinned_ambient_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every variable these functions read and pin the process identity.
+
+    Applied to every test in the module so a case names only the ambient state
+    it varies. Three kinds of ambient input are pinned:
+
+    ``os.geteuid`` goes to a non-root value because the sandbox resolver
+    short-circuits to ``False`` for euid 0. Without the pin, every sandbox case
+    would report the right answer for the wrong reason inside a container that
+    runs as root, and the root case would prove nothing.
+
+    :func:`shutil.which` goes to "nothing installed". The browser-path cases
+    that set an environment variable never reach the ``PATH`` probe, so leaving
+    the real :func:`shutil.which` in place would pass on any machine today —
+    and would keep passing, for a different reason, on a machine with Chromium
+    installed if the resolver ever consulted ``PATH`` first. A default of "no
+    browser anywhere" makes the developer's own installation irrelevant to every
+    case here.
+
+    The eight environment variables go because four of them
+    (``CHROME_BIN`` and friends) are commonly exported by CI images and by
+    developers, and any one of them would steer
+    ``_resolve_browser_executable_path`` away from what the case set up.
+
+    Args:
+        monkeypatch: pytest fixture that scopes and reverses the changes.
+    """
+    for name in READ_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(shutil, "which", _which_returning({}))
 
 
 # --------------------------------------------------------------------------
@@ -393,20 +409,38 @@ def test_probed_browser_names_are_tried_in_declared_order(
     assert _resolve_browser_executable_path(None) == "/usr/bin/chromium"
 
 
-def test_no_browser_anywhere_resolves_to_none(
+def test_a_configured_variable_wins_over_a_browser_on_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Prefer a configured path to whatever happens to be installed
+
+    Without this case the two lookups could be swapped without any test
+    noticing: every other environment case leaves ``PATH`` empty, and the probe
+    cases configure no variable, so only a case supplying both distinguishes
+    the order.
+
+    Args:
+        monkeypatch: pytest fixture used to scope the environment and ``PATH``
+            probe changes.
+    """
+    monkeypatch.setenv("CHROME_BIN", "/configured/chrome")
+    monkeypatch.setattr(
+        shutil, "which", _which_returning({"chromium": "/usr/bin/chromium"})
+    )
+
+    assert _resolve_browser_executable_path(None) == "/configured/chrome"
+
+
+def test_no_browser_anywhere_resolves_to_none() -> None:
     """Report "not found" rather than inventing a default executable
 
     The caller turns this ``None`` into the error that names
     ``KINDLY_BROWSER_EXECUTABLE_PATH``; a fabricated default here would instead
     surface as an unreadable failure from Chromium itself.
 
-    Args:
-        monkeypatch: pytest fixture used to scope the ``PATH`` probe change.
+    The fixture already pins :func:`shutil.which` to "nothing installed", so
+    this case supplies no input at all — which is the input under test.
     """
-    monkeypatch.setattr(shutil, "which", _which_returning({}))
-
     assert _resolve_browser_executable_path(None) is None
 
 

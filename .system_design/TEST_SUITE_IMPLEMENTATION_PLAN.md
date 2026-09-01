@@ -246,7 +246,14 @@ it carries no X-number.
   sitting stale next to a green suite.
 - **E1-2.** Direct tests of `_build_chromium_launch_args`,
   `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
-  `_resolve_start_retry_attempts` with §3.1's ambient-state seams.
+  `_resolve_start_retry_attempts` with §3.1's ambient-state seams, in
+  `tests/test_nodriver_worker_launch_resolvers.py`. **E1-2 owns
+  `_build_chromium_launch_args` in full**, including the branches that emit
+  `--proxy-server` and `--proxy-bypass-list` and the append-last ordering of the
+  caller's base arguments; `test_worker_launch_args_redaction.py` keeps only its
+  redaction assertions. Stated because E5-4 is scoped by *exclusion* — "the
+  remaining resolvers not covered by E1-2" — so a branch this step declines is
+  orphaned permanently rather than deferred.
   *Verify:* each fails when its resolver's default is inverted; `--no-sandbox`,
   root detection and executable discovery all survive; no new test calls
   `_fetch_html`; the node ids it repairs are removed from the E1-1 ledger and no
@@ -256,8 +263,18 @@ it carries no X-number.
   the browser-connect call. **These stay at this layer permanently** —
   `_fetch_html` is the child process's own function and owns browser startup,
   connect retry and profile cleanup; `_run_worker_command` is parent-side.
+  **E1-3 also inherits one claim from E1-2's half.**
+  `test_errors_when_no_browser_found` asserted two things: that
+  `_resolve_browser_executable_path` finds nothing, and that `_fetch_html` turns
+  that `None` into a `RuntimeError` naming `KINDLY_BROWSER_EXECUTABLE_PATH`.
+  Only the first is a resolver claim. The second is the only actionable guidance
+  a user gets when no browser is installed, it is raised inside `_fetch_html`,
+  and E1-2 cannot take it without calling `_fetch_html` — which its own *Verify*
+  forbids. It is E1-3's.
   *Verify:* retry-count, terminate-failed-attempt, non-retryable-not-retried and
-  profile-cleanup pass; adding a required argument to the patched callable makes
+  profile-cleanup pass; a missing browser executable surfaces the install and
+  `KINDLY_BROWSER_EXECUTABLE_PATH` guidance rather than a bare `TypeError` or an
+  error from Chromium; adding a required argument to the patched callable makes
   them fail rather than silently pass; the ledger shrinks by exactly the ids
   repaired.
 - **E1-4.** Rebuild `_FakeProc` as E2-1's typed fake.
@@ -269,7 +286,11 @@ it carries no X-number.
 - **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, and
   `BASELINE_FAILURES.md` lists no remaining ids — the two facts are checked
   together, since either alone can be true while the other is not. CI enforcement
-  begins here.
+  begins here. **The Windows half must come from a real Windows run**, not from
+  the document: once E1-2 drained the root-detection case the two platform
+  blocks became identical, which makes the cross-platform difference check a
+  tautology, and nothing else asserts the Windows block until E4-1's matrix
+  exists. A drained document is evidence of nothing on a platform nobody ran.
 
 ---
 
@@ -518,7 +539,12 @@ duplicating tests or touching the same files.
   `_resolve_user_agent`, `_detect_chrome_version`, `_resolve_retry_backoff_seconds`,
   `_resolve_devtools_ready_timeout_seconds`, `_resolve_worker_timeout_seconds`,
   `_resolve_worker_timeout_details`, `_resolve_snap_backoff_multiplier`,
-  `_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`.
+  `_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`,
+  plus `_is_snap_browser` and `_is_retryable_browser_connect_error`. Those last
+  two were named as component-level targets in §3.1 but claimed by no step —
+  found while implementing E1-2, which declined them rather than absorb work no
+  one had scoped. Nothing checks §3.1's target list against step ownership, so
+  the gap would not have surfaced twice.
   *Verify:* grouped by behaviour. **Numeric env parsing**
   (`_resolve_retry_backoff_seconds`, `_resolve_devtools_ready_timeout_seconds`,
   `_resolve_worker_timeout_seconds`, `_resolve_snap_backoff_multiplier`): unset,

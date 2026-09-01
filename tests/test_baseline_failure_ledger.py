@@ -14,7 +14,7 @@ Three kinds of check live here, and none implies another:
 
 * **structural**, which read only the document -- that every platform the guard
   knows has a section, that each block is sorted and free of duplicates, and
-  that each block agrees with the failure count on its own ``Result`` line.
+  that each block agrees with the still-failing count on its ``Remaining`` line.
   These run wherever the suite runs, so the section for the platform you are
   *not* on is still held to its format, and they are exercised against synthetic
   documents so that each rejection stays a test rather than a one-time
@@ -271,30 +271,42 @@ def _ledger_node_ids(text: str, heading: str) -> list[str]:
 
 
 def _recorded_failure_count(text: str, heading: str) -> int:
-    """Parse the failure count from one platform section's ``Result`` line.
+    """Parse the still-failing count from a platform section's ``Remaining`` line.
 
-    Read from the same line that carries the passing and skipped counts, rather
-    than written out separately, so the number this guard checks is the number
-    the recorded run actually produced. A separate field could be edited to match
-    the list while the run it claims to summarise said something else.
+    This was originally read off the ``Result`` line, on the reasoning that a
+    number taken from the recorded run cannot be edited to match the list while
+    the run said something else. The reasoning was sound and the placement was
+    not: a repair deletes ids, so the count has to change, and editing it in
+    place turns a measurement into an arithmetic edit sitting between three
+    figures that are still the original run's. The first repair to land would
+    have produced ``7 failed, 303 passed, 2 skipped`` at a commit where no such
+    run ever happened -- exactly what TEST_SUITE.md §1.1's "from real runs, or
+    not quoted" rule exists to prevent.
+
+    So the two facts are separate fields. ``Result`` is the measurement and is
+    never edited again; ``Remaining`` is maintained alongside the block and is
+    what this guard asserts. The redundancy lost by not reading it off the
+    measurement is small -- :func:`test_live_outcome_matches_the_ledger`
+    compares the block itself against a real run, which is a stronger check than
+    any count -- and an immutable record of what was measured is worth more.
 
     Args:
         text: The whole document.
         heading: The platform section's heading line.
 
     Returns:
-        The ``N`` in the section's ``**Result:** N failed, ...`` line.
+        The ``N`` in the section's ``**Remaining:** N failed`` line.
 
     Raises:
         AssertionError: When the section has no such line, or more than one.
     """
     section = _section_body(text, heading)
     counts = re.findall(
-        r"^\s*-\s+\*\*Result:\*\*\s+(\d+) failed\b", section, re.MULTILINE
+        r"^\s*-\s+\*\*Remaining:\*\*\s+(\d+) failed\b", section, re.MULTILINE
     )
     assert len(counts) == 1, (
         f"Section '{heading}' of {LEDGER_PATH.name} has {len(counts)} lines of "
-        "the form '- **Result:** N failed, ...'; this guard requires exactly one."
+        "the form '- **Remaining:** N failed'; this guard requires exactly one."
     )
     return int(counts[0])
 
@@ -488,18 +500,24 @@ def _synthetic_ledger(
 
     Args:
         node_ids: The ids to place in the block.
-        recorded: The failure count to state; defaults to ``len(node_ids)``.
+        recorded: The still-failing count to state on the ``Remaining`` line;
+            defaults to ``len(node_ids)``.
         extra_block: When true, add a second fenced block to the section.
 
     Returns:
-        A document with a single ``## Linux`` platform section.
+        A document with a single ``## Linux`` platform section, carrying both
+        the frozen ``Result`` measurement and the maintained ``Remaining``
+        count, because the shipped parsers read one field each. The two are
+        deliberately different numbers here, so a parser reading the wrong one
+        is caught by these cases rather than by the real document.
     """
     stated = len(node_ids) if recorded is None else recorded
     listing = "\n".join(node_ids)
     second = "\n```text\nstray\n```\n" if extra_block else ""
     return (
         "# Synthetic\n\n## Linux\n\n"
-        f"- **Result:** {stated} failed, 1 passed\n\n"
+        "- **Result:** 99 failed, 1 passed\n"
+        f"- **Remaining:** {stated} failed\n\n"
         f"```text\n{listing}\n```\n{second}"
     )
 
@@ -532,16 +550,16 @@ def _assert_block_is_sorted_and_unique(text: str, heading: str) -> None:
 def _assert_count_matches_node_ids(text: str, heading: str) -> None:
     """Assert one platform's stated failure count equals the length of its list.
 
-    The count comes from the recorded run and the list is maintained by hand, so
-    they drift the moment someone deletes an id without touching the summary --
-    which is exactly what the repair steps will be doing.
+    Both are maintained by hand, so they drift the moment someone deletes an id
+    without touching the count -- which is exactly what the repair steps will be
+    doing. The pairing is what makes a half-finished drain visible.
 
     Args:
         text: The whole document.
         heading: The platform section's heading line.
 
     Raises:
-        AssertionError: When the ``Result`` line and the block disagree.
+        AssertionError: When the ``Remaining`` line and the block disagree.
     """
     node_ids = _ledger_node_ids(text, heading)
     recorded = _recorded_failure_count(text, heading)
@@ -708,7 +726,8 @@ def test_child_environment_drops_every_variable_the_project_reads() -> None:
             id="two-blocks",
         ),
         pytest.param(
-            "# Synthetic\n\n## Windows\n\n- **Result:** 0 failed\n\n```text\n```\n",
+            "# Synthetic\n\n## Windows\n\n- **Result:** 0 failed\n"
+            "- **Remaining:** 0 failed\n\n```text\n```\n",
             _assert_block_is_sorted_and_unique,
             "no longer contains",
             id="missing-heading",
