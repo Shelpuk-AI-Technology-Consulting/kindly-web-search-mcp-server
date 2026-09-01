@@ -194,8 +194,14 @@ warn_unused_configs = true
 # A file that MUST fail type-checking cannot sit in the path the job checks, or
 # the job is red forever. Note that `exclude` removes a file from DISCOVERY only:
 # it is ignored for a file named explicitly on the command line, which is how the
-# harness reaches these fixtures, and it does not remove them from CONFIGURATION,
-# which is why they need their own override below.
+# harness reaches these fixtures, and it does not remove them from CONFIGURATION.
+#
+# Do NOT add a per-module override for them here. It would match nothing on an
+# ordinary run, `warn_unused_configs` would report it, and
+# `test_ordinary_target_reports_no_unused_configuration_sections` would go red.
+# The one fixture needing non-default strictness declares it inline with a
+# `# mypy:` comment instead; the other three fail under mypy's own defaults and
+# need no configuration at all.
 exclude = ["(^|/)tests/typing_negative/"]
 
 # The Protocol and the double built against it. `disallow_any_expr` is what

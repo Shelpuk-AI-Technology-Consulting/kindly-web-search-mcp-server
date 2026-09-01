@@ -37,7 +37,8 @@ class WorkerProcess(Protocol):
     the drift that broke the loader tests. The static check is what catches that,
     and both are kept.
 
-    **Every member is a read-only property, and that is load-bearing rather than
+    **Every *attribute* member is a read-only property — the four that carry
+    state, not the three methods — and that is load-bearing rather than
     stylistic.** Declared as plain attribute annotations, the real
     :class:`asyncio.subprocess.Process` does *not* satisfy this Protocol — mypy
     rejects it with "Protocol member WorkerProcess.returncode expected settable
@@ -50,7 +51,10 @@ class WorkerProcess(Protocol):
     are covariant, so a double declaring ``returncode: int`` — one that can never
     express "still running" — also satisfies this Protocol. The attribute
     spelling would have rejected that invariantly. Doubles are expected to
-    declare ``int | None`` by convention; nothing checks it.
+    declare ``int | None`` by convention. The double in
+    ``tests/doubles/worker_process.py`` is pinned against that narrowing by an
+    ``assert_type`` in its conformance block; a double declared outside that
+    block is not.
     """
 
     @property

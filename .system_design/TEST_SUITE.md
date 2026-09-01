@@ -744,7 +744,8 @@ conversion bug.
    Protocol, the fake and the harness alone is the plan working, not E2-1
    under-delivering.
 
-   **Every member is a read-only `@property`, and that is load-bearing.**
+   **Every *attribute* member is a read-only `@property` — the four carrying
+   state, not the three methods — and that is load-bearing.**
    Measured during E2-1: declared as plain attribute annotations, the real
    `asyncio.subprocess.Process` does **not** satisfy the Protocol —
    `returncode` is a read-only property on the real type, and mypy answers
@@ -754,9 +755,16 @@ conversion bug.
    is not mistaken for an oversight: read-only members are **covariant**, so a
    double declaring `returncode: int` — one that can never express "still
    running" — also satisfies the Protocol, which the attribute spelling would
-   have rejected invariantly. Doubles declare `int | None` by convention, and
-   nothing checks it. Only `returncode` actually forces the choice; the other
-   six are spelled the same way for consistency.
+   have rejected invariantly. The *shipped* fake is pinned against that by
+   `assert_type(_double.returncode, "int | None")` in its conformance block; the
+   hole is only for doubles declared outside it, which is exactly what E1-4
+   introduces. Only `returncode` actually forces the property choice; the other
+   three attribute members are spelled the same way for consistency.
+
+   **`pid` is declared `int`, not `int | None`, while production still guards it**
+   (`if proc.returncode is None and proc.pid is not None`). Harmless today, since
+   `warn_unreachable` is off — but E2-4 annotates that call site, so it decides
+   there: either the guard is dead and goes, or the Protocol member widens.
 
    **Three mechanisms are needed, because none of them is sufficient alone.**
    Measured behaviour of `isinstance` against a Protocol:
@@ -783,31 +791,29 @@ conversion bug.
       _contract: WorkerProcess = FakeWorkerProcess()   # mypy checks this line
       ```
 
-      Two conditions, or the check passes vacuously. The fake is a **concrete,
-      fully annotated class** — not `AsyncMock`, whose members infer as `Any` and
-      satisfy any Protocol at all. And the job enables **`disallow_any_expr`** on
-      this surface: `disallow_any_explicit` rejects only written-out `Any`
-      annotations and `disallow_untyped_defs` only unannotated definitions, so
-      neither catches an `Any` that arrives by inference.
+      **Two mechanisms, each earning its place by what it alone catches.**
 
-      **Correction, measured during E2-1: `disallow_any_expr` does not enforce
-      the first condition.** The paragraph above implies the setting is what
-      stops an `AsyncMock` substitution. It is not. `AsyncMock()` has type
-      `AsyncMock`, not `Any` — the `Any` lives inside typeshed's `__getattr__`,
-      not in the checked module — and after the forced assignment the variable is
-      typed `WorkerProcess`. No expression in the module is ever `Any`:
+      `disallow_any_expr` on this surface catches an `Any` arriving **by
+      inference inside the fake's own body** — `self.stdout = untyped_helper()`
+      is clean without it and rejected with it. `disallow_any_explicit` rejects
+      only written-out `Any` annotations and `disallow_untyped_defs` only
+      unannotated definitions, so neither sees that case.
+
+      It does **not**, however, reject a *vacuous double*. An earlier draft of
+      this section said it did; measured during E2-1, it does not. `AsyncMock()`
+      has type `AsyncMock`, not `Any` — the `Any` lives inside typeshed's
+      `__getattr__`, not in the checked module — and after the forced assignment
+      the variable is typed `WorkerProcess`. No expression in the module is ever
+      `Any`:
 
       ```text
       _contract: WorkerProcess = AsyncMock()
       mypy --disallow-any-expr  ->  Success: no issues found in 1 source file
       ```
 
-      So the two conditions need two mechanisms, and each earns its place by what
-      it alone catches. `disallow_any_expr` catches an `Any` arriving **by
-      inference inside the fake's own body** (`self.stdout = untyped_helper()` is
-      clean without it, rejected with it) — that part of the paragraph stands.
-      What rejects a vacuous double is reading a member **off the concrete fake
-      type**, which `AsyncMock` cannot survive:
+      So the fake being a **concrete, fully annotated class** is enforced by a
+      second mechanism: reading a member **off the concrete fake type**, which
+      `AsyncMock` cannot survive:
 
       ```python
       # tests/doubles/worker_process.py, under `if TYPE_CHECKING:`
@@ -822,18 +828,30 @@ conversion bug.
 
       A negative fixture proves the job is not vacuous: a deliberately
       `Any`-typed double that mypy **must** reject, asserted in CI. A type-check
-      job that cannot fail is indistinguishable from no job. E2-1 ships three,
-      one per mechanism (`explicit-any`, `assignment`, `assert-type`), and asserts
-      the **specific code** rather than a non-zero exit — mypy exits non-zero for
-      a syntax error, an unresolved import or a crash just as readily.
+      job that cannot fail is indistinguishable from no job. E2-1 ships **four**,
+      and asserts the **specific code** rather than a non-zero exit — mypy exits
+      non-zero for a syntax error, an unresolved import or a crash just as
+      readily. An explicitly `Any`-typed double (`explicit-any`); a double
+      missing `stdout` (`assignment`); an `AsyncMock` substituted for the fake
+      (`assert-type`); and a `bytearray` stream payload (`arg-type`).
+
+      **The fourth is the only thing enforcing §10.2's `strict_bytes`
+      consequence**, and it has no other home. mypy 2.x enables `--strict-bytes`
+      by default, so a double handing back `bytearray` or `memoryview` where
+      `bytes` is expected no longer type-checks — but no *runtime* test can prove
+      that: measured, `asyncio.StreamReader.read()` returns `bytes` whatever it
+      was fed, so an assertion on the type read back cannot fail. The constraint
+      binds at the call site, statically, or nowhere.
 
       **Two configuration facts the harness depends on, both measured.** mypy's
       `exclude` removes a file from *discovery* only: it is ignored for a file
       named explicitly on the command line, which is how the harness reaches an
       excluded fixture, and it does not remove the file from *configuration* — a
       per-module override keyed on an excluded module sits unused, which
-      `warn_unused_configs` then reports on every ordinary run. E2-1 therefore
-      declares each fixture's strictness inline in the fixture itself. And
+      `warn_unused_configs` then reports on every ordinary run — so a fixture
+      needing **non-default** strictness declares it inline, in the fixture
+      itself, and never through an override. Only one of the four does; the
+      other three fail under mypy's own defaults and need no configuration. And
       because there is no `py.typed` marker under `src/`, mypy run without
       `mypy_path` reports `import-untyped`, `WorkerProcess` degrades to `Any`,
       and **every conformance assignment passes vacuously** — so the target sets
@@ -997,18 +1015,18 @@ justified in `pyproject.toml`.
 
 ### 10.3 CI
 
-| Job | Selection | Matrix | Platform |
-|---|---|---|---|
-| `fast` | `-m "not live and not subsystem and not chromium and not package"` | Python 3.13, 3.14 × mcp {min, max} | Windows + Linux |
-| `fast-extras` | same, with `pdf-advanced` installed | Python 3.13 only | Linux |
-| `subsystem` | `-m "subsystem and not chromium and not live"` | Python 3.13 | Windows + Linux |
-| `chromium` | `-m "chromium and not live"` | Python 3.13 | Linux container |
-| `package` | `tests/package -m package`, wheel build + install (§6.1) | Python 3.13 × mcp {min, max} | Linux |
+| Job | Selection | Install | Matrix | Platform |
+|---|---|---|---|---|
+| `fast` | `-m "not live and not subsystem and not chromium and not package"` | `.[dev]` | Python 3.13, 3.14 × mcp {min, max} | Windows + Linux |
+| `fast-extras` | same, with `pdf-advanced` installed | `.[dev,pdf-advanced]` | Python 3.13 only | Linux |
+| `subsystem` | `-m "subsystem and not chromium and not live"` | **`.[dev]`** — needs `mypy`, see below | Python 3.13 | Windows + Linux |
+| `chromium` | `-m "chromium and not live"` | `.[dev]` | Python 3.13 | Linux container |
+| `package` | `tests/package -m package`, wheel build + install (§6.1) | `.[dev]` + the built wheel | Python 3.13 × mcp {min, max} | Linux |
 | `live-serper` (nightly) | `-m "live and serper"` | — | Linux |
 | `live-extraction` (nightly) | `-m "live and extraction"` | — | Linux container |
 | `mutation` (nightly) | `mutmut run` over the §3.2 scope | — | Linux |
-| `types` | `mypy` over the Protocol-carrying modules | Python 3.13 | Linux |
-| `coverage` | pinned lane; runs the three controls of §10.4 | Python 3.13, pinned | Linux |
+| `types` | `mypy` over the Protocol-carrying modules | **`.[dev]`** — needs `mypy` | Python 3.13 | Linux |
+| `coverage` | pinned lane; runs the three controls of §10.4 | `requirements-ratchet.txt` (no `mypy`) | Python 3.13, pinned | Linux |
 | `ci-required` | aggregation only — no tests | — | Linux |
 
 `fast`, `fast-extras`, `subsystem`, `chromium`, `package`, `types` and `coverage`
@@ -1143,12 +1161,32 @@ left alone:
 
 Rebuilding the image is a deliberate PR that updates the recorded digest.
 
+**The Install column is not decoration.** It was added when E2-1 took `mypy` out
+of the `ratchet` extra (§10.4), which made "which extra does this job install"
+load-bearing for the first time: `subsystem` now runs a harness that shells out
+to mypy, and `types` is nothing but mypy, so both need `.[dev]` while `coverage`
+must keep installing the pinned lockfile that no longer carries it. The failure
+is asymmetric and quiet — with mypy absent, the harness's shell-out cases fail
+while its configuration-reading cases still pass — so it is recorded here rather
+than left to each job's author. E4-1, E4-3 and E4-5 each define one of the three
+affected jobs.
+
 **`types` is deliberately narrow.** It runs `mypy` over the modules that declare or
 implement the test-double Protocols (§8A step 3), not the whole tree. Repo-wide
 type checking on ~6,849 largely unannotated lines is its own project with its own
 justification; this job exists for one purpose — catching the signature drift that
 `runtime_checkable` cannot see — and is scoped to earn its place immediately.
 Widening it later is a separate decision.
+
+**`tests/doubles/` is included wholesale, deliberately.** The `files` target
+names that directory rather than the one module in it, so every double added
+later — E1-4's, and the ones E11's conversion produces — joins the checked
+surface automatically and is expected to be fully annotated. That is the
+intended behaviour and not an accident of a directory entry: a double that is
+exempt from the check is the thing this whole mechanism exists to prevent. The
+cost is that an untyped third-party import reaching a new double turns the
+harness's import assertion red, which must be silenced at the import site rather
+than by loosening the assertion.
 
 **Matrix rationale and cost control.** `requires-python = ">=3.13"`, and
 `pdf-advanced` is constrained to `python_version < '3.14'`, so 3.13 and 3.14
@@ -1731,14 +1769,22 @@ selection only and therefore never invokes mypy. Keeping it would install a
 compiler-heavy package the lane cannot use, for the same reason `ruff` and
 `mutmut` are already out.
 
-**Consequence for the `subsystem` job, recorded because nothing else states it.**
-The harness now runs in that job, and `mypy` lives only in the `dev` extra, so
-that job must install `.[dev]` (or wider). §10.3's table records each job's
-*selection* but not its *install*, so this would otherwise be an unwritten
-requirement — and it fails asymmetrically: with mypy absent, the harness cases
-that shell out fail, while the two that only read configuration or glob a
-directory still pass, which reads as a partial breakage rather than a missing
-tool. E4-1 owns the job definitions and must honour it.
+**Consequence for three CI jobs, now recorded in §10.3's Install column.**
+`mypy` lives only in the `dev` extra, so every job that needs it must install
+`.[dev]` or wider: `subsystem` (E4-3) runs the harness, `types` (E4-5) *is*
+mypy, and `fast` (E4-1) selects `not subsystem` and so needs nothing extra —
+but E4-1 defines a broad job that deliberately *includes* the `subsystem`
+marker, so it needs `.[dev]` too. That column did not exist before this
+settlement, because until now every job could install anything and the
+difference never showed.
+
+It fails quietly, which is why it is written down. With mypy absent the harness's
+shell-out cases fail, while all fifteen of its hermetic cases pass — and so does
+one `subsystem` case, `test_negative_fixtures_are_absent_from_a_whole_tree_run`,
+which asserts an *absence* in stdout and is therefore satisfied by silence.
+`_run_mypy` closes that: a non-zero exit with empty stdout is raised as
+"mypy never ran", naming the install as the cause, rather than surfacing as a
+handful of blank assertion messages.
 
 Removing it took `mypy` and its exclusive subtree — `ast_serialize`, `librt`,
 `mypy_extensions`, `pathspec` — out of the lockfile and nothing else. That was

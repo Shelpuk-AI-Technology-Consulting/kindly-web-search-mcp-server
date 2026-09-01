@@ -402,7 +402,7 @@ def _run_mypy(*args: str) -> subprocess.CompletedProcess[str]:
         subprocess.TimeoutExpired: When the child has not exited within 120
             seconds, so a hung child fails one case instead of the whole run.
     """
-    return subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-m", "mypy", *args],
         capture_output=True,
         text=True,
@@ -412,6 +412,21 @@ def _run_mypy(*args: str) -> subprocess.CompletedProcess[str]:
         timeout=120,
         check=False,
     )
+
+    # mypy always writes to stdout when it runs at all, even to say "Success".
+    # Silence plus a non-zero exit means it never started -- overwhelmingly
+    # because the lane installed something narrower than `.[dev]`, which is where
+    # mypy now lives. Caught here rather than per case: the cases that assert an
+    # *absence* in stdout are satisfied by an empty string, so this failure would
+    # otherwise show up as a handful of blank assertion messages.
+    if result.returncode != 0 and not result.stdout.strip():
+        raise AssertionError(
+            "mypy produced no output and exited "
+            f"{result.returncode}, so it never ran. mypy is in the `dev` extra "
+            "only -- it left `ratchet` when this harness was marked `subsystem` "
+            f"-- so this lane must install `.[dev]` or wider.\n{result.stderr}"
+        )
+    return result
 
 
 def _assert_resolved(result: subprocess.CompletedProcess[str]) -> None:
@@ -428,7 +443,9 @@ def _assert_resolved(result: subprocess.CompletedProcess[str]) -> None:
     assert not reported, (
         f"mypy reported {reported}, so it could not resolve the code under "
         "check. Under an unresolved import WorkerProcess degrades to Any and "
-        f"every conformance assignment passes vacuously.\n{result.stdout}"
+        "every conformance assignment passes vacuously. Note this reports an "
+        "unresolvable or unannotated import, not a missing mypy -- _run_mypy "
+        f"catches that.\n{result.stdout}\n{result.stderr}"
     )
 
 
@@ -567,6 +584,29 @@ def test_negative_fixtures_are_absent_from_a_whole_tree_run() -> None:
         f"{reported} were reported by a whole-tree run, so `exclude` is not "
         "keeping the deliberately-broken fixtures out of a widened target.\n"
         f"{result.stdout}"
+    )
+
+
+@pytest.mark.subsystem
+def test_the_bytearray_fixture_is_clean_without_strict_bytes() -> None:
+    """Prove `strict_bytes` is what rejects the buffer payload, not something else.
+
+    The sibling vacuity check strips a fixture's own inline directive. This one
+    cannot: the ``bytearray`` fixture rests on a mypy *default* rather than on a
+    directive it carries, so the equivalent proof is to invert the default and
+    watch the diagnostic disappear. Without this, the case asserting ``arg-type``
+    could be passing for any number of unrelated reasons.
+
+    ``--no-strict-bytes`` is the mypy 1.x behaviour this project deliberately
+    skipped, so this also records what the version bound bought.
+    """
+    result = _run_mypy("--no-strict-bytes", "tests/typing_negative/bytearray_payload.py")
+
+    _assert_resolved(result)
+    assert result.returncode == 0, (
+        "The bytearray fixture still fails with --no-strict-bytes, so "
+        "`strict_bytes` is not what rejects it and the arg-type case proves "
+        f"nothing about mypy 2.x's default.\n{result.stdout}"
     )
 
 
