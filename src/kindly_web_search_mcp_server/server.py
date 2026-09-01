@@ -400,7 +400,7 @@ async def web_search(
     Prerequisites:
     - Requires at least one configured search provider in the server environment:
       `SERPER_API_KEY` (Serper), `SERPBASE_API_KEY` (SerpBase), `TAVILY_API_KEY` (Tavily),
-      `SEARXNG_BASE_URL` (SearXNG), or `SOFYA_API_KEY` (Sofya).
+      `SEARXNG_BASE_URL` (SearXNG), `SOFYA_API_KEY` (Sofya), or `YDC_API_KEY` (You.com).
       If none is set, this tool will fail.
 
     Returns:
@@ -410,7 +410,7 @@ async def web_search(
 
     Notes:
     - Content extraction is best-effort and may be truncated to avoid context “bombs”.
-    - Provider routing (strict order): Serper → SerpBase → Tavily → SearXNG → Sofya.
+    - Provider routing (strict order): Serper → SerpBase → Tavily → SearXNG → Sofya → You.com.
       No cross-provider fallback.
     - If the search provider fails (missing key, quota/rate-limit, network issues), the tool will error.
     - For a deeper look at one result, call `get_content()` on the chosen `link`.

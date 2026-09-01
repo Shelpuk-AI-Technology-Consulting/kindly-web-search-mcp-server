@@ -135,6 +135,30 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out[0].link, "https://sofya.example")
         mock_sofya.assert_awaited()
 
+    async def test_uses_youcom_when_only_youcom_key(self) -> None:
+        from kindly_web_search_mcp_server.search import search_web
+
+        for name in (
+            "SERPER_API_KEY",
+            "SERPBASE_API_KEY",
+            "TAVILY_API_KEY",
+            "SEARXNG_BASE_URL",
+            "SOFYA_API_KEY",
+        ):
+            os.environ.pop(name, None)
+        os.environ["YDC_API_KEY"] = "ydc_test"
+
+        with patch(
+            "kindly_web_search_mcp_server.search.search_youcom", new_callable=AsyncMock
+        ) as mock_youcom:
+            mock_youcom.return_value = [
+                WebSearchResult(title="Y", link="https://youcom.example", snippet="sn", page_content="")
+            ]
+            out = await search_web("q", num_results=1)
+
+        self.assertEqual(out[0].link, "https://youcom.example")
+        mock_youcom.assert_awaited()
+
     async def test_raises_when_no_provider_configured(self) -> None:
         from kindly_web_search_mcp_server.search import WebSearchProviderError, search_web
 
@@ -142,6 +166,7 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         os.environ.pop("TAVILY_API_KEY", None)
         os.environ.pop("SEARXNG_BASE_URL", None)
         os.environ.pop("SOFYA_API_KEY", None)
+        os.environ.pop("YDC_API_KEY", None)
 
         with self.assertRaises(WebSearchProviderError):
             await search_web("q", num_results=1)

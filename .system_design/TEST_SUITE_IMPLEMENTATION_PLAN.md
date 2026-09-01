@@ -811,7 +811,7 @@ operation and would needlessly serialize this.
 | **E11-5** | Migration complete | milestone | merge E11-1, merge E11-2, merge E11-3, merge E11-4 | S |
 
 **E11-1** —
-Files: `tests/test_searxng_unit.py`, `tests/test_serper_unit.py`, `tests/test_sofya_unit.py`, `tests/test_tavily_unit.py`
+Files: `tests/test_searxng_unit.py`, `tests/test_serper_unit.py`, `tests/test_sofya_unit.py`, `tests/test_tavily_unit.py`, `tests/test_youcom_unit.py`
 
 `tests/test_serper_live.py` is deliberately absent: E8-4 rewrites and migrates it.
 
