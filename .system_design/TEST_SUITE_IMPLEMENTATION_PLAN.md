@@ -250,8 +250,13 @@ it carries no X-number.
   `tests/test_nodriver_worker_launch_resolvers.py`. **E1-2 owns
   `_build_chromium_launch_args` in full**, including the branches that emit
   `--proxy-server` and `--proxy-bypass-list` and the append-last ordering of the
-  caller's base arguments; `test_worker_launch_args_redaction.py` keeps only its
-  redaction assertions. Stated because E5-4 is scoped by *exclusion* — "the
+  caller's base arguments. `test_worker_launch_args_redaction.py` keeps its
+  credential-handling assertions, one of which — Chromium receives the *real*
+  `--proxy-server=` value while the emitted copy is redacted — necessarily also
+  pins that the flag is emitted at all; that overlap is the point of the
+  assertion and is left alone. What E1-2 owns is the *branch conditions*: when
+  each proxy flag appears and when it does not. Stated because E5-4 is scoped by
+  *exclusion* — "the
   remaining resolvers not covered by E1-2" — so a branch this step declines is
   orphaned permanently rather than deferred.
   *Verify:* each fails when its resolver's default is inverted; `--no-sandbox`,
