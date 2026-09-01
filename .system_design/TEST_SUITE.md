@@ -739,7 +739,24 @@ conversion bug.
    Define instead a `WorkerProcess` **Protocol** naming the exact surface
    production consumes — `stdout`, `stderr`, `pid`, `returncode`, `wait()`,
    `kill()`, `terminate()` — annotate `_run_worker_command` with it, and have the
-   fake implement it.
+   fake implement it. The annotation half is **E2-4**, not E2-1: the runner does
+   not exist as a separate function until E2-3 extracts it. E2-1 delivering the
+   Protocol, the fake and the harness alone is the plan working, not E2-1
+   under-delivering.
+
+   **Every member is a read-only `@property`, and that is load-bearing.**
+   Measured during E2-1: declared as plain attribute annotations, the real
+   `asyncio.subprocess.Process` does **not** satisfy the Protocol —
+   `returncode` is a read-only property on the real type, and mypy answers
+   *"Protocol member WorkerProcess.returncode expected settable variable, got
+   read-only attribute"*. E2-4 passes a real process to the annotated runner, so
+   the attribute spelling would have made that step impossible. The cost, so it
+   is not mistaken for an oversight: read-only members are **covariant**, so a
+   double declaring `returncode: int` — one that can never express "still
+   running" — also satisfies the Protocol, which the attribute spelling would
+   have rejected invariantly. Doubles declare `int | None` by convention, and
+   nothing checks it. Only `returncode` actually forces the choice; the other
+   six are spelled the same way for consistency.
 
    **Three mechanisms are needed, because none of them is sufficient alone.**
    Measured behaviour of `isinstance` against a Protocol:
@@ -773,9 +790,62 @@ conversion bug.
       annotations and `disallow_untyped_defs` only unannotated definitions, so
       neither catches an `Any` that arrives by inference.
 
+      **Correction, measured during E2-1: `disallow_any_expr` does not enforce
+      the first condition.** The paragraph above implies the setting is what
+      stops an `AsyncMock` substitution. It is not. `AsyncMock()` has type
+      `AsyncMock`, not `Any` — the `Any` lives inside typeshed's `__getattr__`,
+      not in the checked module — and after the forced assignment the variable is
+      typed `WorkerProcess`. No expression in the module is ever `Any`:
+
+      ```text
+      _contract: WorkerProcess = AsyncMock()
+      mypy --disallow-any-expr  ->  Success: no issues found in 1 source file
+      ```
+
+      So the two conditions need two mechanisms, and each earns its place by what
+      it alone catches. `disallow_any_expr` catches an `Any` arriving **by
+      inference inside the fake's own body** (`self.stdout = untyped_helper()` is
+      clean without it, rejected with it) — that part of the paragraph stands.
+      What rejects a vacuous double is reading a member **off the concrete fake
+      type**, which `AsyncMock` cannot survive:
+
+      ```python
+      # tests/doubles/worker_process.py, under `if TYPE_CHECKING:`
+      _double = FakeWorkerProcess()
+      assert_type(_double.stdout, "asyncio.StreamReader | None")
+      ```
+
+      The block is guarded by `TYPE_CHECKING` deliberately: it reads members off
+      the double, so at run time a missing member would raise `AttributeError`
+      while the module is imported and abort collection — reporting one defect as
+      a collection error rather than as the single conformance case that owns it.
+
       A negative fixture proves the job is not vacuous: a deliberately
       `Any`-typed double that mypy **must** reject, asserted in CI. A type-check
-      job that cannot fail is indistinguishable from no job.
+      job that cannot fail is indistinguishable from no job. E2-1 ships three,
+      one per mechanism (`explicit-any`, `assignment`, `assert-type`), and asserts
+      the **specific code** rather than a non-zero exit — mypy exits non-zero for
+      a syntax error, an unresolved import or a crash just as readily.
+
+      **Two configuration facts the harness depends on, both measured.** mypy's
+      `exclude` removes a file from *discovery* only: it is ignored for a file
+      named explicitly on the command line, which is how the harness reaches an
+      excluded fixture, and it does not remove the file from *configuration* — a
+      per-module override keyed on an excluded module sits unused, which
+      `warn_unused_configs` then reports on every ordinary run. E2-1 therefore
+      declares each fixture's strictness inline in the fixture itself. And
+      because there is no `py.typed` marker under `src/`, mypy run without
+      `mypy_path` reports `import-untyped`, `WorkerProcess` degrades to `Any`,
+      and **every conformance assignment passes vacuously** — so the target sets
+      `mypy_path = "$MYPY_CONFIG_FILE_DIR/src"` (a relative path would resolve
+      against the caller's working directory, not the config file's) and every
+      harness case asserts no import diagnostic was reported.
+
+      **What E2-1 does not close.** Nothing here connects the Protocol to
+      production's *actual* consumption. An introspection test sees only the
+      Protocol, so padding it with a member nothing reads fails — but production
+      growing an eighth member does not. That direction closes only when E2-4
+      annotates the runner. Recorded rather than implied.
    3. An explicit **runtime contract test** asserting each attribute exists, each
       method is callable, and each async method returns a coroutine — because
       `runtime_checkable` verifies presence only, not types or arity.
@@ -1637,7 +1707,7 @@ free would reopen the same hole one level down.
 
 `requirements-ratchet.txt` is regenerated deliberately, and its header records how:
 install a `ratchet` extra — declaring pytest, pytest-asyncio, hypothesis, coverage,
-diff-cover, mypy and packaging — into a clean Python 3.13 Linux virtualenv, then
+diff-cover and packaging — into a clean Python 3.13 Linux virtualenv, then
 `pip freeze --exclude-editable` with the project itself filtered out, since a
 `pip freeze` after `pip install .[…]` otherwise records a local path or URL that no
 other machine can resolve. Add `--require-hashes` if this lane is ever treated as
@@ -1652,12 +1722,33 @@ the lane runs, and everything about whether the declaration is honest. `ruff` an
 `mutmut` stay out: `ruff` is lint rather than measurement, and `mutmut` is
 Linux-only and belongs to the nightly.
 
-`mypy` is in the pinned lane on the assumption that E2-1's negative type-check
-fixture runs inside the ratcheted selection. If E2-1 marks that fixture
-`subsystem` — §10.5 defines the marker as needing "a real socket or child
-process", and the fixture shells out to mypy — then it leaves the hermetic set and
-`mypy` should be dropped from both this extra and the lockfile. **E2-1 must state
-the marker explicitly**; the two readings disagree and nothing else settles it.
+`mypy` **was** in the pinned lane on the assumption that E2-1's negative
+type-check fixture runs inside the ratcheted selection. **E2-1 settled it the
+other way and mypy is now out of both this extra and the lockfile.** The harness
+shells out to mypy, which §10.5's `subsystem` definition covers exactly ("a real
+socket or child process"), so it carries that marker; this lane runs the `fast`
+selection only and therefore never invokes mypy. Keeping it would install a
+compiler-heavy package the lane cannot use, for the same reason `ruff` and
+`mutmut` are already out.
+
+**Consequence for the `subsystem` job, recorded because nothing else states it.**
+The harness now runs in that job, and `mypy` lives only in the `dev` extra, so
+that job must install `.[dev]` (or wider). §10.3's table records each job's
+*selection* but not its *install*, so this would otherwise be an unwritten
+requirement — and it fails asymmetrically: with mypy absent, the harness cases
+that shell out fail, while the two that only read configuration or glob a
+directory still pass, which reads as a partial breakage rather than a missing
+tool. E4-1 owns the job definitions and must honour it.
+
+Removing it took `mypy` and its exclusive subtree — `ast_serialize`, `librt`,
+`mypy_extensions`, `pathspec` — out of the lockfile and nothing else. That was
+computed, not guessed: `.[ratchet]` was reinstalled into a clean Python 3.13
+Linux virtualenv **constrained by the lockfile's own previous contents**, and the
+frozen result differed by exactly those five entries. The constraint matters — an
+unconstrained regeneration also absorbs whatever unrelated version drift has
+accumulated since the file was last generated, and the reset rule above reserves
+a moving baseline for a labelled `coverage-baseline-reset` change. The lockfile
+header records the constrained command alongside the canonical one.
 
 **The lockfile is the whole environment, not just the tooling.** §10.3's lane
 installs the project with `--no-deps`, so nothing else resolves `mcp`, `httpx`,

@@ -48,7 +48,7 @@
 
 ## The guard tests — treat these as load-bearing
 
-Eight tests exist to hold an invariant that nothing else enforces. A pull request
+Nine tests exist to hold an invariant that nothing else enforces. A pull request
 that changes what they guard, without changing them, is a finding; a pull request
 that *weakens* one to make a change pass is a critical finding.
 
@@ -61,6 +61,7 @@ that *weakens* one to make a change pass is a critical finding.
 | `test_pytest_configuration.py` | that `[tool.pytest.ini_options]` matches TEST_SUITE.md §10.5, that the running pytest actually loaded it, and that `strict_markers` / `asyncio_mode` have their effect and not merely their declaration |
 | `test_min_selected_guard.py` | that the `--min-selected` collection floor in `tests/conftest.py` matches TEST_SUITE.md §10.3 and still fires — an under-selected marker job exits 4 and names both counts, while a genuine failure keeps exit 1 and a collection error keeps its own diagnosis |
 | `test_coverage_configuration.py` | that `.coveragerc`, `.coveragerc-gate` and `.coveragerc-subprocess` match TEST_SUITE.md §10.4 and still behave — the base config reports an unexecuted module at zero, the gate config omits the modules with no hermetic seam, and the subprocess config captures a child process |
+| `test_worker_process_protocol.py` | that the `WorkerProcess` Protocol names exactly the surface production consumes, and that the typed double still satisfies it both at run time and statically — it shells out to mypy over three committed negative fixtures and asserts each is rejected by its own diagnostic code, so a mock substituted for the double, a double missing a member, and an explicitly `Any`-typed one all stay rejected |
 | `test_baseline_failure_ledger.py` | that `.system_design/BASELINE_FAILURES.md` names exactly the tests that fail today — it re-runs the suite in a child process with the live-test opt-ins cleared and compares node ids, so a repair that forgets to delete its ledger entry and a new red test both turn it red, and for opposite reasons it names separately |
 
 Four of these are coupled: `test_min_selected_guard.py`,
