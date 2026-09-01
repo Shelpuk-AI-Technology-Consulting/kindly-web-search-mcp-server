@@ -252,8 +252,9 @@ This is the figure §1.1 predicted from source and labelled unmeasured. It was
 measured, and it matched: twelve, being the eight stale `_fetch_html` callers,
 the three stale loader tests and the one obsolete Windows concurrency test.
 
-Five have since left with E1-2, the flag-and-default half of the eight — hence
-seven remaining, listed below. The **Result** line keeps saying twelve because
+Five have since left with E1-2, the flag-and-default half of the eight, and
+three more with E1-3, which repaired the orchestration half in place — hence
+four remaining, listed below. The **Result** line keeps saying twelve because
 that is what the run said.
 
 ```text
@@ -286,8 +287,8 @@ check worth making on any recorded run: a larger total than the list would mean
 a test failed more than once, through subtests the summary reports under a
 different word.
 
-Four of those eleven left with E1-2, hence seven remaining. **The frozen
-`3 skipped` is now stale by one:** the third skip *was*
+Four of those eleven left with E1-2 and three more with E1-3, hence four
+remaining. **The frozen `3 skipped` is now stale by one:** the third skip *was*
 `test_forces_sandbox_off_when_running_as_root`, which E1-2 deleted. It is left
 as measured, because editing a measurement to keep it plausible is the failure
 mode the two-line split exists to prevent. There is no Windows lane in CI until
