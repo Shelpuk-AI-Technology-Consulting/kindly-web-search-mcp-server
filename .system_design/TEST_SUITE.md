@@ -402,6 +402,30 @@ These complement the L1 flag tests of §3.1 — a fixture child cannot assert wh
 Chromium flags were chosen, and a resolver test cannot assert a process tree
 died.
 
+**Open: which job runs the orchestration group.** §9 routes "Worker
+retry/termination orchestration" to the `subsystem` job, but §10.5 registers
+that marker as *"needs a real socket or child process"* — and orchestration
+tests written correctly need neither. E1-3 built them with every collaborator
+doubled: no socket, no child, ~1 s for the module. Left **unmarked** they fall
+into the `fast` job instead.
+
+That is not only a routing question. `.coveragerc-gate` omits
+`scrape/nodriver_worker.py`, and §10.4's control 1 requires every omitted module
+to show non-zero coverage in the **observational L3 report**, which the
+`subsystem` and `chromium` jobs produce and `fast` does not. So an unmarked
+orchestration group leaves that module's only evidence of being exercised in a
+report nothing collects.
+
+Three ways out, for the CI workstream to choose between rather than for a
+repair step to settle by hand: widen the `subsystem` description to cover
+"drives a subsystem's orchestration, with or without real infrastructure"; add a
+distinct marker; or have control 1 read the `fast` report too. E1-3 deliberately
+changed nothing here — the marker list is a contract guarded by
+`tests/test_pytest_configuration.py` against this document, the control that
+depends on it does not exist yet, and widening a registered meaning on
+speculation is the wrong direction. Resolve it with E4-1, whose job definitions
+force the answer anyway.
+
 ### 5.3 Chromium-specific — Linux container
 
 `ChromiumPool`: slot acquisition and release, reuse
