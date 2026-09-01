@@ -485,9 +485,11 @@ def test_registered_marker_is_collected(tmp_path: Path) -> None:
     """Assert a registered marker still runs -- the control for the case above
 
     Without this, :func:`test_unregistered_marker_fails_collection` would pass
-    against a configuration that broke collection for any reason at all. It is
-    also the only user of the ``slow`` marker until the suite grows a test that
-    earns it.
+    against a configuration that broke collection for any reason at all. It was
+    the only user of the ``slow`` marker until
+    :func:`tests.test_baseline_failure_ledger.test_live_outcome_matches_the_ledger`
+    earned one by spawning a child run of the whole suite; it remains the only
+    synthetic one.
 
     Args:
         tmp_path: pytest's per-test temporary directory.

@@ -44,7 +44,7 @@
 
 ## The guard tests — treat these as load-bearing
 
-Seven tests exist to hold an invariant that nothing else enforces. A pull request
+Eight tests exist to hold an invariant that nothing else enforces. A pull request
 that changes what they guard, without changing them, is a finding; a pull request
 that *weakens* one to make a change pass is a critical finding.
 
@@ -57,14 +57,16 @@ that *weakens* one to make a change pass is a critical finding.
 | `test_pytest_configuration.py` | that `[tool.pytest.ini_options]` matches TEST_SUITE.md §10.5, that the running pytest actually loaded it, and that `strict_markers` / `asyncio_mode` have their effect and not merely their declaration |
 | `test_min_selected_guard.py` | that the `--min-selected` collection floor in `tests/conftest.py` matches TEST_SUITE.md §10.3 and still fires — an under-selected marker job exits 4 and names both counts, while a genuine failure keeps exit 1 and a collection error keeps its own diagnosis |
 | `test_coverage_configuration.py` | that `.coveragerc`, `.coveragerc-gate` and `.coveragerc-subprocess` match TEST_SUITE.md §10.4 and still behave — the base config reports an unexecuted module at zero, the gate config omits the modules with no hermetic seam, and the subprocess config captures a child process |
+| `test_baseline_failure_ledger.py` | that `.system_design/BASELINE_FAILURES.md` names exactly the tests that fail today — it re-runs the suite in a child process with the live-test opt-ins cleared and compares node ids, so a repair that forgets to delete its ledger entry and a new red test both turn it red, and for opposite reasons it names separately |
 
-Three of these are coupled: `test_min_selected_guard.py` and
-`test_coverage_configuration.py` both import `_section_body` from
-`test_pytest_configuration.py` rather than keeping their own copy of the
-fence-aware section bound, which exists because the naive heading regex was
-measured wrong — on §10.4's own blocks, whose opening comment sits at column 0
-and reads as a heading. A change to that helper's name or behaviour breaks all
-three guards, so it is not the private detail its underscore suggests.
+Four of these are coupled: `test_min_selected_guard.py`,
+`test_coverage_configuration.py` and `test_baseline_failure_ledger.py` all
+import `_section_body` from `test_pytest_configuration.py` rather than keeping
+their own copy of the fence-aware section bound, which exists because the naive
+heading regex was measured wrong — on §10.4's own blocks, whose opening comment
+sits at column 0 and reads as a heading. A change to that helper's name or
+behaviour breaks all four guards, so it is not the private detail its underscore
+suggests.
 
 Plus `test_worker_launch_args_redaction.py` for the subprocess command line — the
 same class of guard, one layer down.

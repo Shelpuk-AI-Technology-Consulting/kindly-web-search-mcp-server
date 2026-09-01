@@ -33,9 +33,21 @@ On the environment above: **11 failed, 169 passed, 3 skipped, 9 subtests passed.
 `test_nodriver_worker_sandbox.py` contains **eight** stale `_fetch_html` callers.
 The eighth, `test_forces_sandbox_off_when_running_as_root`, skips on Windows
 because `os.geteuid` does not exist there (`test_nodriver_worker_sandbox.py:199`),
-so POSIX should show **12** failures. *That POSIX figure is read from source, not
-executed;* §8 makes measuring it a task. Baselines are quoted per platform, from
-real runs, or not quoted.
+so POSIX should show **12** failures.
+
+**Measured, and it does.** On Ubuntu 24.04.4 LTS · CPython 3.13.15 · `pytest`
+9.1.1, repo at `3af0563`: **12 failed, 303 passed, 2 skipped, 9 subtests
+passed** — the same twelve, with the root-detection case that Windows skips. The
+passing count differs from the Windows run above only because four bootstrap
+steps landed between the two commits and added guard tests; the failing set did
+not move. Baselines are quoted per platform, from real runs, or not quoted.
+
+**The counts above are not the artefact that matters.** A count cannot tell a
+repaired test from a repaired test alongside a newly broken one, so the failing
+**node ids** are recorded per platform in `BASELINE_FAILURES.md` and asserted
+against a live child run by `tests/test_baseline_failure_ledger.py`. E1-2 through
+E1-5 each delete exactly the ids they repair; E1-6 is reached when the ledger is
+empty, which is the same statement as the guard finding no failures.
 
 ### 1.2 What is actually uncovered
 
@@ -633,7 +645,10 @@ policy-enforcing proxy of §13.1's candidate list.
 no framework migration mixed in, so a failure means a stale test, not a
 conversion bug.
 
-1. Measure the baseline on Linux; record both platforms.
+1. Measure the baseline on Linux; record both platforms — as node ids in
+   `BASELINE_FAILURES.md`, not only as counts, and guarded against a live child
+   run by `tests/test_baseline_failure_ledger.py`. Steps 2-4 below each delete
+   exactly the ids they repair, so the ledger drains to empty as they land.
 2. Split the 8 stale sandbox tests: flag and default resolution moves to L1
    (§3.1); retry and cleanup orchestration stays as narrow autospecced tests
    around `_fetch_html` (§5.2).
