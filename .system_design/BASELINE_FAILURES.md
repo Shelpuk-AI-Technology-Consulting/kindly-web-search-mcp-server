@@ -50,13 +50,30 @@ one is a dropped claim, whatever the pull request calls it.
 E1-2 evidenced the table by hand, running the guard in the intermediate state —
 tests deleted, ledger not yet drained — so that it named those five ids as *no
 longer collected* and named nothing else. That is a real proof and it is also a
-one-off: nothing re-runs it. E1-3 and E1-4 rewrite their tests rather than
-relocate them, so their ids change too and they hit the same wall. **Whichever
-of them lands first should make this table machine-readable** — a fenced block
-of `<deleted id> -> <replacement id>` — and assert that every replacement is in
-the child run's *collected* set and absent from its *failed* set. The guard
-already holds both sets; the cost is one assertion, and it converts this
-section from a promise into a check.
+one-off: nothing re-runs it.
+
+**E1-2 predicted that E1-3 and E1-4 would hit the same wall. They do not, and
+the reason is worth keeping.** A step that *rewrites a test in place* keeps its
+node id, so the id leaves this ledger by passing and the rule holds natively
+with no exception and nothing to take on trust. E1-3 rewrote three test bodies
+under their existing names and the guard reported all three under *"In the
+ledger, ran, and passed"* — the strongest of its four categories, and the one
+that needs no supporting document. E1-4 replaces a fixture, so it is in the same
+position.
+
+**The step to watch is E1-5**, which rewrites the concurrency test to be
+OS-neutral. Its id is `test_web_search_concurrency_defaults_on_windows`, and a
+name that still says `on_windows` would be wrong afterwards — so that step
+probably *will* rename, and its id will leave by deletion. It is the remaining
+candidate for making this table machine-readable: a fenced block of
+`<deleted id> -> <replacement id>`, asserted to be in the child run's *collected*
+set and absent from its *failed* set. The guard already holds both sets. If
+E1-5 keeps the name instead, no such machinery is needed at all.
+
+**The rule that generalises: prefer rewriting in place to relocating.** Not for
+tidiness — it is the difference between an id that leaves this ledger under a
+machine-checked category and one that leaves under a promise in a pull request.
+Relocate only when the layer itself is the defect, as it was for E1-2.
 
 Adding an id here is not a way to make a new failure acceptable. A new red test
 is a regression; this ledger names what is left of the pre-existing twelve, and
@@ -179,7 +196,7 @@ an empty failing set on a red suite, and two of this repository's three
 `subTest` sites are in `tests/test_universal_html_loader.py`, one of the files
 this ledger tracks.
 
-## What the remaining seven are
+## What the remaining four are
 
 Grouped by cause, so a reviewer can tell which repair step owns which id. The
 grouping is by module rather than per id, because the blocks are sorted and so
@@ -188,9 +205,12 @@ from it.
 
 | Module | Ids | Cause | Repaired by |
 |---|---|---|---|
-| `test_nodriver_worker_sandbox.py` | 3 | `_fetch_html` grew five required keyword-only arguments; the callers were never updated | E1-3 (retry and cleanup). Its other five ids were the flag-and-default half and left with E1-2 |
 | `test_universal_html_loader.py` | 3 | `fetch_html_via_nodriver` streams `proc.stdout`; `_FakeProc` never grew one | E1-4 |
 | `test_server.py` | 1 | asserts a Windows concurrency cap that `_resolve_web_search_max_concurrency` no longer has | E1-5 |
+
+`test_nodriver_worker_sandbox.py` has left this table entirely: its five
+flag-and-default ids relocated with E1-2 and its three orchestration ids were
+repaired in place by E1-3.
 
 ## Why the two platforms differ
 
@@ -226,7 +246,7 @@ claim awaiting its lane.
   Linux 6.8.0-138 · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 12 failed, 303 passed, 2 skipped, 9 subtests passed
-- **Remaining:** 7 failed
+- **Remaining:** 4 failed
 
 This is the figure §1.1 predicted from source and labelled unmeasured. It was
 measured, and it matched: twelve, being the eight stale `_fetch_html` callers,
@@ -237,9 +257,6 @@ seven remaining, listed below. The **Result** line keeps saying twelve because
 that is what the run said.
 
 ```text
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_and_terminates_on_devtools_timeout
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_on_failed_to_connect_to_browser
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_uses_ignore_cleanup_errors_for_profile_dir
 tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_windows
 tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_passes_browser_executable_path_when_set
 tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_sets_no_proxy_for_loopback
@@ -252,7 +269,7 @@ tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_sp
   (10.0.26100) · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 11 failed, 303 passed, 3 skipped, 9 subtests passed
-- **Remaining:** 7 failed
+- **Remaining:** 4 failed
 
 Measured on a GitHub Actions `windows-latest` runner, from a temporary workflow
 on a branch of its own that was deleted once the numbers were recorded. It
@@ -277,9 +294,6 @@ mode the two-line split exists to prevent. There is no Windows lane in CI until
 the CI epic, so this section cannot be re-measured here.
 
 ```text
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_and_terminates_on_devtools_timeout
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_retries_on_failed_to_connect_to_browser
-tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_uses_ignore_cleanup_errors_for_profile_dir
 tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_windows
 tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_passes_browser_executable_path_when_set
 tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_sets_no_proxy_for_loopback
