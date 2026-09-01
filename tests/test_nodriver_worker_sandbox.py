@@ -16,7 +16,16 @@ collaborator with a bare ``AsyncMock``, which accepts any arguments at all, and
 that is exactly why giving `_fetch_html` five new required keyword-only
 arguments disabled eight tests at once without one of them objecting. An
 autospec double raises :class:`TypeError` on a wrong-arity call, so the next
-signature change fails loudly here.
+signature change fails here rather than passing.
+
+Two details of that, both measured. Autospec of an ``async def`` runs its
+signature check *inside* the coroutine body, so the check fires only when the
+call is awaited -- fine for `_fetch_html`, which awaits all of them, but a
+future assertion-only test would get no check at all. And the
+`_terminate_process` call inside `_cleanup` sits under ``except Exception:
+pass``, so a :class:`TypeError` raised there is swallowed: those tests still
+fail, on the terminated-process comparison, but not with the signature error
+that caused it.
 
 **One double is weaker than the rest, and it is worth knowing which.**
 :func:`nodriver.start` ends in ``**kwargs``, so its autospec accepts any keyword
@@ -59,6 +68,12 @@ from kindly_web_search_mcp_server.scrape import nodriver_worker
 #: Cleared before each case so a case declares the whole of its own input. Four
 #: of them are browser paths that CI images and developers commonly export, and
 #: ``KINDLY_USER_AGENT`` is the one whose *absence* costs a real subprocess.
+#:
+#: This is not the whole of the ambient state, and the harness does not pretend
+#: it is: `os.geteuid`, `shutil.which` and the module's diagnostics global are
+#: pinned separately below, because none of them is an environment variable.
+#: ``TMPDIR`` steers the real temporary directory and is deliberately left
+#: alone -- the profile assertion reads a basename, so the location is free.
 READ_ENVIRONMENT_VARIABLES = (
     "KINDLY_NODRIVER_SANDBOX",
     "KINDLY_NODRIVER_RETRY_ATTEMPTS",
@@ -83,10 +98,34 @@ READ_ENVIRONMENT_VARIABLES = (
 #: timing of these tests depend on where the developer's Chromium came from.
 BROWSER_PATH = "/usr/bin/chromium-for-tests"
 
-#: A ceiling on any single `_fetch_html` call. The cases take about 0.1 s; this
-#: exists so a regression that fails to terminate the retry loop fails the test
-#: instead of hanging the suite.
-PER_TEST_TIMEOUT_SECONDS = 10.0
+#: A browser path that `_is_snap_browser` classifies as snap-packaged. It is
+#: fabricated rather than the real `/snap/bin/chromium`, and that is worth a
+#: sentence: on Ubuntu `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, and
+#: `_is_snap_browser` calls `os.path.realpath` first -- so it answers **False**
+#: for the single most common way to have a snap Chromium (measured on Ubuntu
+#: 24.04). A non-existent path under `/snap/` has no symlink to follow and is
+#: classified correctly. The production defect that implies is reported, not
+#: fixed here; a test that used the real path would silently assert the
+#: non-snap branch, which is what the previous version of this file did.
+SNAP_BROWSER_PATH = "/snap/bin/chromium-for-tests"
+
+#: A ceiling on any single `_fetch_html` call, guarding a hang that makes no
+#: progress -- an await that never resolves. Five seconds is fifty times the
+#: ~0.1 s these cases take.
+#:
+#: It is **not** what catches a runaway retry loop; :data:`MAX_LAUNCHES` is.
+#: Measured: with the retry loop mutated to spin forever, a wall-clock bound
+#: alone took 47 s to report one failure against a 10 s budget, because every
+#: doubled call is recorded and a loop with zero backoff records millions of
+#: them. A timeout that fires and then takes five times its own budget to
+#: unwind is the outcome a timeout exists to prevent.
+PER_TEST_TIMEOUT_SECONDS = 5.0
+
+#: The most browser launches any case here legitimately needs; the highest
+#: attempt budget in this module is three. Exceeding it means the retry loop is
+#: not terminating, and failing at once with that sentence is both faster and
+#: more legible than waiting for a clock.
+MAX_LAUNCHES = 10
 
 
 class StubChromiumProcess:
@@ -114,6 +153,11 @@ class StubChromiumProcess:
     """
 
     def __init__(self, pid: int) -> None:
+        """Record the identifying pid.
+
+        Args:
+            pid: The process id to report.
+        """
         self.pid = pid
         self.returncode: int | None = None
 
@@ -170,6 +214,7 @@ class Doubles:
     """
 
     def __init__(self) -> None:
+        """Create an empty record; :func:`orchestration_harness` fills it in."""
         self.launch: Any = None
         self.wait_ready: Any = None
         self.terminate: Any = None
@@ -202,7 +247,6 @@ class Doubles:
         return [call.args[0] for call in self.terminate.call_args_list]
 
 
-
 @contextlib.contextmanager
 def orchestration_harness(
     *,
@@ -224,13 +268,19 @@ def orchestration_harness(
     so the case can read the keyword arguments it was given. A mock in its place
     would make the profile-cleanup case assert against itself.
 
-    ``asyncio.sleep`` is deliberately **not** patched. The retry backoff is
-    driven to zero through ``KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS``, which is a
-    real seam and exercises the real backoff arithmetic; patching
-    :func:`asyncio.sleep` would replace it on the global module for the duration
-    and reach far past the code under test. The one sleep that remains is the
-    fixed 100 ms `_cleanup` waits for Chromium to flush profile writes, which is
-    behaviour under test rather than a wait for a condition.
+    ``asyncio.sleep`` is deliberately **not** patched here. The retry backoff is
+    driven to zero through ``KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS``, a real
+    seam; patching :func:`asyncio.sleep` would replace it on the global module
+    for the duration and reach far past the code under test. Driving it to zero
+    does **not** exercise the backoff arithmetic -- zero times anything is zero,
+    and gutting the expression survives every case that uses this default. The
+    one case that asserts the arithmetic patches :func:`asyncio.sleep` for
+    itself and says so.
+
+    The other sleep that remains is the fixed 100 ms `_cleanup` waits for
+    Chromium to flush profile writes before the profile directory is removed.
+    It is about 0.4 s of this module's runtime and is asserted by that same
+    case; the rest pay it without observing it.
 
     :func:`shutil.which` is pinned to "nothing installed" even though four of
     the five cases hand `_fetch_html` an explicit executable and never reach the
@@ -259,7 +309,23 @@ def orchestration_harness(
     os.environ.update(environment or {})
 
     def _new_process(*_args: object, **_kwargs: object) -> StubChromiumProcess:
-        """Hand out a distinctly-identified process for each launch."""
+        """Hand out a distinctly-identified process for each launch.
+
+        Returns:
+            A stub process whose pid identifies the attempt that launched it.
+
+        Raises:
+            AssertionError: Once :data:`MAX_LAUNCHES` is exceeded, which means
+                the retry loop is not terminating. Raised here rather than left
+                to the wall-clock bound because the doubles record every call:
+                a spinning loop is an unbounded sink that takes far longer to
+                unwind than the bound it broke.
+        """
+        if len(doubles.processes) >= MAX_LAUNCHES:
+            raise AssertionError(
+                f"_fetch_html launched a browser more than {MAX_LAUNCHES} times; "
+                "the retry loop is not terminating."
+            )
         process = StubChromiumProcess(pid=9000 + len(doubles.processes))
         doubles.processes.append(process)
         return process
@@ -281,6 +347,16 @@ def orchestration_harness(
             patch.object(
                 nodriver_worker.shutil, "which", autospec=True, return_value=None
             ) as which,
+            # `_resolve_sandbox_enabled` and the failure message both read the
+            # effective uid. Inert today -- the sandbox default is off either
+            # way -- but the resolver module pins it for the same reason and a
+            # container running as root would make it live the moment anything
+            # here asserts a sandbox decision.
+            patch.object(nodriver_worker.os, "geteuid", return_value=1000, create=True),
+            # `_emit_diag` reads a module global, not the environment: clearing
+            # `KINDLY_DIAGNOSTICS` does not reach it, because only the worker's
+            # own entry point assigns it.
+            patch.object(nodriver_worker, "_DIAG_ENABLED", False),
         ):
             launch.side_effect = _new_process
             pick_port.return_value = 9222
@@ -429,7 +505,7 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
 
             html = await fetch_html()
 
-            _, chromium_args = doubles.launch.call_args.args
+            executable, chromium_args = doubles.launch.call_args.args
             profile_flags = [a for a in chromium_args if a.startswith("--user-data-dir=")]
 
         self.assertIn("ok", html)
@@ -445,6 +521,20 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         # cleaned up if it is gone once the context manager has exited.
         self.assertEqual(len(profile_flags), 1, chromium_args)
         profile_dir = profile_flags[0].removeprefix("--user-data-dir=")
+        # The port and the executable must reach all three collaborators as the
+        # *same* values. Nothing else here checks that, and an independently
+        # drawn mutation battery walked straight through it: connecting on a
+        # port other than the one Chromium was launched on is exactly the fault
+        # this module's retry loop exists to handle, and every case stayed green
+        # against it.
+        port = doubles.pick_port.return_value
+        self.assertIn(f"--remote-debugging-port={port}", chromium_args)
+        self.assertEqual(executable, BROWSER_PATH)
+        self.assertEqual(doubles.wait_ready.call_args.kwargs["port"], port)
+        self.assertEqual(doubles.start.call_args.kwargs["port"], port)
+        self.assertEqual(
+            doubles.start.call_args.kwargs["browser_executable_path"], BROWSER_PATH
+        )
         self.assertTrue(os.path.basename(profile_dir).startswith("kindly-nodriver-"))
         self.assertFalse(
             os.path.exists(profile_dir),
@@ -538,6 +628,60 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
             doubles.call_sequence(),
             ["launch", "wait_ready", "terminate", "launch", "wait_ready", "terminate"],
         )
+        # A port is picked per attempt, not once for the run. Hoisting the pick
+        # out of the loop would send a retry at the port the previous, still
+        # dying browser is holding -- which is the failure it is retrying from.
+        self.assertEqual(doubles.pick_port.call_count, 2)
+
+    async def test_backoff_grows_with_each_attempt_and_scales_for_snap(self) -> None:
+        """Wait longer after each failed attempt, and longer again for a snap browser
+
+        The backoff is `base * 2**attempt * snap_multiplier`. Every other case
+        here sets the base to zero, which makes the whole expression zero and
+        leaves the arithmetic unasserted -- measured: gutting it survives them
+        all. So this case sets a real base and reads the durations back.
+
+        A snap-packaged Chromium is slower to open its DevTools endpoint, which
+        is why it gets its own multiplier; the two factors are asserted together
+        because one case can distinguish all three mutations -- dropping the
+        exponent, dropping the multiplier, and dropping both.
+
+        See :data:`SNAP_BROWSER_PATH` for why the snap path here is fabricated
+        rather than the real `/snap/bin/chromium`: the real one is classified
+        **non**-snap by the code under test, which is a production defect this
+        case would otherwise have papered over.
+
+        This is the only case that patches :func:`asyncio.sleep`. It is a global
+        and the harness avoids it for that reason, but a duration cannot be
+        observed without either replacing the clock or actually waiting 4.5 s.
+        """
+        recorded: list[float] = []
+
+        async def _record(delay: float) -> None:
+            recorded.append(delay)
+
+        with orchestration_harness(
+            environment={
+                "KINDLY_NODRIVER_RETRY_ATTEMPTS": "3",
+                "KINDLY_NODRIVER_RETRY_BACKOFF_SECONDS": "0.5",
+                "KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER": "3",
+            }
+        ) as doubles:
+            doubles.wait_ready.side_effect = RuntimeError(
+                "DevTools endpoint did not become ready in time"
+            )
+
+            with (
+                patch.object(nodriver_worker.asyncio, "sleep", _record),
+                self.assertRaises(RuntimeError),
+            ):
+                await fetch_html(browser_executable_path=SNAP_BROWSER_PATH)
+
+        self.assertEqual(doubles.launch.call_count, 3)
+        # 0.5 * 2**0 * 3, then 0.5 * 2**1 * 3. There is no third: the last
+        # attempt raises instead of backing off. The trailing 0.1 is the profile
+        # flush `_cleanup` waits for before removing the directory.
+        self.assertEqual(recorded, [1.5, 3.0, 0.1])
 
     async def test_does_not_retry_a_non_retryable_error(self) -> None:
         """Surface an unrecognised startup failure at once instead of retrying it
@@ -581,14 +725,19 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         -- that it returns ``None`` -- is asserted at component level; the
         translation into advice happens here and is asserted here.
         """
-        with orchestration_harness() as doubles:
-            # The harness pins `shutil.which` to find nothing for every case.
-            # This is the case that depends on it, so it states the dependency
-            # rather than inheriting a default silently.
-            self.assertIsNone(doubles.which("chromium"))
+        with (
+            orchestration_harness() as doubles,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            await fetch_html(browser_executable_path=None)
 
-            with self.assertRaises(RuntimeError) as raised:
-                await fetch_html(browser_executable_path=None)
+        # The resolver really did fall through to the `PATH` probe, rather than
+        # this case having been satisfied by some earlier branch. Asserting the
+        # pinned `shutil.which` returns None would only restate the fixture;
+        # asserting the code under test consulted it is an observation.
+        self.assertGreater(
+            doubles.which.call_count, 0, "the resolver never probed PATH"
+        )
 
         message = str(raised.exception)
         self.assertIn("KINDLY_BROWSER_EXECUTABLE_PATH", message)
