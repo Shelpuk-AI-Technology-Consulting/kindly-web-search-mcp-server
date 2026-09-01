@@ -649,17 +649,24 @@ def test_child_environment_drops_every_variable_the_project_reads() -> None:
     # cover either.
     os.environ.update({name: "planted" for name in names})
     os.environ.update({name.lower(): "planted" for name in names})
+    # Planted explicitly rather than relied upon: the scan's shape is upper case
+    # only, so `no_proxy` never arrives through `names`, and reading it from the
+    # ambient environment would make the control fire only on a machine that
+    # happens to export it -- passing vacuously everywhere else, which is the
+    # failure mode this whole check exists to prevent.
+    os.environ["no_proxy"] = "planted"
     try:
-        surviving = {name.upper() for name in _child_environment()}
+        child = _child_environment()
+        surviving = {name.upper() for name in child}
         survivors = sorted(names & surviving)
+        lowercase_survived = "no_proxy" in child
     finally:
         os.environ.clear()
         os.environ.update(original)
-    # An explicit control for the case that motivated the case-insensitive match.
-    # The scan's shape is upper case only, so `no_proxy` can never arrive through
-    # `names`; naming it here means the one lower-case variable this project
-    # actually reads has a test of its own rather than incidental coverage.
-    assert "no_proxy" not in _child_environment(), (
+    # The control for the case that motivated matching case-insensitively: the
+    # one lower-case variable this project reads gets a check of its own rather
+    # than incidental coverage.
+    assert not lowercase_survived, (
         "`no_proxy` survives the sweep. It is read at scrape/nodriver_worker.py "
         "and scrape/universal_html.py alongside `NO_PROXY`, and the sweep is "
         "case-insensitive precisely so that listing the upper-case name covers "
