@@ -80,6 +80,11 @@ LEDGER_PLATFORMS: dict[str, str] = {
 
 DIFFERENCE_HEADING = "## Why the two platforms differ"
 COMMAND_HEADING = "## The measurement command"
+RELOCATION_HEADING = "## Relocated claims"
+
+# What separates the two halves of a relocation row. A bare arrow would also
+# match one inside a node id, which pytest permits in a parametrisation label.
+RELOCATION_ARROW = " -> "
 
 # Environment prefixes and names the child run does not inherit. A failing set is
 # only reproducible if the run that produced it cannot be steered from outside,
@@ -311,6 +316,54 @@ def _recorded_failure_count(text: str, heading: str) -> int:
     return int(counts[0])
 
 
+def _relocated_claims(text: str, heading: str) -> list[tuple[str, str]]:
+    """Parse the retired-to-replacement rows the ledger records.
+
+    An id may leave a platform block only by passing, and the guard's complaint
+    about a listed id that vanished can fire only while the id is still listed --
+    so deleting a test and its ledger entry in one change looks exactly like a
+    repair. These rows are what makes the difference visible: each names where a
+    retired claim went, and :func:`test_relocated_claims_landed_where_the_ledger_says`
+    holds the replacement to a real run.
+
+    Rows are matched on the exact node id. A relocation whose replacement is
+    parameterized would need prefix matching, and none is -- deliberately: the
+    replacement in ``tests/test_server.py`` drives its cases through unittest's
+    ``subTest`` rather than through ``pytest.mark.parametrize``, which keeps
+    seven cases on one node id. That coupling is load-bearing in both directions,
+    and is recorded at the other end too. (Spelling that method's dotted name
+    here would trip ``scripts/check_plan_dag.py``, whose unittest detector is a
+    deliberately over-collecting shape scan and does not exempt prose.)
+
+    Args:
+        text: The whole document.
+        heading: The section holding the rows. A parameter rather than a
+            constant so the rejections below can be exercised against a synthetic
+            document, as every other parser here is.
+
+    Returns:
+        ``(retired id, replacement id)`` pairs, in the order written.
+
+    Raises:
+        AssertionError: When a row is not exactly two node ids separated by the
+            arrow. A row that cannot be parsed asserts nothing, and silently
+            skipping it would make a typo look like a passing check.
+    """
+    rows = []
+    for line in _fenced_block(text, heading, "text").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        halves = line.split(RELOCATION_ARROW)
+        assert len(halves) == 2 and all("::" in half for half in halves), (
+            f"Section '{heading}' of {LEDGER_PATH.name} holds the row\n"
+            f"  {line}\nwhich is not '<retired node id>{RELOCATION_ARROW}"
+            "<replacement node id>'."
+        )
+        rows.append((halves[0].strip(), halves[1].strip()))
+    return rows
+
+
 def _documented_platform_only_ids(text: str, platform: str) -> list[str]:
     """Parse the ids the document says fail on one platform and not the other.
 
@@ -522,6 +575,51 @@ def _synthetic_ledger(
     )
 
 
+def _assert_relocation_rows_are_canonical(text: str, heading: str) -> None:
+    """Assert one relocation block is a set written in one canonical order.
+
+    Sorted and duplicate-free for the reason the platform blocks are: a step's
+    diff should show the row it added rather than a reordered block. Parsing is
+    part of the assertion -- a malformed row is rejected by
+    :func:`_relocated_claims` on the way in, so all three rejections are reachable
+    from a synthetic document rather than confirmed once by hand.
+
+    Args:
+        text: The whole document.
+        heading: The section holding the rows.
+
+    Raises:
+        AssertionError: When a row is malformed, the rows are unsorted, or a
+            retired id appears more than once.
+    """
+    retired = [row[0] for row in _relocated_claims(text, heading)]
+    assert retired == sorted(retired), (
+        f"Section '{heading}' of {LEDGER_PATH.name} is not sorted by retired "
+        "node id."
+    )
+    assert len(retired) == len(set(retired)), (
+        f"Section '{heading}' of {LEDGER_PATH.name} names a retired node id more "
+        "than once; each is retired exactly once."
+    )
+
+
+def _synthetic_relocation(rows: list[str]) -> str:
+    """Build a minimal document holding one relocation block.
+
+    Args:
+        rows: The lines to place in the block, written verbatim so that a
+            malformed row is expressible.
+
+    Returns:
+        A document with a single ``## Linux`` section holding the block. The
+        heading matches the one :func:`test_parsers_reject_a_malformed_section`
+        passes; the relocation parsers read no other part of a section, so no
+        ``Result`` or ``Remaining`` line is needed and none is written.
+    """
+    listing = "\n".join(rows)
+    return f"# Synthetic\n\n## Linux\n\n```text\n{listing}\n```\n"
+
+
 def _assert_block_is_sorted_and_unique(text: str, heading: str) -> None:
     """Assert one platform's block is a set written in one canonical order.
 
@@ -726,6 +824,24 @@ def test_child_environment_drops_every_variable_the_project_reads() -> None:
             id="two-blocks",
         ),
         pytest.param(
+            _synthetic_relocation(["b::t -> x::t", "a::t -> x::t"]),
+            _assert_relocation_rows_are_canonical,
+            "not sorted",
+            id="relocation-unsorted",
+        ),
+        pytest.param(
+            _synthetic_relocation(["a::t -> x::t", "a::t -> y::t"]),
+            _assert_relocation_rows_are_canonical,
+            "more than once",
+            id="relocation-duplicated",
+        ),
+        pytest.param(
+            _synthetic_relocation(["a::t -> x::t -> y::t"]),
+            _assert_relocation_rows_are_canonical,
+            "which is not",
+            id="relocation-malformed-row",
+        ),
+        pytest.param(
             "# Synthetic\n\n## Windows\n\n- **Result:** 0 failed\n"
             "- **Remaining:** 0 failed\n\n```text\n```\n",
             _assert_block_is_sorted_and_unique,
@@ -770,40 +886,42 @@ def test_parsers_accept_a_drained_section() -> None:
     assert _ledger_node_ids(text, "## Linux") == []
 
 
-@pytest.mark.subsystem
-@pytest.mark.slow
-def test_live_outcome_matches_the_ledger(tmp_path: Path) -> None:
-    """Assert a real run fails at exactly the node ids the ledger names.
+@pytest.fixture(scope="session")
+def live_outcome(tmp_path_factory: pytest.TempPathFactory) -> dict[str, set[str]]:
+    """Run the suite once in a child process and return its node-id sets.
 
-    The check the whole file exists for. It runs the suite in a child process and
-    compares, so it is measuring behaviour rather than re-reading the document.
+    Two tests compare against the same run, and the run costs roughly as much as
+    the suite itself. Session scope means one child, and lazy evaluation means a
+    selection that deselects both -- ``-m "not slow"``, say -- spawns none.
 
-    Four outcomes are reported separately because they call for opposite fixes,
-    and a single set-inequality message would be the wrong thing to read at three
-    in the morning: a failure the ledger does not list is a regression; a listed
-    id that no longer exists is a deleted or renamed test, not a repair; a listed
-    id that now skips is a test that stopped running; and only a listed id that
-    ran and passed is a repair whose entry should be deleted.
+    The two assertions here are integrity checks on the *recording* rather than
+    on the ledger: neither test can be believed if the child never produced a
+    comparable result, or if what it produced disagrees with its own exit code.
+    They live here so both tests inherit them.
+
+    One consequence is deliberate. :func:`test_live_outcome_matches_the_ledger`
+    skips on a platform the ledger does not measure, and a fixture is resolved
+    before a test body runs, so that skip no longer happens before the child
+    starts. Nothing is wasted:
+    :func:`test_relocated_claims_landed_where_the_ledger_says` is not
+    platform-gated and needs the same run anyway. The note is exact only while
+    both are selected: ``-k live_outcome`` alone on an unmeasured platform now
+    pays for a child run and then skips, where before it skipped at once.
 
     Args:
-        tmp_path: pytest's per-test temporary directory, where the child's probe
-            output is written.
-    """
-    # Nothing to compare against on a platform nobody measured. Skipping loudly
-    # beats passing silently: a guard that cannot fail is indistinguishable from
-    # no guard.
-    if sys.platform not in LEDGER_PLATFORMS:
-        pytest.skip(
-            f"{LEDGER_PATH.name} records no baseline for sys.platform="
-            f"{sys.platform!r}; it covers {sorted(LEDGER_PLATFORMS)}."
-        )
+        tmp_path_factory: pytest's session-scoped temporary directory factory,
+            where the child's probe output is written.
 
-    probe_path = tmp_path / "probe.json"
+    Returns:
+        The ``collected``, ``failed`` and ``skipped`` node-id sets.
+    """
+    probe_path = tmp_path_factory.mktemp("baseline") / "probe.json"
     completed = _run_suite_in_child(probe_path)
     # Exit 0 means the ledger should be empty and exit 1 means it should not;
-    # both are compared below. Any other code -- 2 for a collection error, 3 for
-    # an internal error, 4 for a usage error -- means the child never produced a
-    # comparable result, so it is reported as itself rather than as a mismatch.
+    # both are compared by the tests below. Any other code -- 2 for a collection
+    # error, 3 for an internal error, 4 for a usage error -- means the child never
+    # produced a comparable result, so it is reported as itself rather than as a
+    # mismatch.
     assert completed.returncode in (0, 1), (
         f"The child pytest run exited {completed.returncode}, so it produced no "
         "comparable outcome.\n"
@@ -821,19 +939,122 @@ def test_live_outcome_matches_the_ledger(tmp_path: Path) -> None:
         "recording path is broken and its result must not be trusted.\n"
         f"stdout:\n{completed.stdout}"
     )
+    return outcome
+
+
+def test_relocation_block_is_sorted_and_left_no_id_in_a_platform_block() -> None:
+    """Assert the relocation rows are canonical and their retired ids have left
+
+    The canonical half is delegated, so that the same assertions are reachable
+    from a synthetic document; what stays here is the cross-check between the two
+    things this document now maintains at once. A retired id still listed as
+    failing would mean the ledger claims a test both left and remains, and the
+    two checks would then disagree about the same id.
+    """
+    text = _ledger_text()
+    _assert_relocation_rows_are_canonical(text, RELOCATION_HEADING)
+    retired = [row[0] for row in _relocated_claims(text, RELOCATION_HEADING)]
+    for heading in LEDGER_PLATFORMS.values():
+        listed = set(_ledger_node_ids(text, heading)) & set(retired)
+        assert not listed, (
+            f"{sorted(listed)} are recorded as relocated and are still listed "
+            f"under '{heading}'. An id cannot both have left and remain."
+        )
+
+
+@pytest.mark.subsystem
+@pytest.mark.slow
+def test_relocated_claims_landed_where_the_ledger_says(
+    live_outcome: dict[str, set[str]],
+) -> None:
+    """Assert each retired id is gone and each replacement ran and passed
+
+    The check that turns a relocation row from a promise into a fact. Without it
+    the strongest statement available about a retired claim is a sentence in a
+    pull request, because the live comparison can only complain about ids the
+    ledger still lists -- and a relocation removes the id and its entry in the
+    same change.
+
+    Four outcomes are named separately because they call for different fixes: a
+    retired id still collected means the row is stale or the old test came back;
+    a replacement that was never collected means the claim has no home at all; a
+    failing replacement is a regression; and a skipped one is asserting nothing
+    on this platform, which a passing run would otherwise hide.
+
+    Args:
+        live_outcome: The shared child run's node-id sets.
+    """
+    complaints: dict[str, list[str]] = {
+        "Retired but still collected (the row is stale, or the old test is back)": [],
+        "Replacement never collected (the claim has no home; the row is a "
+        "promise)": [],
+        "Replacement collected and failing (a regression, not a relocation)": [],
+        "Replacement collected and skipped (it asserts nothing here)": [],
+    }
+    titles = list(complaints)
+    for retired, replacement in _relocated_claims(_ledger_text(), RELOCATION_HEADING):
+        row = f"{retired}{RELOCATION_ARROW}{replacement}"
+        if retired in live_outcome["collected"]:
+            complaints[titles[0]].append(row)
+        if replacement not in live_outcome["collected"]:
+            complaints[titles[1]].append(row)
+        elif replacement in live_outcome["failed"]:
+            complaints[titles[2]].append(row)
+        elif replacement in live_outcome["skipped"]:
+            complaints[titles[3]].append(row)
+
+    reported = {title: rows for title, rows in complaints.items() if rows}
+    assert not reported, (
+        f"The live run disagrees with '{RELOCATION_HEADING}' in "
+        f"{LEDGER_PATH.name}.\n"
+        + "\n".join(
+            f"{title}:\n  " + "\n  ".join(rows) for title, rows in reported.items()
+        )
+    )
+
+
+@pytest.mark.subsystem
+@pytest.mark.slow
+def test_live_outcome_matches_the_ledger(live_outcome: dict[str, set[str]]) -> None:
+    """Assert a real run fails at exactly the node ids the ledger names.
+
+    The check the whole file exists for. It runs the suite in a child process and
+    compares, so it is measuring behaviour rather than re-reading the document.
+
+    Four outcomes are reported separately because they call for opposite fixes,
+    and a single set-inequality message would be the wrong thing to read at three
+    in the morning: a failure the ledger does not list is a regression; a listed
+    id that no longer exists is a deleted or renamed test, not a repair; a listed
+    id that now skips is a test that stopped running; and only a listed id that
+    ran and passed is a repair whose entry should be deleted.
+
+    Args:
+        live_outcome: The shared child run's node-id sets.
+    """
+    # Nothing to compare against on a platform nobody measured. Skipping loudly
+    # beats passing silently: a guard that cannot fail is indistinguishable from
+    # no guard.
+    if sys.platform not in LEDGER_PLATFORMS:
+        pytest.skip(
+            f"{LEDGER_PATH.name} records no baseline for sys.platform="
+            f"{sys.platform!r}; it covers {sorted(LEDGER_PLATFORMS)}."
+        )
 
     documented = set(_ledger_node_ids(_ledger_text(), LEDGER_PLATFORMS[sys.platform]))
     complaints = {
         "Failing but not in the ledger (a regression; fix the test, do not add "
-        "the id)": sorted(outcome["failed"] - documented),
+        "the id)": sorted(live_outcome["failed"] - documented),
         "In the ledger but no longer collected (deleted or renamed, not "
         "repaired; an id may leave this ledger only by passing)": sorted(
-            documented - outcome["collected"]
+            documented - live_outcome["collected"]
         ),
         "In the ledger and now skipped (it stopped running; that is not a "
-        "repair either)": sorted(documented & outcome["skipped"] - outcome["failed"]),
+        "repair either)": sorted(documented & live_outcome["skipped"] - live_outcome["failed"]),
         "In the ledger, ran, and passed (a repair; delete the id)": sorted(
-            documented & outcome["collected"] - outcome["failed"] - outcome["skipped"]
+            documented
+            & live_outcome["collected"]
+            - live_outcome["failed"]
+            - live_outcome["skipped"]
         ),
     }
     reported = {title: ids for title, ids in complaints.items() if ids}

@@ -57,6 +57,16 @@ against a live child run by `tests/test_baseline_failure_ledger.py`. E1-2 throug
 E1-5 each delete exactly the ids they repair; E1-6 is reached when the ledger is
 empty, which is the same statement as the guard finding no failures.
 
+**The ledger is now empty on both blocks** — E1-5 removed the last id. It also
+gave the guard a second invariant, because its repair *renamed* the test and so
+retired the node id rather than repairing it in place. An id that is deleted
+along with its ledger entry is invisible to the guard's "listed but no longer
+collected" complaint, which fires only for ids still listed, so a dropped claim
+and a repair look identical. The ledger now carries machine-readable
+`<retired id> -> <replacement id>` rows and the guard holds each replacement to
+the same child run. Linux is measured; the Windows blocks were drained on a
+stated argument, which E1-6 must still replace with a real Windows run.
+
 ### 1.2 What is actually uncovered
 
 Most of `scrape/` passes and asserts real behaviour. The uncovered surface is
@@ -886,6 +896,26 @@ conversion bug.
    its explicit-value, malformed, zero and negative cases are real requirements
    with no other home. One parameterized test over defaulting, validation,
    clamping and `num_results` limiting, with the `os.name` patching removed.
+
+   **Landed, and the clamping half turned out to be uncovered by anything.** The
+   only pre-existing case supplying a value above the ceiling also supplied a
+   small `num_results`, so the result-count bound produced the same answer and
+   deleting `min(value, 5)` from the resolver broke no test — measured on the
+   parent commit, not inferred. The ceiling is product surface: the `web_search`
+   docstring shipped to the calling model states `clamped 1..5`. It now has a
+   row whose `num_results` is large enough that no other bound can mask it.
+
+   **Three methods collapsed into one, not one.** The two that were *not* in the
+   ledger passed only by coincidence of their inputs — they faked a platform the
+   resolver does not read. All three retirements are recorded as relocation rows
+   rather than described in a pull request.
+
+   **Each row states the single-line mutation it detects**, carried on the row
+   rather than in prose, and reported when the row fails. The positivity guard
+   needs two mutations: `0` is already falsy, so dropping the `> 0` conjunct
+   kills the negative row and leaves the zero row passing. `max(1, ...)` is an
+   equivalent mutant — unreachable given the filter above it — and is triaged in
+   the docstring instead of tested.
 
 **B. Enforce green — immediately after A, before anything else.** The failure this
 document exists to fix was not that tests broke; it was that a red suite was

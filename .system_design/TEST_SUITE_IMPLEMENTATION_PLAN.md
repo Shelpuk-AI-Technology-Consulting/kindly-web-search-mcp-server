@@ -285,9 +285,27 @@ it carries no X-number.
 - **E1-4.** Rebuild `_FakeProc` as E2-1's typed fake.
   *Verify:* all three pass; deleting `stdout` from the fake fails both mypy and
   the runtime conformance test; the ledger shrinks by exactly the ids repaired.
-- **E1-5.** *Verify:* passes on both platforms; each retained case (explicit,
-  malformed, zero, negative, `num_results` limit) fails if the clamp is removed;
-  the ledger shrinks by exactly the id repaired.
+- **E1-5.** *Verify:* passes on both platforms; **every case fails under a
+  stated single-line mutation of the resolver**, including a ceiling case that
+  fails when `min(value, 5)` is removed; the ledger shrinks by exactly the id
+  repaired, and the retired id is recorded as a relocation row rather than
+  described in prose.
+  **The original wording was unsatisfiable and is corrected here rather than
+  quietly failed.** It read "each retained case (explicit, malformed, zero,
+  negative, `num_results` limit) fails if the clamp is removed." Measured on the
+  parent commit: deleting `min(value, 5)` leaves all five passing, because the
+  only case supplying a value above the ceiling also supplies a `num_results`
+  small enough that the result-count bound produces the same answer. No choice
+  of retained cases satisfies the clause; a ceiling case is what does, and the
+  ceiling is product surface (`clamped 1..5` in the tool docstring). Stated so
+  the next reader does not score this step incomplete against a clause it could
+  never meet.
+  **This step renames, so its id leaves by deletion**, which the ledger's
+  relocation loophole makes indistinguishable from a dropped claim. It therefore
+  builds the machine-readable `<retired id> -> <replacement id>` block the ledger
+  asked for and holds each replacement to the live child run. It covers its own
+  three retirements only; the five older rows stay prose, declined in writing
+  with the reason, and nothing later is scoped to convert them.
 - **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, and
   `BASELINE_FAILURES.md` lists no remaining ids — the two facts are checked
   together, since either alone can be true while the other is not. CI enforcement
@@ -569,6 +587,17 @@ duplicating tests or touching the same files.
   (`_resolve_transport`, `_resolve_reuse_enabled`): unset, blank, each accepted
   value, an unrecognised value. **Range parsing** (`_parse_port_range`,
   `_resolve_port_range`): well-formed, inverted bounds, non-numeric, empty.
+  **Three gaps handed here by E1-5**, all in
+  `_resolve_web_search_max_concurrency`, all deliberate: `num_results <= 0` skips
+  the result-count bound entirely and so returns the unbounded value — the caller
+  passes `len(results)`, and a `0` would build an `asyncio.Semaphore(0)` that
+  never opens, which is worth a case here; a blank or whitespace-only value is
+  killed by neither the `.strip()` nor the `or ""` and reaches the same fallback
+  as an unset one, so the `.strip()` is an equivalent mutation; and `max(1, ...)`
+  is unreachable given the `> 0` filter above it. E1-5 covers seven rows in
+  `tests/test_server.py` and states each row's mutation; **if this step absorbs
+  that table it must retire the relocation rows in `BASELINE_FAILURES.md` in the
+  same change**, or the ledger guard goes red for a correct rename.
   **Port selection** (`_pick_port`): a port inside the configured range, and
   behaviour when every port in the range is occupied. **Pattern construction**
   (`_resolve_transport_security`, `_cors_origin_regex`): the produced allowlist
