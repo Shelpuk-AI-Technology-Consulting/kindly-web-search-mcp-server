@@ -874,6 +874,28 @@ duplicating tests or touching the same files.
   and are listed in the reviewer's guard registry, so "retire the node ids"
   applied to the file rather than to the four cases would take the boundary with
   them.
+  **`_terminate_process_tree` does not kill a tree on POSIX. Confirmed
+  defect — this step's "killed parent leaves no orphan" bullet already owns it,
+  and should be written knowing it starts red.** The non-Windows branch is
+  `proc.kill()` + `await proc.wait()`, and `Process.kill()` signals the direct
+  child only. The Windows branch walks the tree explicitly with
+  `taskkill /T /F /PID`, so the two platforms do different things under one
+  name. Measured on Linux against a child that had spawned a grandchild:
+
+  ```
+  before: child alive=True   grandchild alive=True
+  after : child alive=False  grandchild alive=True  PPid: 1  -> ORPHANED
+  ```
+
+  In production the grandchild is Chromium, and a SIGKILLed worker runs no
+  cleanup of its own — so a timed-out worker leaves a browser behind on Linux
+  and does not on Windows. Raised by the automatic reviewer on E2-3, which moved
+  the function verbatim and did not change it. Fixing it is a behaviour change to
+  process termination and belongs with the lifecycle battery that can prove it,
+  not with an extraction. Candidates worth measuring: a process group
+  (`start_new_session=True` at spawn, then `os.killpg`), or walking children
+  before the kill.
+
   **A pre-existing cost this step should decide about, measured by E2-3's review
   and owned by nobody yet.** With diagnostics enabled, every worker run is padded
   by up to `STREAM_HEARTBEAT_INTERVAL_SECONDS` (2.0 s) *after the child has
