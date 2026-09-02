@@ -81,7 +81,12 @@ EXPECTED_EXTRA_BOUNDS: dict[str, dict[str, str]] = {
         "hypothesis": ">=6.167,<7",
         "coverage": "==7.13.5",
         "diff-cover": ">=10.4,<11",
-        "mypy": ">=2.3.1,<3",
+        # `mypy` is deliberately absent here while it remains in `dev`. The
+        # Protocol type-check harness shells out to mypy, so it is a child
+        # process and carries the `subsystem` marker; the ratchet lane runs the
+        # `fast` selection only and therefore never invokes mypy. Section 10.4
+        # of the design document left this open for that step to settle, and
+        # this is the settlement.
         "packaging": ">=24",
     },
 }

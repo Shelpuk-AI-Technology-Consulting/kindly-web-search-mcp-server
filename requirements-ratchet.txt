@@ -23,11 +23,28 @@
 # The platform matters: a lockfile taken on Windows or on another Python version
 # silently moves the coverage baseline the ratchet compares against.
 #
+# 2026-09-01: mypy and its exclusive subtree (ast_serialize, librt,
+# mypy_extensions, pathspec) were removed when the Protocol type-check harness
+# was marked `subsystem`. That harness shells out to mypy, so it is a child
+# process; this lane runs the `fast` selection only and never invokes it.
+#
+# That removal was computed rather than guessed: `.[ratchet]` was installed into
+# a clean Python 3.13 Linux virtualenv CONSTRAINED by this file's own previous
+# contents --
+#
+#     pip install '.[ratchet]' -c requirements-ratchet.txt
+#
+# -- and the frozen result differed from it by exactly those five entries and
+# nothing else. The constraint file is the point: an unconstrained regeneration
+# would also pull in whatever unrelated version drift has accumulated since the
+# date below, and section 10.4 reserves a moving baseline for a labelled
+# coverage-baseline-reset change. The surviving lines are therefore byte-identical
+# to the previous generation.
+#
 # Last generated: 2026-08-30 - Python 3.13.7, Linux (Ubuntu 22.04 on WSL2).
 
 annotated-types==0.8.0
 anyio==4.14.2
-ast_serialize==0.8.0
 attrs==26.1.0
 babel==2.18.0
 beautifulsoup4==4.15.0
@@ -54,18 +71,14 @@ Jinja2==3.1.6
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 jusText==3.0.2
-librt==0.15.0
 lxml==6.1.2
 lxml_html_clean==0.4.5
 markdownify==1.2.3
 MarkupSafe==3.0.3
 mcp==1.29.1
 mss==10.2.0
-mypy==2.3.1
-mypy_extensions==1.1.0
 nodriver==0.50.3
 packaging==26.3
-pathspec==1.1.1
 pluggy==1.6.0
 pycparser==3.0
 pydantic==2.13.5

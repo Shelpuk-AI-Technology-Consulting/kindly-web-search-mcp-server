@@ -78,7 +78,6 @@ ratchet = [
     "hypothesis>=6.167,<7",
     "coverage==7.13.5",
     "diff-cover>=10.4,<11",
-    "mypy>=2.3.1,<3",
     "packaging>=24",
 ]
 # Optional extras for improved PDF-to-Markdown conversion on supported Python versions.
@@ -146,3 +145,77 @@ markers = [
     "extraction: live content-extraction canary; browser, no credential",
     "slow: over a second",
 ]
+
+# The first mypy configuration in this repository, added with the worker-process
+# Protocol. Section 10.3 of `.system_design/TEST_SUITE.md` is the policy: the
+# type-check job is deliberately narrow. It runs over the modules that declare or
+# implement the test-double Protocols, not the whole tree -- repo-wide type
+# checking on ~6,849 largely unannotated lines is its own project. This job
+# exists for one purpose, catching the signature drift that `runtime_checkable`
+# cannot see, and is scoped to earn its place immediately.
+[tool.mypy]
+python_version = "3.13"
+# `files` makes the narrow target reproducible: a bare `mypy` from the repository
+# root checks exactly the surface the job is scoped to, so the harness and a
+# developer's local run cannot diverge.
+files = [
+    "src/kindly_web_search_mcp_server/scrape/types.py",
+    "tests/doubles",
+]
+# There is no `py.typed` marker under `src/`, and the project is installed as a
+# modern editable. Without this, mypy reports `Skipping analyzing
+# "kindly_web_search_mcp_server.scrape": module is installed, but missing library
+# stubs or py.typed marker [import-untyped]`, `WorkerProcess` degrades to `Any`,
+# and EVERY conformance assignment passes vacuously -- the positive harness case
+# goes green on a completely broken configuration. Adding `py.typed` is the
+# alternative and is deliberately not taken: it publishes this project's types to
+# downstream consumers, a wider commitment than a test harness should make.
+#
+# `$MYPY_CONFIG_FILE_DIR` is required, not cosmetic. A relative `mypy_path`
+# resolves against the mypy process's working directory, not this file's
+# location, so a child invocation started elsewhere would silently lose the path.
+# The harness pins `cwd` to the repository root as well; either alone is a
+# single point of failure.
+mypy_path = "$MYPY_CONFIG_FILE_DIR/src"
+# Catches a per-module section below whose `module` key matches nothing -- the
+# silent failure this configuration is most exposed to, because a mistyped key
+# disables its settings with no warning and a test that merely reads the setting
+# out of this file still passes.
+#
+# mypy's documentation says reporting this "requires turning off incremental
+# mode". Measured on the pinned 2.3.1, it reports either way, cold cache and
+# warm, so `incremental = false` is NOT set: it cost 1.74s against 0.15s per
+# invocation, and the harness makes seven of them. Because that leaves the guard
+# resting on undocumented behaviour, `test_unused_configuration_sections_are_reported`
+# proves the reporting still happens rather than assuming it -- if a future mypy
+# starts honouring its own documentation, that case goes red instead of this
+# guard going quiet.
+warn_unused_configs = true
+# A file that MUST fail type-checking cannot sit in the path the job checks, or
+# the job is red forever. Note that `exclude` removes a file from DISCOVERY only:
+# it is ignored for a file named explicitly on the command line, which is how the
+# harness reaches these fixtures, and it does not remove them from CONFIGURATION.
+#
+# Do NOT add a per-module override for them here. It would match nothing on an
+# ordinary run, `warn_unused_configs` would report it, and
+# `test_ordinary_target_reports_no_unused_configuration_sections` would go red.
+# The one fixture needing non-default strictness declares it inline with a
+# `# mypy:` comment instead; the other three fail under mypy's own defaults and
+# need no configuration at all.
+exclude = ["(^|/)tests/typing_negative/"]
+
+# The Protocol and the double built against it. `disallow_any_expr` is what
+# catches an `Any` arriving by INFERENCE inside these modules -- neither
+# `disallow_any_explicit` (written-out `Any` annotations only) nor
+# `disallow_untyped_defs` (unannotated definitions only) sees that case.
+#
+# It is NOT what rejects a mock substituted for the double: `AsyncMock()` has
+# type `AsyncMock`, not `Any`, so no expression here is ever flagged. The
+# `assert_type` block in `tests/doubles/worker_process.py` is that mechanism.
+# Both are needed; neither is redundant.
+[[tool.mypy.overrides]]
+module = [
+    "kindly_web_search_mcp_server.scrape.types",
+    "tests.doubles.worker_process",
+]
+disallow_any_expr = true

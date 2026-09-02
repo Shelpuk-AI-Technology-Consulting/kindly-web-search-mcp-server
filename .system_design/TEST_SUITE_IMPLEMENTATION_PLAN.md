@@ -324,9 +324,14 @@ it carries no X-number.
   — a buffer-backed fake returning `bytearray` or `memoryview` no longer
   type-checks. And this step must **state the harness's marker**: it shells out to
   mypy, which §10.5's `subsystem` definition ("a real socket or child process")
-  covers, but §10.4 currently puts `mypy` in the `ratchet` extra on the assumption
-  the harness stays in the hermetic set. Mark it `subsystem` and `mypy` leaves
-  both the `ratchet` extra and the lockfile.
+  covers, but §10.4 put `mypy` in the `ratchet` extra on the assumption the
+  harness stays in the hermetic set. **Settled: marked `subsystem`, and `mypy`
+  left both the `ratchet` extra and the lockfile** (with its exclusive subtree —
+  `mypy_extensions`, `pathspec`, `ast_serialize`, `librt`), removed by a
+  regeneration constrained by the lockfile's own previous contents so no other
+  pin moved. Consequence for the CI epic, now carried by §10.3's Install column:
+  `subsystem` (E4-3) and `types` (E4-5) must install `.[dev]`, as must E4-1's
+  broad job, which includes the `subsystem` marker.
   *Verify:* the harness fails if the negative fixture starts type-checking
   cleanly; removing `stdout` from the fake fails mypy and the conformance test; a
   test documents that `isinstance` alone does not catch a wrong `wait()`
@@ -342,7 +347,17 @@ it carries no X-number.
   parameter on any public function; `universal_html.py` retains the Markdown-probe
   path and no subprocess management.
 - **E2-4.** **Production change**, annotation only, since E2-1 already placed the
-  Protocol in `src/`. *Verify:* mypy checks the production signature against the
+  Protocol in `src/`. **Sized on a narrower reading than the work requires.**
+  Two other functions already take `proc: asyncio.subprocess.Process` —
+  `_emit_worker_heartbeat` and `_terminate_process_tree` — and once the runner's
+  parameter becomes `WorkerProcess`, passing it into either is an error, because
+  `WorkerProcess` is not assignable to `Process`. Two further things bite when
+  `worker_runner.py` joins §10.3's `types` target: `universal_html.py:185`
+  already fails that check today with `Module has no attribute "STARTUPINFO"`
+  (mypy narrows on `sys.platform`, not on the `os.name` guard the code uses), and
+  an untyped third-party import must be silenced at the import site rather than
+  by loosening the harness's import assertion. E2-4 also decides `pid`: the
+  Protocol declares `int` while production still guards `proc.pid is not None`. *Verify:* mypy checks the production signature against the
   Protocol; changing the Protocol without the function fails.
 
 ---
