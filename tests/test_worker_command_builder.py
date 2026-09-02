@@ -42,7 +42,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kindly_web_search_mcp_server.scrape import universal_html
+from kindly_web_search_mcp_server.scrape import universal_html, worker_runner
 from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
 from kindly_web_search_mcp_server.scrape.universal_html import (
     UniversalHtmlLoaderConfig,
@@ -397,14 +397,34 @@ def test_every_parameter_is_keyword_only() -> None:
     )
 
 
-def test_no_public_callable_takes_a_command_parameter() -> None:
-    """Keep the child command off the module's public surface
+@pytest.mark.parametrize(
+    ("module", "expect_a_public_surface"),
+    [
+        pytest.param(universal_html, True, id="universal_html"),
+        pytest.param(worker_runner, False, id="worker_runner"),
+    ],
+)
+def test_no_public_callable_takes_a_command_parameter(
+    module: Any, expect_a_public_surface: bool
+) -> None:
+    """Keep the child command off each module's public surface
 
     Accepting a caller-supplied command would turn "execute an arbitrary
     process" into a supported input of a module whose url argument is already
     attacker-influenced. The seam is private by design; asserted across the
     whole public surface so the next extraction inherits the guard rather than
-    writing its own.
+    writing its own — which is what happened when the runner moved to
+    `worker_runner.py`, and why this sweeps two modules.
+
+    **The two modules are held to different standards, deliberately.**
+    `universal_html.py` has a public surface — `fetch_html_via_nodriver`,
+    `load_url_as_markdown`, `html_to_markdown` — and the sweep must be shown to
+    be looking at it, or a filter that matched nothing would pass forever.
+    `worker_runner.py` has none at all: every symbol in it is underscored,
+    because a module that exists to run a process the caller names should not
+    offer that capability to anyone. Asserting emptiness there is the stronger
+    claim and subsumes the sweep, so the two expectations are carried by one
+    parameter rather than by two tests that could drift apart.
 
     The forbidden names are a **set**, not the two this function is named for:
     the hole is the capability, not a spelling, and `argv=` or `args=` opens it
@@ -425,13 +445,20 @@ def test_no_public_callable_takes_a_command_parameter() -> None:
 
     public = {
         name: value
-        for name, value in vars(universal_html).items()
+        for name, value in vars(module).items()
         if not name.startswith("_")
         and callable(value)
-        and getattr(value, "__module__", None) == universal_html.__name__
+        and getattr(value, "__module__", None) == module.__name__
     }
-    # A filter that matched nothing would leave the loop below silently green.
-    assert public, "the public-surface filter matched no callable"
+    if expect_a_public_surface:
+        # A filter that matched nothing would leave the loop below silently green.
+        assert public, "the public-surface filter matched no callable"
+    else:
+        assert not public, (
+            f"{module.__name__} grew a public callable ({sorted(public)}); it is "
+            f"meant to expose none, and anything it does expose must be swept "
+            f"for a command parameter above"
+        )
     for name, value in public.items():
         named = {
             parameter_name

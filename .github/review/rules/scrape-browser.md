@@ -2,12 +2,22 @@
 
 The fallback path for every URL no site-specific handler claims: HTTP fetch, HTML
 extraction and sanitising, and a headless-Chromium loader driven through
-`nodriver`. `nodriver_worker.py` (~1,280 lines) and `universal_html.py` (~1,320)
-are the two largest files in the repository.
+`nodriver`. `nodriver_worker.py` (~1,280 lines) is the largest file in the
+repository; `universal_html.py` (~900) was the second until the parent-side
+process management moved out of it into `worker_runner.py` (~690).
 
 **This is the only part of this server that starts a subprocess and hands it a
 command line.** That is a different risk class from parsing a JSON API, and it is
 why this rule is separate from `content-resolvers`.
+
+That risk now has a deliberate shape, and a change that blurs it is a finding.
+`universal_html.py` decides *what* to run and builds the command; `worker_runner.py`
+runs it and owns everything about the child — spawn, streams, heartbeat,
+termination. The loader imports neither `asyncio` nor `subprocess`, and neither
+module exposes a public callable taking a caller-supplied command. The split is
+not stylistic: the gating coverage configuration exempts files rather than
+regions, so process code drifting back into the loader either un-gates the
+hermetically tested Markdown path or gates code that has no hermetic seam.
 
 ## Launch arguments are a credential surface
 
@@ -129,6 +139,15 @@ These files are large and hard to test end to end — which raises rather than
 lowers the bar for testing the *decisions*: which flags are built, what gets
 redacted, what is retried, what is bounded. A change to any of those five with no
 test is a finding.
+
+Two more, both load-bearing and listed in `python-tests.md`:
+`test_worker_command_builder.py` owns the worker command's exact shape and sweeps
+both modules' public surfaces for a command parameter, and `test_worker_runner.py`
+holds the loader/runner boundary described above and drives the runner against a
+real child process. **The runner has no hermetic seam by design**, so a reviewer
+should expect its behavioural cases to spawn something and be marked `subsystem`;
+a change that adds a spawn-injection point to make them hermetic is a design
+change to argue for, not a test improvement.
 
 The split between the first two is deliberate and worth keeping. Flag and
 default resolution — sandbox, browser executable, retry attempts, the Chromium

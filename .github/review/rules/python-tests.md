@@ -48,7 +48,7 @@
 
 ## The guard tests — treat these as load-bearing
 
-Ten tests exist to hold an invariant that nothing else enforces. A pull request
+Eleven tests exist to hold an invariant that nothing else enforces. A pull request
 that changes what they guard, without changing them, is a finding; a pull request
 that *weakens* one to make a change pass is a critical finding.
 
@@ -63,6 +63,7 @@ that *weakens* one to make a change pass is a critical finding.
 | `test_coverage_configuration.py` | that `.coveragerc`, `.coveragerc-gate` and `.coveragerc-subprocess` match TEST_SUITE.md §10.4 and still behave — the base config reports an unexecuted module at zero, the gate config omits the modules with no hermetic seam, and the subprocess config captures a child process |
 | `test_worker_process_protocol.py` | that the `WorkerProcess` Protocol names exactly the surface production consumes, and that the typed double still satisfies it both at run time and statically — it shells out to mypy over four committed negative fixtures and asserts each is rejected by its own diagnostic code, so a mock substituted for the double, a double missing a member, an explicitly `Any`-typed one, and a `bytearray` stream payload all stay rejected — the last is the only thing enforcing the `strict_bytes` constraint, which no runtime test can prove. It also holds the shape to **one** definition: any class outside the two allow-listed modules that mentions the *whole* worker-process surface fails it, which is what stops a later author reimplementing the canonical double instead of importing it. Its reach is that whole-surface shape and no more — the double that caused the original outage named only `returncode` and `communicate()` and would not be reported; `DETECTOR_CASES` pins both directions |
 | `test_worker_command_builder.py` | that no public callable defined in `scrape/universal_html.py` accepts a caller-supplied child command — the module's url argument is attacker-influenced, so such a parameter on its public surface would turn "execute an arbitrary process" into a supported input. The seam is private by design: the command builder is module-private and the runner extraction that follows keeps its command argument private too, which is why the assertion sweeps the whole public surface rather than one function. The forbidden names are a set — `command`, `cmd`, `argv`, `args`, `executable`, `program` — because the hole is the capability rather than a spelling; **variadic parameters are exempt deliberately**, so a public `*args` does not raise a false alarm on a guard whose cheapest escape would be to weaken it. Each name is verified to fire, and both exemptions to stay quiet. The rest of the module pins the worker command's exact shape by whole-list equality, pooled and unpooled; loosening those to membership to make a command-line change pass is weakening a guard |
+| `test_worker_runner.py` | the module boundary between the browser loader and the parent-side process runner. `scrape/universal_html.py` must import neither `asyncio` nor `subprocess` — both are needed to start, wait on, stream from or kill a process, so their joint absence *is* the "no process management here" claim rather than a proxy for it — while still defining the command builder and the Markdown-probe path, so the split cannot be satisfied by moving everything. It also names the moved surface as a list, so a partial move back fails instead of drifting; requires the runner to expose no public callable at all; and forbids `from asyncio import create_subprocess_exec` in the runner, which would bind the spawn primitive at import time and make it unreplaceable. That boundary is what the gating coverage configuration's file-granular `omit` rests on: re-mixing the two files silently un-gates the probe path or gates code with no hermetic seam. Relaxing any of these to let process code back into the loader is weakening a guard |
 | `test_baseline_failure_ledger.py` | **two** invariants. First, that `.system_design/BASELINE_FAILURES.md` names exactly the tests that fail today — it re-runs the suite in a child process with the live-test opt-ins cleared and compares node ids, so a repair that forgets to delete its ledger entry and a new red test both turn it red, and for opposite reasons it names separately. Second, that every relocation row in that document landed: the guard's first complaint can only fire for an id still listed, so deleting a test *and* its ledger entry in one change is otherwise indistinguishable from repairing it, and the `<retired id> -> <replacement id>` rows close that hole by holding each replacement to the same child run — collected, and neither failing nor skipped — while requiring the retired id to be gone. Deleting a relocation row to make a rename pass is weakening a guard. Both invariants share one child run through a session fixture, so the module still spawns exactly one |
 
 Four of these are coupled: `test_min_selected_guard.py`,
@@ -76,6 +77,14 @@ suggests.
 
 Plus `test_worker_launch_args_redaction.py` for the subprocess command line — the
 same class of guard, one layer down.
+
+`test_worker_command_builder.py` and `test_worker_runner.py` are two halves of
+one boundary and should be read together: the first sweeps the *public* surface
+of both modules for a caller-supplied command, the second holds the split that
+makes the sweep meaningful. The sweep is parametrized over the two modules with
+different expectations — the loader must have a public surface for the sweep to
+be looking at anything, the runner must have none — so collapsing them into one
+expectation weakens both.
 
 ## Secrets in tests
 

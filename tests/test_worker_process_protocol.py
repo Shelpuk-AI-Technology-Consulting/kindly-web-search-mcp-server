@@ -46,9 +46,18 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from kindly_web_search_mcp_server.scrape.types import WorkerProcess
 from tests.doubles.worker_process import FakeWorkerProcess, primed_reader
 
-# The exact surface `fetch_html_via_nodriver` reads off the child process. Kept
-# as a literal so padding the Protocol with a member production never consumes
-# fails here rather than passing unnoticed.
+# The exact surface `worker_runner._run_worker_command` reads off the child
+# process. Kept as a literal so padding the Protocol with a member production
+# never consumes fails here rather than passing unnoticed.
+#
+# The consumer used to be `fetch_html_via_nodriver`, and the rename is not
+# cosmetic. That function no longer touches a process at all -- the runner
+# extraction took the spawn, the stream reads and the exit status with it -- so
+# the four loader tests that used to hand `FakeWorkerProcess` to production now
+# double the runner instead. Until the runner's parameter is annotated with
+# `WorkerProcess`, this literal is the *only* thing tying the double's shape to
+# what production reads: nothing else fails if they diverge. That annotation is
+# the very next step in the plan, and this comment is why it should not wait.
 CONSUMED_SURFACE: Final = frozenset(
     {"stdout", "stderr", "pid", "returncode", "wait", "kill", "terminate"}
 )

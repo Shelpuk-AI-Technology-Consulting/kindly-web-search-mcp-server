@@ -252,8 +252,11 @@ blank, valid, malformed, zero, negative and out-of-range.
 `extract_content_as_markdown`, `_apply_markdown_cap`, `_build_md_suffix_url`,
 against the corpus in §3.3.
 
-**Text accumulators.** `_append_tail_text` and the encoding-cookie helpers in
-`nodriver_worker.py`.
+**Text accumulators.** `_append_tail_text` — which E2-3 moved out of
+`universal_html.py` and into `scrape/worker_runner.py`, along with the rest of
+the stderr-tail chain it belongs to — and the encoding-cookie helpers in
+`nodriver_worker.py`. Both addresses are inside `.coveragerc-gate`'s `omit`
+list; see §10.4 for why that does not excuse them from an L1 test.
 
 **The worker command shape.** `_build_worker_command` in `universal_html.py`,
 extracted by E2-2 and asserted by `tests/test_worker_command_builder.py`.
@@ -1703,11 +1706,30 @@ was false, and this is the correction.
 
 `omit` names the modules with no hermetic seam. Today that is
 `scrape/nodriver_worker.py`, `scrape/chromium_pool.py`, and `scrape/worker_runner.py`
-— the process-management module §11.2 extracts from `universal_html.py`.
+— the process-management module §11.2 extracted from `universal_html.py`.
 
 **That extraction is a prerequisite of this control, not a nicety** — see §11.2
 for why file-granularity `omit` forces it, and why the split is the same argument
 §2.1 makes about assertions: the seam belongs in the design, not in a side-table.
+
+**Landed in E2-3, with one cost worth stating.** `worker_runner.py` is not purely
+unhermetic: five helpers moved with the process code that a unit test could
+perfectly well drive — `_append_tail_text`, `_consume_stderr_line`,
+`_finalize_stderr_state`, `_maybe_emit_stream_progress` and
+`_subprocess_launch_options`. They are exempted along with it, so those five sit
+outside the diff gate.
+
+They moved because they have exactly one consumer, the runner, and leaving them
+behind would make `universal_html.py` import from `worker_runner.py` while
+`worker_runner.py` imports nothing back — the loader already imports the runner,
+so the reverse edge is a cycle. The third option, a separate module for the pure
+text and stream helpers, would have kept them gated and was rejected as more
+structure than five single-consumer helpers earn; it remains the move if that
+set grows. Recorded because the classification is *file*-granular by design, and
+a reader who takes "omitted" to mean "untestable" would draw the wrong
+conclusion about these five. They are testable, and E5-6 owns testing one of
+them — an L1 test on an omitted module, which is already this suite's practice
+(E5-3 targets `chromium_pool.py`, E5-4 `nodriver_worker.py`; both are omitted).
 
 The alternative was combining every lane into the diff gate, and it does not
 survive contact with the arithmetic. A required threshold gate must take
@@ -2102,23 +2124,38 @@ scope in `universal_html.py`, pure and keyword-only, called at both the first
 spawn and the pool-restart retry; `base_cmd` and `_compose_cmd` are gone. Its
 shape is owned by `tests/test_worker_command_builder.py` (see §3.1) and its
 wiring — that the spawn receives what the builder returned, for a pooled slot —
-by one case in `tests/test_universal_html_loader.py`. **The runner half is still
-inline and is E2-3's**, which is why everything below about the runner is
-written in the future tense.
+by one case in `tests/test_universal_html_loader.py`. **The runner half landed
+in E2-3**, and everything below is now a record of what was built rather than a
+specification of what to build.
 
-**Move the runner into its own module, `scrape/worker_runner.py`.** This is not
+**The runner lives in its own module, `scrape/worker_runner.py`.** This is not
 tidiness: §10.4 classifies every production file as hermetically testable or not,
-and `omit` works at file granularity. `universal_html.py` today mixes the
+and `omit` works at file granularity. `universal_html.py` used to mix the
 Markdown-suffix probe path — covered by 15 passing hermetic tests — with subprocess
-spawn and stream management that only a real child can exercise. While both live in
-one file, the coverage gate must treat the whole file as one or the other, and both
-choices are wrong: gate it and worker changes fail against a lane with no seam for
+spawn and stream management that only a real child can exercise. While both lived in
+one file, the coverage gate had to treat the whole file as one or the other, and both
+choices were wrong: gate it and worker changes fail against a lane with no seam for
 them; exempt it and the probe path loses real gating. The split makes the
 classification a module boundary, which is a design property rather than a
 side-table to maintain.
 
+The boundary is held by tests rather than by intent: `tests/test_worker_runner.py`
+asserts that `universal_html.py` imports neither `asyncio` nor `subprocess` — both
+are required to start, wait on, stream from or kill a process, so their joint
+absence *is* the "no subprocess management" claim rather than a proxy for it — and
+that the moved surface is all present in one module, so a partial move back fails
+rather than drifts. One call site in the gated module still causes a child to be
+spawned: `fetch_html_via_nodriver` calls `_run_pipe_probe`, which lives in the
+runner. That is the intended shape — the machinery is on the omitted side and only
+the decision to run it is on the gated one — and it is stated here because the
+import guard is textual and cannot see it. Moving the call as well would push the
+pipe-probe records after `worker.spawn` in the diagnostics stream, which is a
+behaviour change this extraction had no reason to make.
+
 `_build_worker_command` stays with `fetch_html_via_nodriver`; it is pure and
-hermetically testable, so it belongs on the gated side.
+hermetically testable, so it belongs on the gated side. Five smaller helpers that
+are equally hermetic went the other way, for import-cycle reasons; §10.4 records
+which, and what that costs.
 
 **The command must not become a parameter of the public fetch API.** Adding a
 `command=` argument to `fetch_html_via_nodriver` would turn "execute an arbitrary
@@ -2129,20 +2166,42 @@ command-free costs nothing and closes that path.
 The alternative — monkeypatching `asyncio.create_subprocess_exec` — reproduces
 exactly the opaque coupling that let `_FakeProc` drift, and is ruled out.
 
-**It nonetheless survives E1-4 and E2-2, as a stated interim.** E1-4 repaired the
-three loader tests and changed no production code, so the seam they need did not
-exist yet; E2-2 built the *command* seam, not the *runner* seam, so those tests —
-and E2-2's own wiring case — still patch
-`universal_html.asyncio.create_subprocess_exec`. What has changed is which half
-of the objection bites. The *drift* half is closed — the double is now
-`FakeWorkerProcess`, held to `WorkerProcess` by E2-1's harness and to a single
-definition by the second-double guard — while the *coupling* half stands until
-**E2-3** extracts `_run_worker_command` and the tests reach a real seam. E2-3
-owns removing the patch. Note also that the patch resolves through the shared
-`asyncio` module object, so it replaces the stdlib callable process-wide for the
-duration: if `worker_runner.py` were written as
-`from asyncio import create_subprocess_exec`, the double would silently unhook
-and those tests would spawn real processes.
+**It survived E1-4 and E2-2 as a stated interim, and E2-3 removed it.** E1-4
+repaired the three loader tests and changed no production code, so the seam they
+needed did not exist yet; E2-2 built the *command* seam, not the *runner* seam.
+The four cases now patch `universal_html._run_worker_command` — an ordinary
+module-level name — and `universal_html` no longer imports `asyncio` at all, so
+the old target raises `AttributeError` rather than quietly working again.
+
+**What that cost, recorded rather than absorbed.** Those cases used to drive a
+`FakeWorkerProcess` through production's stream readers, so the markup they got
+back proved the parent still read the child's stdout — the exact drift that left
+them red. With the runner doubled they prove only that its return value reaches
+the caller. The streaming claim moved to `tests/test_worker_runner.py`, which
+asserts it against a **real** child process, where no fake can satisfy it. Until
+E7-2's fixture-child battery lands, those two `subsystem` cases are the whole of
+the runner's behavioural coverage, and §10.4 control 1's "every omitted module
+has non-zero coverage in the observational report" rests on them; E7-2 should
+say whether it absorbs them or leaves them, so the claim does not end up with
+two owners.
+
+**A second consequence: `FakeWorkerProcess` now has no production consumer.**
+Nothing hands it to production between E2-3 and E2-4, so the agreement between
+the double's shape and what production reads is held only by the hand-written
+`CONSUMED_SURFACE` literal in `tests/test_worker_process_protocol.py`. E2-4's
+annotation is what restores a checked link, which is a reason to take E2-4
+promptly rather than a reason to have sequenced it differently.
+
+**The from-import ban stands, on a narrower reason than it used to have.** The
+patch resolves through the shared `asyncio` module object, so a
+`from asyncio import create_subprocess_exec` in `worker_runner.py` would bind
+the callable at import time and unhook any replacement. The characterization
+tests that depended on that mechanism are gone, so the ban no longer protects a
+live victim; it protects the property that the spawn primitive *remains*
+replaceable, for E7-2 and for any later instrumentation, and it is guarded
+because its failure mode is silent — real processes launched from a lane that
+must not start one, reported as assertion failures in tests that name neither
+the module nor the import.
 
 ### 11.3 Tool result schemas are absent by construction
 
