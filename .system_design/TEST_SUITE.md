@@ -910,6 +910,13 @@ conversion bug.
    resolver does not read. All three retirements are recorded as relocation rows
    rather than described in a pull request.
 
+   **One claim went uncovered, deliberately.** The three retired methods were,
+   between them, the only thing in the tree that would notice an `os.name` branch
+   reappearing in this resolver, and nothing asserts its absence now. E1-6's one
+   real Windows run is the next thing to cover it. Recorded here as well as in
+   the test's docstring and the ledger, because a coverage loss stated only where
+   the deletion happened is found only by whoever goes looking there.
+
    **Each row states the single-line mutation it detects**, carried on the row
    rather than in prose, and reported when the row fails. The positivity guard
    needs two mutations: `0` is already falsy, so dropping the `> 0` conjunct

@@ -143,10 +143,13 @@ class TestWebSearchTool(unittest.IsolatedAsyncioTestCase):
 
         Every row of :data:`WEB_SEARCH_CONCURRENCY_CASES` dies to the mutation
         its ``pins`` field names, measured under both a stripped and a hostile
-        environment. The positivity guard needs *two* mutations because neither
-        alone kills both of its rows: ``0`` is already falsy, so dropping the
-        ``> 0`` conjunct leaves the zero row passing while killing the negative
-        one.
+        environment. The positivity guard is a compound condition and takes one
+        mutation per conjunct. Replacing it wholesale with ``if parsed is not
+        None`` kills *both* of its rows; dropping only the ``> 0`` conjunct,
+        leaving ``if parsed``, kills the negative row alone, because ``0`` is
+        already falsy. So it is the second mutation that has to exist by name: a
+        battery running only that one would report the zero row as dead weight
+        and invite its deletion.
 
         ``max(1, ...)`` is not covered here and cannot be. By the time it runs,
         ``value`` is either a parsed integer already filtered to ``> 0`` or the
