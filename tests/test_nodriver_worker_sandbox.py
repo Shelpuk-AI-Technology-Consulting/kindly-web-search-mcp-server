@@ -116,10 +116,12 @@ BROWSER_PATH = "/usr/bin/chromium-for-tests"
 #: fixed here; a test that used the real path would silently assert the
 #: non-snap branch, which is what the previous version of this file did.
 #:
-#: **On Windows nothing classifies as snap, whatever the path.** `os.path.realpath`
-#: rewrites the separators and prepends a drive letter, so this value resolves to
-#: ``D:\snap\bin\chromium-for-tests`` and the ``/snap/`` marker is gone -- measured
-#: against the shipped function on a `windows-latest` runner. That is correct
+#: **On Windows nothing classifies as snap, whatever the path.** A path with a single
+#: leading slash is not absolute there, so `os.path.realpath` joins it against the
+#: current working drive and normalises the separators: this value resolves to
+#: ``<drive>:\snap\bin\chromium-for-tests`` and the ``/snap/`` marker is gone --
+#: measured against the shipped function on a `windows-latest` runner, where the
+#: drive happened to be ``D:``. That is correct
 #: behaviour, snap being a Linux packaging format, and it is why the backoff case
 #: below injects the classification instead of deriving it from this constant. The
 #: constant is still what that case hands to the detector, so it still records what

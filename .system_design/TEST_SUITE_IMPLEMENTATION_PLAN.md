@@ -639,12 +639,29 @@ duplicating tests or touching the same files.
   blank, malformed, zero, negative. **String and list normalisation**
   (`_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`):
   unset, blank, single value, comma-separated with surrounding whitespace,
-  duplicate entries. **Detection** (`_detect_chrome_version`, `_resolve_user_agent`):
+  duplicate entries. **Version and user-agent**
+  (`_detect_chrome_version`, `_resolve_user_agent`):
   a stubbed executable reporting a known version, an executable that fails to run,
   and no executable at all — each returning a usable fallback rather than raising.
+  **Classification** (`_is_snap_browser`, `_is_retryable_browser_connect_error`):
+  each driven by its *input* rather than by an injected answer.
+  `_is_retryable_browser_connect_error` gets one exception of each polarity.
+  `_is_snap_browser` gets the path-shape wiring **E1-6 gave up** — a
+  `/snap/`-shaped path classifies as snap and a `/usr/bin/` one does not — with
+  `os.path.realpath` pinned, since that is this function's only ambient input.
+  **Read §3.1 before writing that case**: this function answers *wrongly* on both
+  platforms, for two different measured reasons, and the obvious first assertion
+  turns E4-2's required cross-platform gate red. Characterise the current answer
+  with the defect named in the docstring; do **not** repair production in a
+  testing step.
   **Composite** (`_resolve_worker_timeout_details`): the returned tuple is
-  consistent with the individual resolvers it composes. No function here is also
-  tested by E5-3 or E1-2.
+  consistent with the individual resolvers it composes.
+  No function in the five groups above is also tested by E5-3 or E1-2, and the
+  groups are exhaustive over this step's ownership list — a claim worth stating
+  because E5-4 is scoped by *exclusion*, so a function owned here but named in no
+  group is orphaned permanently rather than deferred. **E1-6 handed the
+  classification group its one retired claim**, and found the list short by two
+  when it went looking for the owner.
 - **E5-5.** `html_to_markdown`, `sanitize_markdown`, `extract_content_as_markdown`,
   `_apply_markdown_cap`, `_build_md_suffix_url` over E3-3's fragments.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
@@ -1039,7 +1056,7 @@ Five engineers.
 E1-4 goes to engineer B as soon as A's E2-1 lands; E2-3 waits on it. E4-1 is
 authored early but merges with E1-6, and E4-2 follows immediately — the gate is on
 within a day of green. Coverage work (E10-1) waits on E2-3. E3-2, E3-3, E3-5,
-E5-3, E5-6, E5-7, E8-4 are unassigned backlog. With `pr_authorable` steps open
+E5-3, E5-4, E5-6, E5-7, E8-4 are unassigned backlog. With `pr_authorable` steps open
 from day one (§2), the constraint on throughput is people, not the graph.
 
 In parallel, the maintainer works **X-1** — the only prerequisite blocking steps

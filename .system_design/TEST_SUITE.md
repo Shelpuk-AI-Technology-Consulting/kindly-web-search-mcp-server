@@ -177,6 +177,35 @@ that never reach it: an environment-variable case that leaves the real lookup in
 place is a case whose result depends on whether the developer has Chromium
 installed.
 
+**`_is_snap_browser` reads the filesystem, and answers wrongly on both platforms
+for two different measured reasons.** Its only ambient input is
+`os.path.realpath`, so pin it —
+`monkeypatch.setattr(os.path, "realpath", …)` — in every case, on the same
+reasoning as `shutil.which` above: a case that leaves the real call in place
+answers differently depending on where the developer's Chromium came from.
+
+- **On Windows nothing classifies as snap, whatever the path.** A path with a
+  single leading slash is not absolute there, so `realpath` joins it against the
+  current working drive and normalises the separators; `/snap/bin/chromium`
+  becomes `<drive>:\snap\bin\chromium` and the `/snap/` marker the detector keys
+  on is erased. Measured against the shipped function on a `windows-latest`
+  runner. **This is correct production behaviour** — snap is a Linux packaging
+  format — and must not be "fixed" in the detector by matching separators.
+- **On Ubuntu the commonest snap install classifies as non-snap.** The real
+  `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, which `realpath` follows
+  before the prefix test. That one is an **open production defect**, reported and
+  characterised rather than repaired; see §14.
+
+E1-6 hit the first of these and repaired the affected test by injecting the
+classification. The path-shape wiring it gave up belongs to **E5-4**, whose entry
+cites this section — the pointer runs both ways deliberately, because the layer
+split sends resolver tests to
+`tests/test_nodriver_worker_launch_resolvers.py` while the traps were first
+recorded in `tests/test_nodriver_worker_sandbox.py`, which an E5-4 author has no
+reason to open. E5-4 lands *after* E4-2 makes the cross-platform job required, so
+the obvious first assertion — a `/snap/` path is snap — turns a required gate red
+rather than a local run.
+
 **The `hasattr(os, "geteuid")` guard is not a testable branch.** Deleting the
 attribute exercises the *condition*, but the call sits inside a
 `try: … except Exception: pass`, so removing the guard makes the bare call raise
@@ -2247,3 +2276,14 @@ is nothing to test.
   `_is_snap_browser`), which implies breakage has happened and will recur.
 - **`_split_worker_diagnostics` is dead code** (§4.3), flagged for removal under
   a separate change.
+- **`_is_snap_browser` misclassifies the commonest snap install**, and the defect
+  is open. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu, and
+  the function calls `os.path.realpath` before testing for the `/snap/` prefix,
+  so the browser that most needs the longer DevTools timeout is the one that does
+  not get it. Measured on Ubuntu 24.04. Recorded here because it was previously
+  documented only in a test-module comment, which left E5-4 — the step that will
+  write the first direct test of this function — to choose unaided between
+  asserting a known-wrong answer and repairing production inside a testing step.
+  It should do the former, with the defect named; the repair deserves its own
+  change. §3.1 carries the detail, including the separate Windows behaviour that
+  is **not** a defect.

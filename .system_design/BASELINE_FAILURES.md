@@ -396,8 +396,10 @@ function on the runner:
 '/snap/bin/chromium-for-tests' -> realpath='D:\snap\bin\chromium-for-tests' is_snap=False
 ```
 
-Windows rewrites the separators and prepends a drive letter, so the `/snap/`
-marker cannot survive and **no path whatsoever classifies as snap there**. The
+A path with a single leading slash is not absolute on Windows, so `realpath`
+joins it against the current working drive and normalises the separators — the
+`/snap/` marker cannot survive and **no path whatsoever classifies as snap
+there**. The `D:` above is whichever drive the checkout sat on, not a constant. The
 recorded delays were the un-multiplied series. Production is correct and was left
 alone — snap is a Linux packaging format — so the defect was the test's, and the
 repair injects the classification through a seam instead of deriving it from the
