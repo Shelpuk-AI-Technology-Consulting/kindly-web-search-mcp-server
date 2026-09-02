@@ -386,6 +386,49 @@ it carries no X-number.
   tests assert argv by **membership, not adjacency or order**, deliberately, so
   the exact shape has one owner rather than two; pinning order is this step's
   job, and narrowing those three afterwards is this step's call to make.
+  **Landed.** `_build_worker_command` is module-level, pure and keyword-only,
+  called at both the first spawn and the pool-restart retry;
+  `tests/test_worker_command_builder.py` owns the shape by whole-list equality.
+  Two decisions worth carrying forward. The interpreter is a **parameter**, not
+  `sys.executable` read from the module — otherwise every expected list would be
+  built from the same source the builder reads, and "emits the wrong
+  interpreter" would be unobservable. And the three loader tests were **left at
+  membership**: they own a different claim (the spawn receives what the builder
+  produced) from the builder's own (what it produces), so narrowing them would
+  have removed a claim rather than a duplicate. One case was *added* to them,
+  because nothing in the suite could see the pooled call site — all three force
+  the pool off, so a rewire passing `slot=None` would have killed pooled reuse
+  with the suite green and no node id moved.
+
+> **Deferred:** the **parent-side pool blocks have no hermetic coverage and no
+> owner**. E2-2 covered the pooled *command shape*; it did not touch the
+> acquisition block (`universal_html.py:627-645`, opening at `pool = None`,
+> with `use_pool = reuse_enabled()` at `:629`) or the pool-restart retry block
+> (`:967-1001`, whose `pool.slot_restart` emission is at `:976`), both of which
+> sit inside the gating scope
+> (`.coveragerc-gate` omits the worker and pool modules, not `universal_html.py`)
+> and are reached by no test. E2-3 does not clear them either: its verify clause
+> is that `universal_html.py` retains the Markdown-probe path and **no subprocess
+> management**, and pool orchestration is not subprocess management, so those
+> lines stay in the gated module after the runner leaves. E7-2 is scoped to
+> spawn/stream/heartbeat/termination, and E7-3 to the pool itself, so neither
+> picks up parent-side restart retry. Not acted on in E2-2, which is an S-sized
+> step whose scope is the builder; recorded here so it is not rediscovered a
+> fourth time. A consequence for whoever takes it: E2-2's fault-injection table
+> reaches the *first* builder call site only — a stale-slot or `slot=None`
+> mutation at the retry site survives that battery. (E2-2 did compare both call
+> sites' argv against the pre-extraction implementation by running them, which
+> is why the extraction is known faithful; that was a one-off differential, not
+> a committed test.)
+>
+> Found in the same pass and belonging to the same owner: **an acquired slot
+> leaks if anything between acquisition and the outer `try` raises.** The
+> `finally: await pool.release(...)` hangs off the `try` at
+> `universal_html.py:967`, but the slot is acquired at `:633` — so a raise in
+> between, `_run_pipe_probe` at `:682` included, strands the slot in
+> `ChromiumPool.slots` without returning it to the queue, and repeated
+> occurrences starve the pool. Pre-existing and not worsened by E2-2, whose
+> contribution to that window is pure list building.
 - **E2-3.** **Production change, highest-leverage step in the plan** — it opens the
   L3 worker stream and makes the coverage classification expressible (§10.4,
   §11.2). E1-4 lands first so a green characterization baseline exists.

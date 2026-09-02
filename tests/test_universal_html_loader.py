@@ -62,12 +62,38 @@ def pinned_environment(**overrides: str) -> Iterator[None]:
     """Run a case with every variable the loader reads cleared, then declared.
 
     `KINDLY_NODRIVER_REUSE_BROWSER` is forced off rather than merely cleared.
-    `reuse_enabled()` returns True unless explicitly disabled, so without it
-    `fetch_html_via_nodriver` enters the Chromium pool and reaches the spawn
-    under test only because `pool.acquire` raises and is swallowed. Measured
-    before this pin: `get_chromium_pool` entered once per test, leaving a
-    module-global pool and real browser trees behind. The pooled path is a
-    subsystem concern and is not this file's to cover.
+    `reuse_enabled()` returns True unless explicitly disabled, so without this
+    pin `fetch_html_via_nodriver` enters the Chromium pool on every case.
+
+    Measured in this worktree with the pin removed, by patching
+    `nodriver_worker._launch_chromium` to record and raise: the launch **is**
+    reached, with the real resolved browser and a real profile directory —
+
+        real _launch_chromium reached: True
+        ('/usr/bin/google-chrome-stable', [... --user-data-dir=/tmp/kindly-nodriver-pool-… ])
+        module-global pool left behind: True
+        atexit shutdown registered: True
+
+    So an unpinned case launches Chromium on any machine that has one, and
+    leaves a module-global pool and an `atexit` hook behind.
+
+    **Two earlier wordings of this paragraph were wrong, in opposite
+    directions.** The first claimed the tests left live browser trees behind; a
+    process count then measured a delta of zero and the claim was retracted as
+    false. The retraction was itself wrong: a count taken after the interpreter
+    exits cannot distinguish "no browser launched" from "browser launched and
+    reaped", and the second is what happens — `_register_shutdown` installs an
+    `atexit` hook whose `shutdown_sync` calls `ChromiumSlot.terminate_sync`,
+    killing the process and removing the profile directory. A hard-killed or
+    `os._exit`ed interpreter never runs it, and then the tree does survive.
+
+    Also corrected: `ChromiumPool.acquire` **returns `None`** on failure rather
+    than raising, and on a machine with a working browser it does not fail at
+    all — it returns a live slot.
+
+    The pooled path with a *real* pool is a subsystem concern and is not this
+    file's to cover. One case below overrides this default with
+    `get_chromium_pool` doubled, which never reaches a launch.
 
     Args:
         **overrides: Variables this case needs set, applied after the clear.
@@ -206,6 +232,81 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         no_proxy = (env.get("NO_PROXY") or env.get("no_proxy") or "").lower()
         self.assertIn("localhost", no_proxy)
         self.assertIn("127.0.0.1", no_proxy)
+
+    async def test_pooled_fetch_spawns_exactly_what_the_builder_returned(self) -> None:
+        """Spawn the builder's command verbatim, and build it for the pooled slot
+
+        Wiring only, no shape: `tests/test_worker_command_builder.py` owns what
+        the command line looks like, and the three cases above own it at
+        membership strength for the unpooled path. Neither can see the pooled
+        call site, because all three force the pool off — so a rewire that
+        passed `slot=None` here would kill pooled browser reuse in production
+        with the whole suite still green and the node-id set unchanged. This is
+        the case that goes red on it.
+
+        Three preconditions the case cannot do without, each of which would
+        otherwise leave it passing while asserting nothing, or reaching a real
+        browser:
+
+        * **Reuse is switched back on.** `pinned_environment` forces
+          `KINDLY_NODRIVER_REUSE_BROWSER=0` for the other cases, and without the
+          override the whole acquisition block is skipped and the builder is
+          called with `slot=None` — which is exactly the state the mutation this
+          case exists to kill injects.
+        * **The patch target is `universal_html.get_chromium_pool`, not
+          `chromium_pool.get_chromium_pool`.** The loader from-imports the name,
+          so patching it at its source leaves the bound name alone, the real
+          pool runs, and `acquire` reaches `ChromiumSlot.ensure_started` — a
+          real Chromium, a cached module-global pool and an `atexit` hook that
+          outlives the test.
+        * **`pool.acquire` is asserted to have been awaited.** The acquisition
+          block swallows every exception, so a misbuilt double fails this case
+          with `slot=None` — indistinguishable from the mutation. The extra
+          assertion makes a broken double name itself.
+
+        The builder is asserted on its *first* call: a slot being present makes
+        the pool-restart retry path live for the first time in the unit lane,
+        and a second builder call from there would otherwise overwrite
+        `call_args` and hide the mutation.
+        """
+        from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot = ChromiumSlot(slot_id=3, host="127.0.0.4", port=9444)
+        pool = AsyncMock()
+        pool.acquire.return_value = slot
+        sentinel_command = ["/sentinel/python", "-m", "sentinel.worker"]
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._build_worker_command",
+                return_value=sentinel_command,
+            ) as mock_builder,
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_spawn,
+        ):
+            mock_spawn.return_value = FakeWorkerProcess(
+                stdout=primed_reader(WORKER_STDOUT), stderr=primed_reader(b"")
+            )
+            await fetch_html_via_nodriver("https://example.com")
+
+        self.assertEqual(
+            pool.acquire.await_count, 1, "the pooled slot was never acquired"
+        )
+        args, _kwargs = mock_spawn.call_args
+        self.assertEqual(list(args), sentinel_command)
+        self.assertEqual(mock_builder.call_count, 1)
+        self.assertIs(mock_builder.call_args_list[0].kwargs["slot"], slot)
 
 
 class TestMarkdownSuffixProbe(unittest.IsolatedAsyncioTestCase):
