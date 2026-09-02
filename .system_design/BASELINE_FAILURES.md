@@ -1,8 +1,10 @@
 # Baseline failures — the ledger
 
-**Status:** As Is. This file records the suite's red baseline exactly as it is
-today, one node id at a time, so that the repairs in E1-2 through E1-5 can be
-checked rather than believed.
+**Status:** Drained. This file recorded the suite's red baseline one node id at
+a time, so that the repairs in E1-2 through E1-5 could be checked rather than
+believed. Both blocks are now empty — E1-5 removed the last id. The guard stays:
+an empty ledger compared against an empty failing set is the cheapest assertion
+available that the suite is green, and it costs one child run.
 
 `TEST_SUITE.md` §1.1 quotes the baseline as counts. A count is not a checkpoint:
 `12 failed` before a repair and `11 failed` after it is equally consistent with
@@ -67,14 +69,14 @@ any later date from `git show <this step's parent>:.system_design/BASELINE_FAILU
 which is strictly better than E1-2's one-off hand-run, and is the pattern E1-5
 should follow.
 
-**The step to watch is E1-5**, which rewrites the concurrency test to be
-OS-neutral. Its id is `test_web_search_concurrency_defaults_on_windows`, and a
-name that still says `on_windows` would be wrong afterwards — so that step
-probably *will* rename, and its id will leave by deletion. It is the remaining
-candidate for making this table machine-readable: a fenced block of
-`<deleted id> -> <replacement id>`, asserted to be in the child run's *collected*
-set and absent from its *failed* set. The guard already holds both sets. If
-E1-5 keeps the name instead, no such machinery is needed at all.
+**E1-5 renamed, as this paragraph predicted it would.** A concurrency test made
+OS-neutral cannot keep a name saying `on_windows`, so its id left by deletion.
+It built the machinery asked for here: *"Relocated claims"* below is a fenced
+block of `<retired id> -> <replacement id>` rows, and the guard asserts each
+replacement against the same child run — collected, and in neither the failed nor
+the skipped set — and each retired id absent from the collected set. Two of its
+three rows were never listed in a platform block at all; that section explains
+why they are covered anyway.
 
 **The rule that generalises: prefer rewriting in place to relocating.** Not for
 tidiness — it is the difference between an id that leaves this ledger under a
@@ -202,45 +204,118 @@ an empty failing set on a red suite, and two of this repository's three
 `subTest` sites are in `tests/test_universal_html_loader.py`, one of the files
 this ledger tracks.
 
-## What the remaining one is
+## How each block was drained
 
-E1-5 owns the final form of this section: it drains the last id, and E1-6 is
-defined as having no diff, so there is no later step in which to tidy it.
+Both blocks are empty. This is their final form, and what it records is **how**
+each was drained, per platform — whether on a run or on an argument. Those are
+not the same evidence, and the suite-green milestone depends on telling them
+apart.
 
-Grouped by cause, so a reviewer can tell which repair step owns which id. The
-grouping is by module rather than per id, because the blocks are sorted and so
-already group by module — a per-id table would restate the block and could drift
-from it.
-
-| Module | Ids | Cause | Repaired by |
+| Step | Ids drained | Linux | Windows |
 |---|---|---|---|
-| `test_server.py` | 1 | asserts a Windows concurrency cap that `_resolve_web_search_max_concurrency` no longer has | E1-5 |
+| E1-2 | 5 (4 on Windows) | live run | argument |
+| E1-3 | 3 | live run | argument |
+| E1-4 | 3 | live run | argument |
+| E1-5 | 1 | live run, plus a substitution row below | argument, **plus** the substitution row, which is not platform-gated |
 
-`test_nodriver_worker_sandbox.py` has left this table entirely: its five
-flag-and-default ids relocated with E1-2 and its three orchestration ids were
-repaired in place by E1-3. `test_universal_html_loader.py` has now left it too —
-E1-4 rebuilt its three doubles on the canonical typed fake and **rewrote all three
-in place**, so each id leaves under this guard's strongest category: in the
-ledger, collected, ran, and passed. No relocation row is owed, because no claim
-moved layer; the same three node ids assert the same four things, against a
-double that is now held to production's surface by the Protocol harness rather
-than by hand. The guard's own wording for that category is *"In the ledger, ran,
-and passed"*; it is quoted verbatim here so a reader grepping the guard finds it.
+**Linux is measured.** Every drain above was taken with the guard's own live
+comparison green on Linux, which is the check this document exists to make.
 
-**Measured on Linux.**
+**Windows is an argument, and here it is, once.** No Windows lane exists until
+the CI epic, so the honest options were to drain on a stated argument or to leave
+Windows carrying ids the code no longer fails on. The argument is the same each
+time, and it is a claim about the *repairs* rather than about the platform: none
+of them **asserts a value computed by** a branch reading `os.name` or
+`sys.platform`. The stronger phrasing — that no repair *touches* such a branch —
+would be false, and precision matters here because this sentence is the whole of
+the Windows evidence: E1-4's spawn path does execute `os.name != "nt"` in
+`_subprocess_launch_options`, which on Windows adds `creationflags` and
+`startupinfo` to the very call those tests inspect. They survive it because they
+assert argv and environment membership rather than the whole keyword dictionary.
+E1-2's five and
+E1-3's three assert resolver behaviour with the ambient state supplied by the
+test rather than by the runner. E1-4's three patch
+`asyncio.create_subprocess_exec`, so no process is spawned and every value they
+assert — the `-m` worker module in argv, `PYTHONPATH` in the child environment,
+`--browser-executable-path`, the loopback `NO_PROXY` entries — is computed by the
+same platform-independent code on both. **E1-5's one is the strongest of the
+four**: the test it retires failed *because* it faked a platform, its replacement
+patches no platform attribute at all, and `_resolve_web_search_max_concurrency`
+reads one environment variable and one integer and nothing else.
 
-The Windows block was drained without a Windows run, and here is the argument
-for it. No lane exists yet, so the honest options were to drain on a stated
-argument or to leave Windows carrying three ids the code no longer fails on.
-These three tests are OS-neutral by construction: they patch
-`asyncio.create_subprocess_exec`, so no process is ever spawned, and every
-assertion they make — `-m` and the worker module in argv, `PYTHONPATH` in the
-child environment, `--browser-executable-path`, and the loopback `NO_PROXY`
-entries — is computed by the same platform-independent code on both. Nothing in
-the repair touches a branch that reads `os.name` or `sys.platform`. The Linux
-half is checked against a real run; the Windows half is this argument, and it is
-labelled as one rather than presented as a measurement. E1-6 must still take its
-Windows figure from a real run.
+**E1-6 must still take its Windows figure from a real run**, not from this
+document. A drained document is evidence of nothing on a platform nobody ran, and
+with the two blocks now identical the cross-platform difference check below is a
+tautology. Distinguishing a run from an argument, above, is the whole reason this
+section survives to the milestone.
+
+**One claim went uncovered with E1-5, deliberately.** The three retired
+concurrency tests were, between them, the only thing in the tree that would
+notice an `os.name` branch reappearing in that resolver. Nothing asserts its
+absence now; the replacement's docstring says so, and E1-6's one real Windows run
+is the next thing to cover it.
+
+**The five-row relocation table above is not machine-checked, and stays that
+way.** It maps each retired id to the *function* its claim moved to. Converting
+it to the form below would mean choosing which node in
+`tests/test_nodriver_worker_launch_resolvers.py` carries each claim — several of
+those replacements are parameterized, so their node ids carry parameter suffixes,
+and one claim was split across two repair steps. Deciding that now means
+asserting a mapping this step never measured, which is attributing to another
+step's run a fact that run did not produce: the failure the `Result:`/
+`Remaining:` split exists to prevent, committed in a table instead of in a
+number. So it is declined, in writing, and **no later step is scoped to convert
+it** — E1-6 has no diff. Those five rows stand as prose backed by E1-2's one-off
+hand-run, which is what they have always been. The block below is machine-checked
+and says so.
+
+## Relocated claims
+
+A retired node id and the id that now carries its claims, one row per
+retirement. `tests/test_baseline_failure_ledger.py` asserts every row against the
+same child run it already makes: the replacement must have been **collected** and
+must be in neither the **failed** nor the **skipped** set, and the retired id
+must no longer be collected at all.
+
+That is what closes the loophole in *"An id may leave this ledger only by
+passing"*. The guard's complaint about a listed id that vanished fires only while
+the id is still listed, so deleting a test and its ledger entry in one change is
+otherwise indistinguishable from repairing it — a dropped claim and a repair look
+identical from outside.
+
+**Two of the three rows were never in a platform block**, and are here anyway.
+`..._limited_by_num_results_on_windows` and `..._defaults_on_non_windows` passed:
+they faked a platform the resolver does not read, and their inputs happened to
+make the expected values come out right regardless. They are retired by the same
+change and for the same reason as the failing one, and a row costs one line — so
+their deletion is a machine-checked fact rather than a sentence in a pull
+request.
+
+**Rows match on the exact node id.** A relocation whose replacement is
+parameterized would need prefix matching, and none is; the parser rejects a
+malformed row rather than guessing.
+
+**This section must carry no `Result` bullet of the kind each platform section
+opens with, and must not be moved between a platform heading and that platform's
+own bullets.** `_documented_platform_headings` identifies a platform section by
+exactly that line, so either edit would manufacture a phantom platform and fail
+`test_ledger_documents_every_platform_the_guard_knows` — the right outcome, but
+from a long way from the edit that caused it.
+
+```text
+tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_non_windows -> tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_resolves_from_environment_and_result_count
+tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_windows -> tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_resolves_from_environment_and_result_count
+tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_limited_by_num_results_on_windows -> tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_resolves_from_environment_and_result_count
+```
+
+**A row may be retired** once the id on its left has been absent from the
+collected set for one landed release *and* the claim has a documented home. This
+is not housekeeping: E5-3 owns exhaustive coverage of
+`_resolve_web_search_max_concurrency` and may absorb or rename the replacement
+named above. Without a stated exit this guard would go red for a correct change,
+and the only apparent remedy would be weakening a guard — which
+`.github/review/rules/python-tests.md` treats as a critical finding. If E5-3
+absorbs that table, it retires these rows in the same change.
 
 ## Why the two platforms differ
 
@@ -276,20 +351,20 @@ claim awaiting its lane.
   Linux 6.8.0-138 · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 12 failed, 303 passed, 2 skipped, 9 subtests passed
-- **Remaining:** 1 failed
+- **Remaining:** 0 failed
 
 This is the figure §1.1 predicted from source and labelled unmeasured. It was
 measured, and it matched: twelve, being the eight stale `_fetch_html` callers,
 the three stale loader tests and the one obsolete Windows concurrency test.
 
 Five have since left with E1-2, the flag-and-default half of the eight; three
-more with E1-3, which repaired the orchestration half in place; and three more
-with E1-4, which rebuilt the loader doubles on the canonical typed fake — hence
-one remaining, listed below. The **Result** line keeps saying twelve because
-that is what the run said.
+more with E1-3, which repaired the orchestration half in place; three more with
+E1-4, which rebuilt the loader doubles on the canonical typed fake; and the last
+with E1-5, which retired the obsolete Windows concurrency test into an OS-neutral
+replacement — hence none remaining, and an empty block below. The **Result** line
+keeps saying twelve because that is what the run said.
 
 ```text
-tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_windows
 ```
 
 ## Windows
@@ -298,7 +373,7 @@ tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on
   (10.0.26100) · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 11 failed, 303 passed, 3 skipped, 9 subtests passed
-- **Remaining:** 1 failed
+- **Remaining:** 0 failed
 
 Measured on a GitHub Actions `windows-latest` runner, from a temporary workflow
 on a branch of its own that was deleted once the numbers were recorded. It
@@ -315,12 +390,13 @@ check worth making on any recorded run: a larger total than the list would mean
 a test failed more than once, through subtests the summary reports under a
 different word.
 
-Four of those eleven left with E1-2, three more with E1-3 and three more with
-E1-4, hence one remaining. **E1-4's three left by inference, not by a run** —
-that argument is stated once, in *"What the remaining one is"* above, and is not
-repeated here; what it rests on is that the three loader tests spawn no process
-and touch no `os.name` or `sys.platform` branch. E1-2's four and E1-3's three
-are in the same position for the same reason. **The frozen `3 skipped` is now
+Four of those eleven left with E1-2, three more with E1-3, three more with E1-4
+and the last with E1-5, hence none remaining. **All eleven left by inference, not
+by a run** — that argument is stated once, in *"How each block was drained"*
+above, and is not repeated here; what it rests on is that no repair touches a
+branch reading `os.name` or `sys.platform`. E1-5's id is the one that most
+obviously could have: it left because the test *faked* a platform the resolver
+never reads. **The frozen `3 skipped` is now
 stale by one:** the third skip *was*
 `test_forces_sandbox_off_when_running_as_root`, which E1-2 deleted. It is left
 as measured, because editing a measurement to keep it plausible is the failure
@@ -328,5 +404,4 @@ mode the two-line split exists to prevent. There is no Windows lane in CI until
 the CI epic, so this section cannot be re-measured here.
 
 ```text
-tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_windows
 ```
