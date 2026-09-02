@@ -339,9 +339,28 @@ it carries no X-number.
 - **E2-2.** **Production change.** *Verify:* an L1 test asserts the command shape
   including `-m kindly_web_search_mcp_server.scrape.nodriver_worker`; existing
   tests unchanged.
+  **Two things E1-4 handed to this step.** First, the **pooled variant** —
+  `--remote-host`, `--remote-port`, `--reuse-browser`, `--user-data-dir` — is now
+  covered by nothing: E1-4 pinned `KINDLY_NODRIVER_REUSE_BROWSER=0` for the three
+  loader tests, which were the only unit tests reaching `get_chromium_pool`, and
+  `universal_html.py` is inside the gating coverage scope, so those lines go to
+  zero hits in a gated module. Assert the pooled shape here. Second, E1-4's three
+  tests assert argv by **membership, not adjacency or order**, deliberately, so
+  the exact shape has one owner rather than two; pinning order is this step's
+  job, and narrowing those three afterwards is this step's call to make.
 - **E2-3.** **Production change, highest-leverage step in the plan** — it opens the
   L3 worker stream and makes the coverage classification expressible (§10.4,
   §11.2). E1-4 lands first so a green characterization baseline exists.
+  **Do not write `from asyncio import create_subprocess_exec` in the new module.**
+  E1-4's three characterization tests patch
+  `universal_html.asyncio.create_subprocess_exec`, which resolves through the
+  shared `asyncio` module object and so survives the move. A from-import binds the
+  callable at import time and unhooks the double, so those tests would spawn real
+  processes. They go **red**, not green — `assertTrue(mock_spawn.called)` fails in
+  the spawn case and `mock_spawn.call_args` unpacks `None` in the other two — so
+  the failure is loud. It is still worth knowing, because the symptom (three
+  unrelated-looking assertion failures, plus real browsers launched from a unit
+  lane) points nowhere near the import that caused it.
   *Verify:* `fetch_html_via_nodriver` behaviour unchanged (E1-4's tests pass);
   `_run_worker_command` importable and accepts an arbitrary command; no `command=`
   parameter on any public function; `universal_html.py` retains the Markdown-probe

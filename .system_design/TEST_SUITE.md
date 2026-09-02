@@ -757,9 +757,20 @@ conversion bug.
    running" — also satisfies the Protocol, which the attribute spelling would
    have rejected invariantly. The *shipped* fake is pinned against that by
    `assert_type(_double.returncode, "int | None")` in its conformance block; the
-   hole is only for doubles declared outside it, which is exactly what E1-4
-   introduces. Only `returncode` actually forces the property choice; the other
-   three attribute members are spelled the same way for consistency.
+   hole is only for doubles declared outside it. **E1-4 was expected to introduce
+   one and did not** — it imports the shipped fake in all three repaired tests.
+   The only stand-ins now outside that block are the deliberately-wrong ones in
+   `tests/typing_negative/` and in the harness module itself, which exist to
+   prove the checks can fail, so the covariance hole is unexercised in practice.
+   It reopens when a test declares its own stand-in.
+   `test_no_test_module_declares_a_second_worker_double` catches the case that
+   matters — a *whole-surface* reimplementation of the canonical double — but
+   **not** a partial one: the `_FakeProc` that caused the outage named only
+   `returncode` and `communicate()` and would pass it. That limit is pinned by
+   `DETECTOR_CASES` rather than left to be rediscovered.
+
+   Only `returncode` actually forces the property choice; the other three
+   attribute members are spelled the same way for consistency.
 
    **`pid` is declared `int`, not `int | None`, while production still guards it**
    (`if proc.returncode is None and proc.pid is not None`). Harmless today, since
@@ -1961,6 +1972,20 @@ command-free costs nothing and closes that path.
 
 The alternative — monkeypatching `asyncio.create_subprocess_exec` — reproduces
 exactly the opaque coupling that let `_FakeProc` drift, and is ruled out.
+
+**It nonetheless survives E1-4, as a stated interim.** That step repairs the three
+loader tests and changes no production code, so the seam it needs does not exist
+yet; the three tests still patch
+`universal_html.asyncio.create_subprocess_exec`. What has changed is which half
+of the objection bites. The *drift* half is closed — the double is now
+`FakeWorkerProcess`, held to `WorkerProcess` by E2-1's harness and to a single
+definition by the second-double guard — while the *coupling* half stands until
+**E2-3** extracts `_run_worker_command` and the tests reach a real seam. E2-3
+owns removing the patch. Note also that the patch resolves through the shared
+`asyncio` module object, so it replaces the stdlib callable process-wide for the
+duration: if `worker_runner.py` were written as
+`from asyncio import create_subprocess_exec`, the double would silently unhook
+and those tests would spawn real processes.
 
 ### 11.3 Tool result schemas are absent by construction
 

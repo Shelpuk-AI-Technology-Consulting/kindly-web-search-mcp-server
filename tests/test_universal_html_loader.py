@@ -1,11 +1,89 @@
 from __future__ import annotations
 
+import contextlib
+import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from tests.doubles.worker_process import FakeWorkerProcess, primed_reader
+
+#: Stdout the worker double hands back. Fed through a real `asyncio.StreamReader`,
+#: so the bytes travel the path production reads: this is the wiring that broke,
+#: and asserting the returned value is what proves it intact.
+WORKER_STDOUT = b"<html><body><p>ok</p></body></html>"
+
+#: Every variable `fetch_html_via_nodriver` reads that can change what these
+#: tests observe. Cleared for each case, which then declares what it needs.
+#:
+#: **This is a superset, deliberately.** Some entries are read only on branches
+#: these three never take; clearing one costs nothing and missing one costs a
+#: test that passes while asserting nothing.
+#:
+#: Two are not hypothetical. Measured with the production behaviour fully
+#: removed:
+#:
+#: * `PYTHONPATH` — the spawn case asserts the key is in the child environment,
+#:   which is `dict(os.environ)`. Exported ambiently it satisfies that assertion
+#:   with `_maybe_add_src_to_pythonpath` reduced to a no-op: **fails on a clean
+#:   env, passes with `PYTHONPATH` set.**
+#: * `NO_PROXY` / `no_proxy` — likewise for the loopback case with
+#:   `_ensure_no_proxy_localhost_env` reduced to a no-op: **fails clean, passes
+#:   with `NO_PROXY=localhost,127.0.0.1` set.**
+#:
+#: Both were found by review, not by the author's falsification pass, which ran
+#: on a shell exporting neither. A control that only fires on one machine is no
+#: control — the lesson `test_nodriver_worker_sandbox.py` records for `CHROME_BIN`.
+READ_ENVIRONMENT_VARIABLES = (
+    "KINDLY_NODRIVER_REUSE_BROWSER",
+    "KINDLY_NODRIVER_ENSURE_NO_PROXY_LOCALHOST",
+    "KINDLY_HTML_TOTAL_TIMEOUT_SECONDS",
+    "KINDLY_DIAGNOSTICS",
+    "KINDLY_REQUEST_ID",
+    "KINDLY_BROWSER_EXECUTABLE_PATH",
+    "BROWSER_EXECUTABLE_PATH",
+    "CHROME_BIN",
+    "CHROME_PATH",
+    "PYTHONPATH",
+    "NO_PROXY",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+)
+
+
+@contextlib.contextmanager
+def pinned_environment(**overrides: str) -> Iterator[None]:
+    """Run a case with every variable the loader reads cleared, then declared.
+
+    `KINDLY_NODRIVER_REUSE_BROWSER` is forced off rather than merely cleared.
+    `reuse_enabled()` returns True unless explicitly disabled, so without it
+    `fetch_html_via_nodriver` enters the Chromium pool and reaches the spawn
+    under test only because `pool.acquire` raises and is swallowed. Measured
+    before this pin: `get_chromium_pool` entered once per test, leaving a
+    module-global pool and real browser trees behind. The pooled path is a
+    subsystem concern and is not this file's to cover.
+
+    Args:
+        **overrides: Variables this case needs set, applied after the clear.
+
+    Yields:
+        None, for the duration of the patched environment.
+    """
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in READ_ENVIRONMENT_VARIABLES
+    }
+    environment["KINDLY_NODRIVER_REUSE_BROWSER"] = "0"
+    environment.update(overrides)
+    with patch.dict("os.environ", environment, clear=True):
+        yield
 
 
 class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
@@ -44,52 +122,55 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Hello world", out)
 
     async def test_fetch_html_spawns_worker_subprocess(self) -> None:
+        """Spawn the worker module, and return what its stdout produced"""
         from kindly_web_search_mcp_server.scrape.universal_html import (
             fetch_html_via_nodriver,
         )
 
-        class _FakeProc:
-            returncode = 0
-
-            async def communicate(self):
-                return b"<html><body><p>ok</p></body></html>", b"noisy but ignored"
-
-        with patch(
-            "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_spawn:
-            mock_spawn.return_value = _FakeProc()
+        with (
+            pinned_environment(),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_spawn,
+        ):
+            mock_spawn.return_value = FakeWorkerProcess(
+                stdout=primed_reader(WORKER_STDOUT),
+                stderr=primed_reader(b"noisy but ignored"),
+            )
             html = await fetch_html_via_nodriver("https://example.com")
 
-        self.assertIn("ok", html)
+        # The returned markup is the assertion that matters: it is the only one
+        # that fails if the parent stops reading the child's stdout, the drift
+        # that left this test red. Compared whole rather than by substring, so
+        # truncation or mangling through the accumulator's decode fails too.
+        self.assertEqual(html, WORKER_STDOUT.decode())
         self.assertTrue(mock_spawn.called)
         args, kwargs = mock_spawn.call_args
+        # Membership, not adjacency: the builder's exact shape is asserted at the
+        # unit layer once `_build_worker_command` is extracted. Pinning order
+        # here as well would put one claim at two layers.
         self.assertIn("-m", args)
         self.assertIn("kindly_web_search_mcp_server.scrape.nodriver_worker", args)
         self.assertIn("env", kwargs)
         self.assertIn("PYTHONPATH", kwargs["env"])
 
     async def test_fetch_html_passes_browser_executable_path_when_set(self) -> None:
+        """Forward the configured browser path to the worker command line"""
         from kindly_web_search_mcp_server.scrape.universal_html import (
             fetch_html_via_nodriver,
         )
 
-        class _FakeProc:
-            returncode = 0
-
-            async def communicate(self):
-                return b"<html><body><p>ok</p></body></html>", b""
-
         with (
-            patch.dict(
-                "os.environ", {"KINDLY_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium"}
-            ),
+            pinned_environment(KINDLY_BROWSER_EXECUTABLE_PATH="/usr/bin/chromium"),
             patch(
                 "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
                 new_callable=AsyncMock,
             ) as mock_spawn,
         ):
-            mock_spawn.return_value = _FakeProc()
+            mock_spawn.return_value = FakeWorkerProcess(
+                stdout=primed_reader(WORKER_STDOUT), stderr=primed_reader(b"")
+            )
             await fetch_html_via_nodriver("https://example.com")
 
         args, _kwargs = mock_spawn.call_args
@@ -97,28 +178,27 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/usr/bin/chromium", args)
 
     async def test_fetch_html_sets_no_proxy_for_loopback(self) -> None:
+        """Exempt loopback from the proxy, so the child can reach its own DevTools"""
         from kindly_web_search_mcp_server.scrape.universal_html import (
             fetch_html_via_nodriver,
         )
 
-        class _FakeProc:
-            returncode = 0
-
-            async def communicate(self):
-                return b"<html><body><p>ok</p></body></html>", b""
-
         with (
-            patch.dict(
-                "os.environ",
-                {"HTTP_PROXY": "http://proxy.invalid:8080"},
-                clear=False,
+            pinned_environment(
+                HTTP_PROXY="http://proxy.invalid:8080",
+                # Declared on: this case's whole subject is the behaviour the
+                # variable gates, so an ambient "0" would leave it passing for
+                # having asserted nothing.
+                KINDLY_NODRIVER_ENSURE_NO_PROXY_LOCALHOST="1",
             ),
             patch(
                 "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
                 new_callable=AsyncMock,
             ) as mock_spawn,
         ):
-            mock_spawn.return_value = _FakeProc()
+            mock_spawn.return_value = FakeWorkerProcess(
+                stdout=primed_reader(WORKER_STDOUT), stderr=primed_reader(b"")
+            )
             await fetch_html_via_nodriver("https://example.com")
 
         _args, kwargs = mock_spawn.call_args
