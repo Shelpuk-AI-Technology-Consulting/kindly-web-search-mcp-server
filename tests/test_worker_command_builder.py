@@ -405,7 +405,24 @@ def test_no_public_callable_takes_a_command_parameter() -> None:
     attacker-influenced. The seam is private by design; asserted across the
     whole public surface so the next extraction inherits the guard rather than
     writing its own.
+
+    The forbidden names are a **set**, not the two this function is named for:
+    the hole is the capability, not a spelling, and `argv=` or `args=` opens it
+    exactly as `command=` would. `executable` and `program` are on the list for
+    the same reason one step down — a caller who names the binary chooses the
+    process even when the arguments are built internally.
+
+    Variadic parameters are skipped deliberately. A public `*args` would
+    otherwise trip the `args` entry as a false alarm, and a false alarm on a
+    load-bearing guard is expensive: the next author's cheapest way out is to
+    weaken it. A real injection vector is a *named* parameter a caller can fill.
     """
+    forbidden = frozenset({"command", "cmd", "argv", "args", "executable", "program"})
+    variadic = (
+        inspect.Parameter.VAR_POSITIONAL,
+        inspect.Parameter.VAR_KEYWORD,
+    )
+
     public = {
         name: value
         for name, value in vars(universal_html).items()
@@ -416,6 +433,13 @@ def test_no_public_callable_takes_a_command_parameter() -> None:
     # A filter that matched nothing would leave the loop below silently green.
     assert public, "the public-surface filter matched no callable"
     for name, value in public.items():
-        parameters = inspect.signature(value).parameters
-        assert "command" not in parameters, f"{name} takes a command parameter"
-        assert "cmd" not in parameters, f"{name} takes a cmd parameter"
+        named = {
+            parameter_name
+            for parameter_name, parameter in inspect.signature(value).parameters.items()
+            if parameter.kind not in variadic
+        }
+        offending = named & forbidden
+        assert not offending, (
+            f"{name} takes {sorted(offending)}, which would let a caller choose "
+            f"the child process"
+        )
