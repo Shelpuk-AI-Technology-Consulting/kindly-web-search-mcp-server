@@ -103,10 +103,12 @@ alternative is trusting twelve repaired tests to stay repaired with nothing
 watching them.
 
 **It has now paid for itself once, measurably.** On the first Windows run in this
-repository's history the guard — not a reviewer — caught the regression,
-classified it under *"Failing but not in the ledger (a regression; fix the test,
-do not add the id)"*, and named the one node id responsible. The instruction in
-that message is what was followed.
+repository's history it **classified** the regression — plain `pytest` reported
+the failing test too, so detection is not the claim. What the guard added is the
+judgement: it placed the failure under *"Failing but not in the ledger (a
+regression; fix the test, do not add the id)"* rather than leaving a reader to
+decide whether an unfamiliar red test on an unmeasured platform was a baseline
+entry. The instruction in that message is what was followed.
 
 ## What is asserted and what is provenance
 
@@ -258,10 +260,12 @@ patches no platform attribute at all, and `_resolve_web_search_max_concurrency`
 reads one environment variable and one integer and nothing else.
 
 **E1-6 took its Windows figure from a real run, and the run disagreed with the
-argument.** That was the point of insisting on one: a drained document is
-evidence of nothing on a platform nobody ran, and with the two blocks identical
-the cross-platform difference check below is a tautology. Distinguishing a run
-from an argument, above, is the whole reason this section survived to the
+milestone claim** — with *"the suite is green"*, not with the drain argument
+below, which held in every particular. That was the point of insisting on one: a
+drained document is evidence of nothing on a platform nobody ran, and with the
+two blocks identical the cross-platform difference check below is a tautology.
+Distinguishing a run from an argument, above, is the whole reason this section
+survived to the
 milestone, and it earned its keep — the first Windows run in this repository's
 history found a real failure. See *"Verified — the suite-green milestone"* below
 for what it found and what it now records.
@@ -272,11 +276,13 @@ Windows. What it could not cover is a test written **after** the baseline run an
 never executed on the platform at all — which is exactly what failed. An argument
 about the repairs is not an argument about the suite, and only a run is.
 
-**One claim went uncovered with E1-5, deliberately, and is now covered.** The
-three retired concurrency tests were, between them, the only thing in the tree
-that would notice an `os.name` branch reappearing in that resolver. E1-6's real
-Windows run is what covers it: the resolver produced identical results on both
-platforms, so no platform branch has reappeared in it.
+**One claim went uncovered with E1-5, deliberately, and E1-6's run covered it
+once.** The three retired concurrency tests were, between them, the only thing in
+the tree that would notice an `os.name` branch reappearing in that resolver.
+E1-6's real Windows run covered it: the resolver produced identical results on
+both platforms, so no platform branch had reappeared as of that run. **The cover
+is not standing** — it was one run, nothing re-derives it until the CI matrix, and
+nothing asserts the branch's absence in the meantime.
 
 **The five-row relocation table above is not machine-checked, and stays that
 way.** It maps each retired id to the *function* its claim moved to. Converting
@@ -288,16 +294,18 @@ asserting a mapping this step never measured, which is attributing to another
 step's run a fact that run did not produce: the failure the `Result:`/
 `Remaining:` split exists to prevent, committed in a table instead of in a
 number. So it is declined, in writing, and **no later step is scoped to convert
-it**. Those five rows stand as prose backed by E1-2's one-off hand-run, which is
-what they have always been.
+it**. (*"Below"* here means *"Relocated claims"*, two sections down; the
+*"Verified"* section now between them is a record of two runs and is explicitly
+not machine-checked.) Those five rows stand as prose backed by E1-2's one-off
+hand-run, which is what they have always been.
 
 **That decline used to rest on "E1-6 has no diff", and no longer can**, because
 E1-6 took one. The reason above is the real one and always was: the mapping was
 never measured, and no amount of diff budget in a later step conjures a
 measurement of a run that already happened. Re-grounded here rather than left
 resting on a premise the milestone falsified — a conclusion propped up by a
-stale fact is how a deliberate trade-off gets mistaken for an accident. The block below is machine-checked
-and says so.
+stale fact is how a deliberate trade-off gets mistaken for an accident. The
+block two sections down is machine-checked and says so.
 
 ## Verified — the suite-green milestone
 
@@ -462,7 +470,8 @@ only that the two blocks match — which two identically *wrong* blocks also
 satisfy. That was the whole of the Windows evidence until the milestone, which is
 why E1-6 was forbidden to read "0 failed on both platforms" off this document.
 **It did not: it ran the suite on Windows, found a failure this section could
-never have shown, and recorded the result below.** The warning is kept in the
+never have shown, and recorded the result in *"Verified — the suite-green
+milestone"* above.** The warning is kept in the
 past tense rather than deleted, because the same hole reopens the moment a test
 is added that no Windows lane executes — which is precisely how the failure got
 in, and it stays open until the CI epic's matrix exists.

@@ -291,13 +291,13 @@ def orchestration_harness(
     for the duration and reach far past the code under test. Driving it to zero
     does **not** exercise the backoff arithmetic -- zero times anything is zero,
     and gutting the expression survives every case that uses this default. The
-    one case that asserts the arithmetic patches :func:`asyncio.sleep` for
-    itself and says so.
+    two cases that assert the arithmetic -- one per polarity of the snap
+    multiplier -- patch :func:`asyncio.sleep` for themselves and say so.
 
     The other sleep that remains is the fixed 100 ms `_cleanup` waits for
     Chromium to flush profile writes before the profile directory is removed.
-    It is about 0.4 s of this module's runtime and is asserted by that same
-    case; the rest pay it without observing it.
+    It is about 0.4 s of this module's runtime and is asserted by those same two
+    cases; the rest pay it without observing it.
 
     :func:`shutil.which` is pinned to "nothing installed" even though four of
     the five cases hand `_fetch_html` an explicit executable and never reach the
@@ -677,7 +677,8 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         and does not exist on Windows.
 
         What the seam gives up is the wiring from a *path shape* to the answer,
-        which belongs to the resolver step that owns `_is_snap_browser` outright.
+        which belongs to plan step E5-4, the resolver step that owns
+        `_is_snap_browser` outright.
         What it keeps is the wiring that matters to the backoff, asserted below:
         that the detector is consulted at all, that it is asked about the
         executable path the caller supplied, and that its answer is what selects
@@ -686,21 +687,22 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         See :data:`SNAP_BROWSER_PATH` for the second, independent reason the real
         `/snap/bin/chromium` cannot stand in here.
 
-        This is the only case that patches :func:`asyncio.sleep`. It is a global
-        and the harness avoids it for that reason, but a duration cannot be
-        observed without either replacing the clock or actually waiting 4.5 s.
+        This case and its non-snap sibling below are the **only two** that patch
+        :func:`asyncio.sleep`. It is a global and the harness avoids it for that
+        reason, but a duration cannot be observed without either replacing the
+        clock or actually waiting 4.5 s.
         """
         recorded: list[float] = []
-        classified: list[str] = []
 
         async def _record(delay: float) -> None:
             recorded.append(delay)
 
-        # The seam. Recording the argument is what keeps the wiring claim alive
-        # once the answer stops being derived from the path.
-        def _classify_as_snap(executable_path: str) -> bool:
-            classified.append(executable_path)
-            return True
+        # The seam, autospec'd like every other double here, so production calling
+        # it with the wrong arity raises rather than being quietly accepted.
+        # Asserting what it received is what keeps the wiring claim alive once the
+        # answer stops being derived from the path.
+        is_snap_browser = create_autospec(nodriver_worker._is_snap_browser)
+        is_snap_browser.return_value = True
 
         with orchestration_harness(
             environment={
@@ -714,7 +716,7 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
             )
 
             with (
-                patch.object(nodriver_worker, "_is_snap_browser", _classify_as_snap),
+                patch.object(nodriver_worker, "_is_snap_browser", is_snap_browser),
                 patch.object(nodriver_worker.asyncio, "sleep", _record),
                 self.assertRaises(RuntimeError),
             ):
@@ -725,7 +727,7 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         # the resolver reached for. A production change that stopped consulting
         # the detector, or asked it about the wrong path, fails here rather than
         # falling back silently to a multiplier of 1.0.
-        self.assertEqual(classified, [SNAP_BROWSER_PATH])
+        is_snap_browser.assert_called_once_with(SNAP_BROWSER_PATH)
         # 0.5 * 2**0 * 3, then 0.5 * 2**1 * 3. There is no third: the last
         # attempt raises instead of backing off. The trailing 0.1 is the profile
         # flush `_cleanup` waits for before removing the directory.
@@ -751,16 +753,19 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         Windows before it was repaired. Reading `[0.5, 1.0, 0.1]` here as the
         *expected* value is what makes the platform bug impossible to reintroduce
         unnoticed: it now has to be spelled out to be asserted.
+
+        Like its sibling above it patches :func:`asyncio.sleep`, and for the same
+        reason: the harness avoids that global by policy, and a duration cannot be
+        observed without either replacing the clock or waiting out the backoff.
+        Between them these two are the only cases in this module that do.
         """
         recorded: list[float] = []
-        classified: list[str] = []
-
-        def _classify_as_not_snap(executable_path: str) -> bool:
-            classified.append(executable_path)
-            return False
 
         async def _record(delay: float) -> None:
             recorded.append(delay)
+
+        is_snap_browser = create_autospec(nodriver_worker._is_snap_browser)
+        is_snap_browser.return_value = False
 
         with orchestration_harness(
             environment={
@@ -776,14 +781,14 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
             )
 
             with (
-                patch.object(nodriver_worker, "_is_snap_browser", _classify_as_not_snap),
+                patch.object(nodriver_worker, "_is_snap_browser", is_snap_browser),
                 patch.object(nodriver_worker.asyncio, "sleep", _record),
                 self.assertRaises(RuntimeError),
             ):
                 await fetch_html(browser_executable_path=BROWSER_PATH)
 
         self.assertEqual(doubles.launch.call_count, 3)
-        self.assertEqual(classified, [BROWSER_PATH])
+        is_snap_browser.assert_called_once_with(BROWSER_PATH)
         # 0.5 * 2**0, then 0.5 * 2**1, unmultiplied. The trailing 0.1 is the
         # profile flush, as above.
         self.assertEqual(recorded, [0.5, 1.0, 0.1])

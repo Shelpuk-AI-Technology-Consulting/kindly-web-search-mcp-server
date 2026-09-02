@@ -71,8 +71,12 @@ collected" complaint, which fires only for ids still listed, so a dropped claim
 and a repair look identical. The ledger now carries machine-readable
 `<retired id> -> <replacement id>` rows and the guard holds each replacement to
 the same child run. Linux is measured; the Windows blocks were drained on a
-stated argument, which E1-6 replaced with a real Windows run — and that run
-disagreed, which is why the insistence on it was worth the cost.
+stated argument, which E1-6 replaced with a real Windows run. **That run
+contradicted the milestone claim, not the drain argument** — the argument covered
+E1-2 through E1-5's repairs and held in every particular; what it could not cover
+was a test written after the measurement and never executed on the platform,
+which is what failed. No argument can. That is why the insistence on a run was
+worth its cost.
 
 ### 1.2 What is actually uncovered
 
