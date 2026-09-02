@@ -255,6 +255,26 @@ against the corpus in §3.3.
 **Text accumulators.** `_append_tail_text` and the encoding-cookie helpers in
 `nodriver_worker.py`.
 
+**The worker command shape.** `_build_worker_command` in `universal_html.py`,
+extracted by E2-2 and asserted by `tests/test_worker_command_builder.py`.
+
+It is the one member of this list that parameterises even the **interpreter
+path**. The URL parsers and the Markdown transforms are pure by the same
+standard, so purity is not what distinguishes it: `sys.executable` is passed in
+rather than read precisely so a test can distinguish "emits what it was given"
+from "emits the running interpreter". Read from the module, an expected list
+built from `sys.executable` could not tell the two apart, and the whole point of
+asserting the command shape is lost. The same reasoning makes the cases pass a
+non-default user agent: the shipped default is the empty string, so a case built
+on the default config cannot distinguish forwarding from emitting a constant.
+
+Assertions here are **whole-list equality, not membership** — order is the
+property, since an argv holding every expected token in the wrong sequence runs
+the wrong thing. The three loader tests keep asserting membership only, on
+purpose: they own the claim that the spawn receives what the builder produced,
+which is a different claim from what the builder produces, and pinning order in
+both places would give one claim two owners.
+
 ### 3.2 Validation by mutation testing
 
 Line coverage proves a line ran, not that a test would fail if it broke. `mutmut`
@@ -1083,6 +1103,7 @@ The **Today** column describes *test coverage*, not implementation status.
 | Inbound transport security, CORS, SSE | implemented in PR #50; **automated L3 gap** | L1 + L3 | `fast` + `subsystem` | |
 | MCP tool schema stability | gap | L2 | `fast` | |
 | Parent ⇄ worker frame format | gap | L2 | `fast` | |
+| Worker command shape, pooled and unpooled | covered (E2-2) | L1 | `fast` | |
 | Worker lifecycle and cleanup | gap — stale | L3 portable | `subsystem` | |
 | Worker retry/termination orchestration | covered — unmarked, see §5.2 | L3 portable | `subsystem` (open) | |
 | ChromiumPool | gap — no tests | L3 Chromium | `chromium` | |
@@ -2063,14 +2084,9 @@ change.
 
 ### 11.2 The worker command must be injectable
 
-Needed by §5.2. `fetch_html_via_nodriver` hardcodes its child command
-(`universal_html.py:550`):
-
-```python
-base_cmd = [executable, "-m", "kindly_web_search_mcp_server.scrape.nodriver_worker", ...]
-```
-
-There is no way to point it at a fixture child. Split the function in two:
+Needed by §5.2. `fetch_html_via_nodriver` **used to** hardcode its child
+command, as a local `base_cmd` list plus a `_compose_cmd` closure, with no way
+to point it at a fixture child. The split this section calls for is:
 
 - `_build_worker_command(...) -> list[str]` — the production command builder, a
   pure function that L1 asserts on directly.
@@ -2080,6 +2096,15 @@ There is no way to point it at a fixture child. Split the function in two:
 `fetch_html_via_nodriver` keeps its current signature and **always builds its own
 command**, calling the builder and passing the result to the runner. Tests reach
 `_run_worker_command` directly with a fixture command.
+
+**The builder half landed in E2-2.** `_build_worker_command` now sits at module
+scope in `universal_html.py`, pure and keyword-only, called at both the first
+spawn and the pool-restart retry; `base_cmd` and `_compose_cmd` are gone. Its
+shape is owned by `tests/test_worker_command_builder.py` (see §3.1) and its
+wiring — that the spawn receives what the builder returned, for a pooled slot —
+by one case in `tests/test_universal_html_loader.py`. **The runner half is still
+inline and is E2-3's**, which is why everything below about the runner is
+written in the future tense.
 
 **Move the runner into its own module, `scrape/worker_runner.py`.** This is not
 tidiness: §10.4 classifies every production file as hermetically testable or not,
@@ -2104,9 +2129,10 @@ command-free costs nothing and closes that path.
 The alternative — monkeypatching `asyncio.create_subprocess_exec` — reproduces
 exactly the opaque coupling that let `_FakeProc` drift, and is ruled out.
 
-**It nonetheless survives E1-4, as a stated interim.** That step repairs the three
-loader tests and changes no production code, so the seam it needs does not exist
-yet; the three tests still patch
+**It nonetheless survives E1-4 and E2-2, as a stated interim.** E1-4 repaired the
+three loader tests and changed no production code, so the seam they need did not
+exist yet; E2-2 built the *command* seam, not the *runner* seam, so those tests —
+and E2-2's own wiring case — still patch
 `universal_html.asyncio.create_subprocess_exec`. What has changed is which half
 of the objection bites. The *drift* half is closed — the double is now
 `FakeWorkerProcess`, held to `WorkerProcess` by E2-1's harness and to a single

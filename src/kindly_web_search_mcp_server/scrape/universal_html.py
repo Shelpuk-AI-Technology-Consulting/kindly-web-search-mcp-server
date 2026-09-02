@@ -528,6 +528,83 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
+def _build_worker_command(
+    *,
+    executable: str,
+    url: str,
+    referer: str | None,
+    config: UniversalHtmlLoaderConfig,
+    slot: ChromiumSlot | None,
+    browser_executable_path: str | None,
+) -> list[str]:
+    """Build the command line that runs the nodriver worker child process.
+
+    Pure: every input is a parameter, including the interpreter, so the result
+    depends on nothing ambient. That is what makes the command shape assertable
+    without spawning anything — see ``tests/test_worker_command_builder.py``.
+
+    The returned list is also emitted verbatim into the ``worker.spawn``
+    diagnostics entry, which is returned to the caller in the MCP response.
+    Redacting the ``--url`` value there belongs to the diagnostics sanitization
+    work, not here.
+
+    Args:
+        executable: Absolute path to the Python interpreter that runs the child.
+            Taken as a parameter rather than read from :data:`sys.executable` so
+            a test can tell "emits what it was given" from "emits the running
+            interpreter".
+        url: The page the worker should render.
+        referer: Referer header for the worker to send, or ``None``. An empty
+            string is treated as absent, matching the shipped behaviour.
+        config: Loader configuration supplying the user agent and the render
+            wait, the latter rendered as text because argv admits no other type.
+        slot: A pooled Chromium slot to attach to, or ``None`` to let the worker
+            start its own browser. The slot's own ``browser_executable_path`` is
+            deliberately not read: the parent's resolved path wins, because that
+            is the path the parent also propagates through the child's
+            environment.
+        browser_executable_path: Browser binary the worker should launch, or
+            ``None`` to let it resolve one itself.
+
+    Returns:
+        The full argv, interpreter first, ready for
+        :func:`asyncio.create_subprocess_exec`.
+    """
+    # The invariant part: which interpreter runs which module against which URL.
+    command = [
+        executable,
+        "-m",
+        "kindly_web_search_mcp_server.scrape.nodriver_worker",
+        "--url",
+        url,
+        "--user-agent",
+        config.user_agent,
+        "--wait-seconds",
+        str(config.wait_seconds),
+    ]
+    if referer:
+        command.extend(["--referer", referer])
+
+    # Attach to a pooled browser when one was acquired; the port can still be
+    # unassigned, and zero is what the worker reads as "not yet known".
+    if slot is not None:
+        command.extend(
+            [
+                "--remote-host",
+                slot.host,
+                "--remote-port",
+                str(slot.port or 0),
+                "--reuse-browser",
+            ]
+        )
+        if slot.user_data_dir is not None:
+            command.extend(["--user-data-dir", slot.user_data_dir.name])
+
+    if browser_executable_path:
+        command.extend(["--browser-executable-path", browser_executable_path])
+    return command
+
+
 async def fetch_html_via_nodriver(
     url: str,
     *,
@@ -546,20 +623,6 @@ async def fetch_html_via_nodriver(
     - A dedicated subprocess runs `kindly_web_search_mcp_server.scrape.nodriver_worker`.
     - The worker writes only HTML to stdout; all incidental output is discarded in the worker.
     """
-
-    base_cmd = [
-        sys.executable,
-        "-m",
-        "kindly_web_search_mcp_server.scrape.nodriver_worker",
-        "--url",
-        url,
-        "--user-agent",
-        config.user_agent,
-        "--wait-seconds",
-        str(config.wait_seconds),
-    ]
-    if referer:
-        base_cmd.extend(["--referer", referer])
 
     pool = None
     slot = None
@@ -581,26 +644,15 @@ async def fetch_html_via_nodriver(
     if slot is None:
         use_pool = False
 
-    def _compose_cmd(active_slot: ChromiumSlot | None) -> list[str]:
-        cmd = list(base_cmd)
-        if active_slot is not None:
-            cmd.extend(
-                [
-                    "--remote-host",
-                    active_slot.host,
-                    "--remote-port",
-                    str(active_slot.port or 0),
-                    "--reuse-browser",
-                ]
-            )
-            if active_slot.user_data_dir is not None:
-                cmd.extend(["--user-data-dir", active_slot.user_data_dir.name])
-        if browser_executable_path:
-            cmd.extend(["--browser-executable-path", browser_executable_path])
-        return cmd
-
     browser_executable_path = _resolve_browser_executable_path()
-    cmd = _compose_cmd(slot)
+    cmd = _build_worker_command(
+        executable=sys.executable,
+        url=url,
+        referer=referer,
+        config=config,
+        slot=slot,
+        browser_executable_path=browser_executable_path,
+    )
 
     env = _maybe_add_src_to_pythonpath(dict(os.environ))
 
@@ -934,7 +986,14 @@ async def fetch_html_via_nodriver(
         slot = await pool.acquire(user_agent=config.user_agent, diagnostics=diagnostics)
         if slot is None:
             raise
-        cmd = _compose_cmd(slot)
+        cmd = _build_worker_command(
+            executable=sys.executable,
+            url=url,
+            referer=referer,
+            config=config,
+            slot=slot,
+            browser_executable_path=browser_executable_path,
+        )
         _emit_worker_spawn(cmd)
         return await _run_worker()
     finally:
