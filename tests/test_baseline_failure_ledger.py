@@ -332,8 +332,14 @@ def _relocated_claims(text: str, heading: str) -> list[tuple[str, str]]:
     ``subTest`` rather than through ``pytest.mark.parametrize``, which keeps
     seven cases on one node id. That coupling is load-bearing in both directions,
     and is recorded at the other end too. (Spelling that method's dotted name
-    here would trip ``scripts/check_plan_dag.py``, whose unittest detector is a
-    deliberately over-collecting shape scan and does not exempt prose.)
+    here would trip ``scripts/check_plan_dag.py``. Its ``UNITTEST_FRAMEWORK``
+    pattern anchors its two import alternatives to line start, and its comment
+    says that is deliberate -- "so the string quoted inside a test is not
+    evidence" -- but the third alternative, the one naming the two case classes,
+    carries no such anchor and therefore matches inside prose. Measured: this
+    module is then reported as unittest-style and claimed by no migration batch,
+    which fails ``tests/test_plan_dag.py``. That gap between the comment and the
+    pattern is not this step's script to change.)
 
     Args:
         text: The whole document.
