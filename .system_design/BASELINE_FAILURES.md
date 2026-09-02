@@ -316,7 +316,12 @@ a test failed more than once, through subtests the summary reports under a
 different word.
 
 Four of those eleven left with E1-2, three more with E1-3 and three more with
-E1-4, hence one remaining. **The frozen `3 skipped` is now stale by one:** the third skip *was*
+E1-4, hence one remaining. **E1-4's three left by inference, not by a run** —
+that argument is stated once, in *"What the remaining one is"* above, and is not
+repeated here; what it rests on is that the three loader tests spawn no process
+and touch no `os.name` or `sys.platform` branch. E1-2's four and E1-3's three
+are in the same position for the same reason. **The frozen `3 skipped` is now
+stale by one:** the third skip *was*
 `test_forces_sandbox_off_when_running_as_root`, which E1-2 deleted. It is left
 as measured, because editing a measurement to keep it plausible is the failure
 mode the two-line split exists to prevent. There is no Windows lane in CI until
