@@ -515,11 +515,23 @@ it carries no X-number.
   polarity — a mutation making it always-true survived every other case), and an
   unusable pool falls back to an unpooled command with `pool.error` recorded.
 
-  **Six.** Falsified by 20 mutations, each run under **both** a cleared
-  environment and one exporting every variable the code reads. All 20 were
-  caught. Two earlier attempts at the leak mutation were themselves too weak to
-  turn anything red, which is the reason the battery reports what it mutated
-  rather than a count.
+  **Six.** Falsified by **24** mutations across five batteries, each run under
+  **both** a cleared environment and one exporting every variable the code
+  reads. All 24 were caught. A further **two** were discarded rather than
+  counted: both were no-ops that changed no execution — one inserted a dead
+  `if reuse_enabled(): pass`, the other deleted a line after the assignment it
+  meant to remove — and both therefore "survived" while proving nothing.
+
+  That is the reason a battery should print **what it mutated**, not a score. A
+  survivor is the only mutation result needing interpretation, and the cheap
+  reading ("the test is weak") is wrong often enough to send an author writing
+  tests for a gap that is not there. The rule: before recording a survivor, name
+  the execution that differs; if you cannot, the mutation is broken.
+
+  Two counts in the first draft of this entry and its pull request disagreed —
+  20 against 25, neither of them right — and the automatic reviewer caught it.
+  Recorded because it is this document's own standing complaint about numbers in
+  prose that nothing checks, committed by the step that wrote the complaint.
 - **E2-4.** **Production change**, annotation only, since E2-1 already placed the
   Protocol in `src/`. **Sized on a narrower reading than the work requires.**
   Two other functions already take `proc: asyncio.subprocess.Process` —
