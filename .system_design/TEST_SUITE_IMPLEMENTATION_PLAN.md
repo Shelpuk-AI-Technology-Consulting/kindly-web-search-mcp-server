@@ -306,7 +306,7 @@ it carries no X-number.
   asked for and holds each replacement to the live child run. It covers its own
   three retirements only; the five older rows stay prose, declined in writing
   with the reason, and nothing later is scoped to convert them.
-- **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, and
+- **E1-6.** *Verify:* **0 failed** on Windows and Linux, and
   `BASELINE_FAILURES.md` lists no remaining ids — the two facts are checked
   together, since either alone can be true while the other is not. CI enforcement
   begins here. **The Windows half must come from a real Windows run**, not from
@@ -314,6 +314,26 @@ it carries no X-number.
   blocks became identical, which makes the cross-platform difference check a
   tautology, and nothing else asserts the Windows block until E4-1's matrix
   exists. A drained document is evidence of nothing on a platform nobody ran.
+  **"No diff" was the prediction, and it was wrong** — corrected here rather than
+  quietly failed, following E1-5's precedent for an unsatisfiable clause. The
+  clause that mattered is the one that held: the run was demanded, it was taken,
+  and it found the suite red on Windows. Insisting on the run is what this step
+  contributed; a step with no diff would have declared the milestone on a green
+  Linux run beside a drained document, which is exactly the pair of facts that
+  were both true while Windows was broken. Measured: `2 failed, 446 passed` at
+  `38026ae`.
+  **The step stays typed `milestone` even though it carries a diff.** Five steps
+  depend on it with the `complete` kind — E4-1 and E11-1 through E11-4 — and
+  `scripts/check_plan_dag.py` accepts `complete` only against a milestone,
+  decision, operation or external prerequisite. Retyping it to `PR` would break
+  those five dependencies at once for a bookkeeping reason. The type describes
+  what the step *is* — a verification gate its dependents schedule against — not
+  whether repairing what it found cost a diff, and the diff is the repair rather
+  than authorable work in its own right.
+  **What it repaired**, in one line: a retry-backoff test asserted a value
+  derived from `os.path.realpath`, which is platform-dependent, so it demanded a
+  snap multiplier that Windows can never produce. Detail in `TEST_SUITE.md` §8
+  block A item 5 and in the ledger's *"Verified"* section.
 
 ---
 
@@ -619,12 +639,29 @@ duplicating tests or touching the same files.
   blank, malformed, zero, negative. **String and list normalisation**
   (`_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`):
   unset, blank, single value, comma-separated with surrounding whitespace,
-  duplicate entries. **Detection** (`_detect_chrome_version`, `_resolve_user_agent`):
+  duplicate entries. **Version and user-agent**
+  (`_detect_chrome_version`, `_resolve_user_agent`):
   a stubbed executable reporting a known version, an executable that fails to run,
   and no executable at all — each returning a usable fallback rather than raising.
+  **Classification** (`_is_snap_browser`, `_is_retryable_browser_connect_error`):
+  each driven by its *input* rather than by an injected answer.
+  `_is_retryable_browser_connect_error` gets one exception of each polarity.
+  `_is_snap_browser` gets the path-shape wiring **E1-6 gave up** — a
+  `/snap/`-shaped path classifies as snap and a `/usr/bin/` one does not — with
+  `os.path.realpath` pinned, since that is this function's only ambient input.
+  **Read §3.1 before writing that case**: this function answers *wrongly* on both
+  platforms, for two different measured reasons, and the obvious first assertion
+  turns E4-2's required cross-platform gate red. Characterise the current answer
+  with the defect named in the docstring; do **not** repair production in a
+  testing step.
   **Composite** (`_resolve_worker_timeout_details`): the returned tuple is
-  consistent with the individual resolvers it composes. No function here is also
-  tested by E5-3 or E1-2.
+  consistent with the individual resolvers it composes.
+  No function in the five groups above is also tested by E5-3 or E1-2, and the
+  groups are exhaustive over this step's ownership list — a claim worth stating
+  because E5-4 is scoped by *exclusion*, so a function owned here but named in no
+  group is orphaned permanently rather than deferred. **E1-6 handed the
+  classification group its one retired claim**, and found the list short by two
+  when it went looking for the owner.
 - **E5-5.** `html_to_markdown`, `sanitize_markdown`, `extract_content_as_markdown`,
   `_apply_markdown_cap`, `_build_md_suffix_url` over E3-3's fragments.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
@@ -1019,7 +1056,7 @@ Five engineers.
 E1-4 goes to engineer B as soon as A's E2-1 lands; E2-3 waits on it. E4-1 is
 authored early but merges with E1-6, and E4-2 follows immediately — the gate is on
 within a day of green. Coverage work (E10-1) waits on E2-3. E3-2, E3-3, E3-5,
-E5-3, E5-6, E5-7, E8-4 are unassigned backlog. With `pr_authorable` steps open
+E5-3, E5-4, E5-6, E5-7, E8-4 are unassigned backlog. With `pr_authorable` steps open
 from day one (§2), the constraint on throughput is people, not the graph.
 
 In parallel, the maintainer works **X-1** — the only prerequisite blocking steps

@@ -54,8 +54,14 @@ not move. Baselines are quoted per platform, from real runs, or not quoted.
 repaired test from a repaired test alongside a newly broken one, so the failing
 **node ids** are recorded per platform in `BASELINE_FAILURES.md` and asserted
 against a live child run by `tests/test_baseline_failure_ledger.py`. E1-2 through
-E1-5 each delete exactly the ids they repair; E1-6 is reached when the ledger is
-empty, which is the same statement as the guard finding no failures.
+E1-5 each delete exactly the ids they repair; E1-6 needs the ledger empty.
+
+**"Empty ledger" and "no failures" are not the same statement, and E1-6 measured
+the difference.** At `38026ae` both blocks were empty and the guard was green —
+on Linux. The first Windows run in this repository's history found the suite red
+there. An empty ledger is necessary for the milestone and never sufficient,
+because the guard can only speak for the platform it runs on. See
+`BASELINE_FAILURES.md`, *"Verified — the suite-green milestone"*.
 
 **The ledger is now empty on both blocks** — E1-5 removed the last id. It also
 gave the guard a second invariant, because its repair *renamed* the test and so
@@ -65,7 +71,12 @@ collected" complaint, which fires only for ids still listed, so a dropped claim
 and a repair look identical. The ledger now carries machine-readable
 `<retired id> -> <replacement id>` rows and the guard holds each replacement to
 the same child run. Linux is measured; the Windows blocks were drained on a
-stated argument, which E1-6 must still replace with a real Windows run.
+stated argument, which E1-6 replaced with a real Windows run. **That run
+contradicted the milestone claim, not the drain argument** — the argument covered
+E1-2 through E1-5's repairs and held in every particular; what it could not cover
+was a test written after the measurement and never executed on the platform,
+which is what failed. No argument can. That is why the insistence on a run was
+worth its cost.
 
 ### 1.2 What is actually uncovered
 
@@ -165,6 +176,35 @@ for the platform that has no `os.geteuid`. Pin `shutil.which` even in the cases
 that never reach it: an environment-variable case that leaves the real lookup in
 place is a case whose result depends on whether the developer has Chromium
 installed.
+
+**`_is_snap_browser` reads the filesystem, and answers wrongly on both platforms
+for two different measured reasons.** Its only ambient input is
+`os.path.realpath`, so pin it —
+`monkeypatch.setattr(os.path, "realpath", …)` — in every case, on the same
+reasoning as `shutil.which` above: a case that leaves the real call in place
+answers differently depending on where the developer's Chromium came from.
+
+- **On Windows nothing classifies as snap, whatever the path.** A path with a
+  single leading slash is not absolute there, so `realpath` joins it against the
+  current working drive and normalises the separators; `/snap/bin/chromium`
+  becomes `<drive>:\snap\bin\chromium` and the `/snap/` marker the detector keys
+  on is erased. Measured against the shipped function on a `windows-latest`
+  runner. **This is correct production behaviour** — snap is a Linux packaging
+  format — and must not be "fixed" in the detector by matching separators.
+- **On Ubuntu the commonest snap install classifies as non-snap.** The real
+  `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, which `realpath` follows
+  before the prefix test. That one is an **open production defect**, reported and
+  characterised rather than repaired; see §14.
+
+E1-6 hit the first of these and repaired the affected test by injecting the
+classification. The path-shape wiring it gave up belongs to **E5-4**, whose entry
+cites this section — the pointer runs both ways deliberately, because the layer
+split sends resolver tests to
+`tests/test_nodriver_worker_launch_resolvers.py` while the traps were first
+recorded in `tests/test_nodriver_worker_sandbox.py`, which an E5-4 author has no
+reason to open. E5-4 lands *after* E4-2 makes the cross-platform job required, so
+the obvious first assertion — a `/snap/` path is snap — turns a required gate red
+rather than a local run.
 
 **The `hasattr(os, "geteuid")` guard is not a testable branch.** Deleting the
 attribute exercises the *condition*, but the call sits inside a
@@ -910,12 +950,15 @@ conversion bug.
    resolver does not read. All three retirements are recorded as relocation rows
    rather than described in a pull request.
 
-   **One claim went uncovered, deliberately.** The three retired methods were,
-   between them, the only thing in the tree that would notice an `os.name` branch
-   reappearing in this resolver, and nothing asserts its absence now. E1-6's one
-   real Windows run is the next thing to cover it. Recorded here as well as in
-   the test's docstring and the ledger, because a coverage loss stated only where
-   the deletion happened is found only by whoever goes looking there.
+   **One claim went uncovered, deliberately, and E1-6's run covered it once.**
+   The three retired methods were, between them, the only thing in the tree that
+   would notice an `os.name` branch reappearing in this resolver, and nothing
+   asserts its absence. E1-6's real Windows run is what covered it: the resolver
+   produced identical results on both platforms, so no platform branch has
+   reappeared. **The cover is not standing** — it was one run, and nothing
+   re-derives it until the CI matrix. Recorded here as well as in the test's
+   docstring and the ledger, because a coverage loss stated only where the
+   deletion happened is found only by whoever goes looking there.
 
    **Each row states the single-line mutation it detects**, carried on the row
    rather than in prose, and reported when the row fails. The positivity guard
@@ -923,6 +966,57 @@ conversion bug.
    kills the negative row and leaves the zero row passing. `max(1, ...)` is an
    equivalent mutant — unreachable given the filter above it — and is triaged in
    the docstring instead of tested.
+
+5. **Verify the suite green on both platforms.** Predicted as a no-diff
+   milestone. It took a diff, because the one real Windows run it exists to
+   demand found a genuine failure — and the prediction is corrected here rather
+   than quietly failed, as E1-5's unsatisfiable clause was.
+
+   **The failure was a test asserting a platform-dependent value.** The retry
+   backoff case drove `base * 2**attempt * snap_multiplier` and expected the
+   multiplier to apply, which needs `_is_snap_browser` to answer `True`. That
+   function calls `os.path.realpath`, which on Windows rewrites the separators
+   and prepends a drive letter, so a `/snap/`-prefixed path loses the marker the
+   detector keys on and **nothing classifies as snap there**. Measured against
+   the shipped function on the runner, not inferred. Production is correct —
+   snap is a Linux packaging format — so the repair is the test's: the
+   classification is injected through a seam instead of derived from the host's
+   path semantics.
+
+   **The step it could not have been caught by is the point.** The test landed
+   the day *after* the Windows baseline was measured, so it was newer than the
+   platform's only run and no lane had executed it. The drain argument covers the
+   repairs E1-2 through E1-5 made and every part of it held; no argument can
+   cover a test written after the measurement. That gap closes with a lane, not
+   with better prose.
+
+   **Two alternatives were declined.** Patching `os.path.realpath` to the
+   identity keeps the real `startswith("/snap/")` derivation under test and gives
+   up strictly less — declined because it is a process-global, and this module's
+   harness avoids globals by policy, admitting exactly one exception
+   (`asyncio.sleep`, to observe a duration without waiting 4.5 s). Skipping the
+   snap half on non-POSIX is the cheaper fix and is declined outright: a
+   platform-gated skip is what the ledger's "Why the two platforms differ"
+   section existed to track, and reintroducing one reopens the skew the empty
+   block now asserts away.
+
+   **The seam's cost was measured and then repaid.** Injecting the answer gives
+   up the wiring from a *path shape* to the classification, which belongs to
+   E5-4 — the step that owns `_is_snap_browser` outright. What it keeps is
+   asserted explicitly: the detector is consulted, and about the path the caller
+   supplied. Measured — with that assertion removed, a mutation asking the
+   detector about the wrong path survives; with it, the mutation dies.
+
+   **A live mutant on the line being repaired was found and killed.** The
+   `if is_snap else 1.0` conditional was asserted by **nothing in the tree**:
+   deleting it, so every browser is multiplied, left the whole suite passing.
+   Every other case in that module sets the base backoff to zero, which makes the
+   product zero regardless. The seam would have made the hole permanent, since a
+   classification injected only as `True` can never reach the `else`. A
+   negative-polarity case now supplies it, and its expected series is exactly
+   what the affirmative case wrongly produced on Windows — so the platform bug
+   has to be spelled out to be asserted. **A test that patches a branch condition
+   owes the branch both polarities.**
 
 **B. Enforce green — immediately after A, before anything else.** The failure this
 document exists to fix was not that tests broke; it was that a red suite was
@@ -2182,3 +2276,14 @@ is nothing to test.
   `_is_snap_browser`), which implies breakage has happened and will recur.
 - **`_split_worker_diagnostics` is dead code** (§4.3), flagged for removal under
   a separate change.
+- **`_is_snap_browser` misclassifies the commonest snap install**, and the defect
+  is open. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu, and
+  the function calls `os.path.realpath` before testing for the `/snap/` prefix,
+  so the browser that most needs the longer DevTools timeout is the one that does
+  not get it. Measured on Ubuntu 24.04. Recorded here because it was previously
+  documented only in a test-module comment, which left E5-4 — the step that will
+  write the first direct test of this function — to choose unaided between
+  asserting a known-wrong answer and repairing production inside a testing step.
+  It should do the former, with the defect named; the repair deserves its own
+  change. §3.1 carries the detail, including the separate Windows behaviour that
+  is **not** a defect.
