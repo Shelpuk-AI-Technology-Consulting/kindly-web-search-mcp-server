@@ -97,8 +97,9 @@ def pinned_environment(**overrides: str) -> Iterator[None]:
     The pooled path with a *real* pool is a subsystem concern and is not this
     file's to cover. The rule for the cases that override this default: every one
     of them must also double `get_chromium_pool`, or it reaches a real browser.
-    Six do so today, and the count is given as a rule rather than a number
-    because the number is what goes stale.
+    No count is given, deliberately. An earlier wording gave one, was wrong by a
+    case on the day it was written, and was wrong inside the very sentence
+    explaining that counts go stale.
 
     Args:
         **overrides: Variables this case needs set, applied after the clear.
