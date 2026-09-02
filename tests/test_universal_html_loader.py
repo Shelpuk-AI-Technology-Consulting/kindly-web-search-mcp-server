@@ -95,8 +95,10 @@ def pinned_environment(**overrides: str) -> Iterator[None]:
     all — it returns a live slot.
 
     The pooled path with a *real* pool is a subsystem concern and is not this
-    file's to cover. One case below overrides this default with
-    `get_chromium_pool` doubled, which never reaches a launch.
+    file's to cover. The rule for the cases that override this default: every one
+    of them must also double `get_chromium_pool`, or it reaches a real browser.
+    Six do so today, and the count is given as a rule rather than a number
+    because the number is what goes stale.
 
     Args:
         **overrides: Variables this case needs set, applied after the clear.
@@ -333,6 +335,10 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command, sentinel_command)
         self.assertEqual(mock_builder.call_count, 1)
         self.assertIs(mock_builder.call_args_list[0].kwargs["slot"], slot)
+        # The ordinary success path's release count. Every other release
+        # assertion in this file is on a failure path, and "released exactly
+        # once on every exit path" is not shown by failure paths alone.
+        self.assertEqual(pool.release.await_count, 1)
 
     async def test_pool_slot_is_released_when_the_run_never_starts(self) -> None:
         """Return the pooled slot even when the failure precedes the worker run
@@ -457,6 +463,13 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
             [call.args[0] for call in mock_run.call_args_list],
             [["first-command"], ["second-command"]],
         )
+        # Both slots go back, each once, in the order they were held. A retry
+        # that released the stale slot and then let the `finally` release it
+        # again would show `[first, first]` -- the shape that hands one browser
+        # to two callers.
+        self.assertEqual(
+            [call.args[0] for call in pool.release.await_args_list], [first, second]
+        )
 
     async def test_pool_slot_is_released_once_when_the_replacement_is_unreachable(
         self,
@@ -503,6 +516,56 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
             pool.release.await_count,
             1,
             "the stale slot was released more than once",
+        )
+
+    async def test_a_failed_release_leaves_the_stale_slot_recoverable(self) -> None:
+        """Keep the slot reachable when handing it back is what fails
+
+        The restart path's four statements are ordered so each failure mode
+        leaves the slot in exactly one place, and this is the case for the
+        middle one. The local name is cleared **after** the release, not before,
+        so a release that raises leaves the slot still bound and the outer
+        `finally` returns it. Cleared before, the slot would be stranded — the
+        very defect the surrounding fix exists to remove, reintroduced one
+        statement further along.
+
+        Near-unreachable in production today: `ChromiumPool.release` is a
+        `Diagnostics.emit` — which swallows everything — followed by an
+        unbounded `queue.put`. Pinned anyway, because the ordering reads like an
+        accident without it, and the cheapest tidy-up available to the next
+        author is to move that line back.
+        """
+        from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot = ChromiumSlot(slot_id=9, host="127.0.0.9", port=9449)
+        pool = AsyncMock()
+        pool.acquire.return_value = slot
+        pool.release.side_effect = [RuntimeError("queue is unwell"), None]
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("nodriver worker failed (exit=1): boom"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                await fetch_html_via_nodriver("https://example.com")
+
+        # Twice: the restart path's attempt, which raised, and the `finally`'s,
+        # which is the recovery. Both name the same slot.
+        self.assertEqual(pool.release.await_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in pool.release.await_args_list], [slot, slot]
         )
 
     async def test_non_retryable_worker_failure_is_not_retried(self) -> None:

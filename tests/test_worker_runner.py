@@ -69,11 +69,13 @@ def _child_environment() -> dict[str, str]:
 def _no_ambient_timeout_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Clear the timeout override every case in this module would otherwise read.
 
-    `_run_worker_command` resolves ``KINDLY_HTML_TOTAL_TIMEOUT_SECONDS`` from the
-    **parent's** environment, not from the environment it hands the child, so an
-    ambient value silently replaces the budget each case passes. A shell
-    exporting a small one would turn every case here red for a reason no
-    assertion names; a large one would make the clamping assertions vacuous.
+    Still load-bearing after the runner started resolving
+    ``KINDLY_HTML_TOTAL_TIMEOUT_SECONDS`` from its `env` argument rather than
+    from `os.environ`, but for a different reason than it was written for:
+    `_child_environment` copies the process environment, so an exported value
+    lands in `env` and reaches the runner by the front door. A shell exporting a
+    small one would turn every case here red for a reason no assertion names; a
+    large one would make the budget assertion vacuous.
 
     Args:
         monkeypatch: pytest's environment patcher, which restores on teardown.
@@ -295,7 +297,7 @@ def test_run_worker_command_takes_the_command_positionally() -> None:
     )
 
 
-def test_asyncio_wait_is_not_reachable_through_universal_html() -> None:
+def test_asyncio_is_not_reachable_through_universal_html() -> None:
     """Prove the removed patch target is really gone
 
     The four loader cases were rewritten off

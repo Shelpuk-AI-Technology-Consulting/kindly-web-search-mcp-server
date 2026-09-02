@@ -396,18 +396,23 @@ async def fetch_html_via_nodriver(
                         "detail": _exception_message_chain(exc),
                     },
                 )
-            # Hand the stale slot back exactly once. The local name is cleared
-            # between the release and the re-acquire so that a failure in the
-            # re-acquire cannot let the `finally` below return the same slot a
-            # second time -- `ChromiumPool.release` is an unconditional
-            # `queue.put`, so a slot queued twice hands one browser, and one
-            # profile directory, to two concurrent callers. Cleared *after* the
-            # terminate rather than before it, so a terminate that raises still
-            # leaves the slot recoverable by the `finally`.
+            # Hand the stale slot back exactly once, with no path on which the
+            # `finally` below returns it a second time. The order of these four
+            # statements is load-bearing at every step. Terminate first, so a
+            # terminate that raises leaves the slot still bound and the
+            # `finally` recovers it. Release next, so a release that raises does
+            # the same. Clear the local name only *after* the release and
+            # *before* the re-acquire, so a re-acquire that raises finds nothing
+            # left to release. `ChromiumPool.release` is an unconditional
+            # `queue.put` with no membership check, so a slot queued twice hands
+            # one browser, and one profile directory, to two concurrent callers.
+            #
+            # `slot = None` is not a dead write. The next statement rebinds it --
+            # but only if that statement returns.
             stale = slot
             await stale.terminate()
-            slot = None
             await pool.release(stale, diagnostics=diagnostics)
+            slot = None
             slot = await pool.acquire(
                 user_agent=config.user_agent, diagnostics=diagnostics
             )

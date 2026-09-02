@@ -397,6 +397,34 @@ def test_every_parameter_is_keyword_only() -> None:
     )
 
 
+def _assert_no_forbidden_parameter(
+    public: dict[str, Any],
+    *,
+    forbidden: frozenset[str],
+    variadic: tuple[Any, ...],
+) -> None:
+    """Fail if any of the given callables names a command-shaped parameter.
+
+    Args:
+        public: The public callables of one module, keyed by name.
+        forbidden: Parameter names that would let a caller choose the process.
+        variadic: The parameter kinds to skip.
+
+    Raises:
+        AssertionError: If a callable takes one of the forbidden names.
+    """
+    for name, value in public.items():
+        named = {
+            parameter_name
+            for parameter_name, parameter in inspect.signature(value).parameters.items()
+            if parameter.kind not in variadic
+        }
+        offending = named & forbidden
+        assert not offending, (
+            f"{name} takes {sorted(offending)}, which would let a caller choose "
+            f"the child process"
+        )
+
 @pytest.mark.parametrize(
     ("module", "expect_a_public_surface"),
     [
@@ -450,23 +478,20 @@ def test_no_public_callable_takes_a_command_parameter(
         and callable(value)
         and getattr(value, "__module__", None) == module.__name__
     }
+    # Swept first, so the message below describes a check that actually ran: a
+    # module that grew a public callable is reported for the command parameter
+    # if it has one, and for existing at all if it does not.
+    _assert_no_forbidden_parameter(public, forbidden=forbidden, variadic=variadic)
+
     if expect_a_public_surface:
-        # A filter that matched nothing would leave the loop below silently green.
+        # A filter that matched nothing would leave the sweep silently green.
         assert public, "the public-surface filter matched no callable"
     else:
         assert not public, (
-            f"{module.__name__} grew a public callable ({sorted(public)}); it is "
-            f"meant to expose none, and anything it does expose must be swept "
-            f"for a command parameter above"
-        )
-    for name, value in public.items():
-        named = {
-            parameter_name
-            for parameter_name, parameter in inspect.signature(value).parameters.items()
-            if parameter.kind not in variadic
-        }
-        offending = named & forbidden
-        assert not offending, (
-            f"{name} takes {sorted(offending)}, which would let a caller choose "
-            f"the child process"
+            f"{module.__name__} grew a public callable ({sorted(public)}). It is "
+            f"required to expose none at all: the underscore prefix on "
+            f"`_run_worker_command` is the security marker, not a scope note, and "
+            f"section 11.2 of the suite design is why. If a public helper is "
+            f"genuinely wanted here, widening this expectation is a design change "
+            f"to argue for -- the sweep above has already passed on it"
         )

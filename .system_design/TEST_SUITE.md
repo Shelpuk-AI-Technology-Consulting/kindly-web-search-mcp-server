@@ -368,17 +368,22 @@ impact, not a test change, and is listed in §13.
 
 ### 4.3 The parent ⇄ worker frame format
 
-`nodriver_worker.py` reports to `universal_html.py` by framing lines on stderr:
+`nodriver_worker.py` reports to the parent by framing lines on stderr. **The
+receiver is `scrape/worker_runner.py`, not `universal_html.py`** — E2-3 moved
+`_read_stderr_stream` and `_consume_stderr_line` there with the rest of the
+process machinery. The address matters to whoever implements this section:
 
 ```
 KINDLY_DIAG {"stage": "...", "msg": "...", ...}
 ```
 
-**Test the live path.** `_split_worker_diagnostics` (`universal_html.py:123`)
+**Test the live path.** `_split_worker_diagnostics` (`universal_html.py:119`)
 parses a whole captured stderr string and **has no callers in `src/` or
-`tests/`**; production streams through `_read_stderr_stream` →
+`tests/`**; production streams through `worker_runner._read_stderr_stream` →
 `_consume_stderr_line`. That dead function is a removal candidate, flagged here
-rather than deleted by this document.
+rather than deleted by this document. Since E2-3 it is also the **only**
+`KINDLY_DIAG` parser left in `universal_html.py`, which makes it easier to
+mistake for the live one than it was when both sat in the same file.
 
 Both sides ship from the same wheel, so this is an **internal protocol**, not an
 agreement between independently versioned parties. It still earns a contract test
@@ -813,7 +818,7 @@ conversion bug.
    production consumes — `stdout`, `stderr`, `pid`, `returncode`, `wait()`,
    `kill()`, `terminate()` — annotate `_run_worker_command` with it, and have the
    fake implement it. The annotation half is **E2-4**, not E2-1: the runner does
-   not exist as a separate function until E2-3 extracts it. E2-1 delivering the
+   not exist as a separate function until E2-3 extracted it. E2-1 delivering the
    Protocol, the fake and the harness alone is the plan working, not E2-1
    under-delivering.
 
@@ -2140,17 +2145,41 @@ classification a module boundary, which is a design property rather than a
 side-table to maintain.
 
 The boundary is held by tests rather than by intent: `tests/test_worker_runner.py`
-asserts that `universal_html.py` imports neither `asyncio` nor `subprocess` — both
-are required to start, wait on, stream from or kill a process, so their joint
-absence *is* the "no subprocess management" claim rather than a proxy for it — and
+asserts that `universal_html.py` imports neither `asyncio` nor `subprocess`, and
 that the moved surface is all present in one module, so a partial move back fails
-rather than drifts. One call site in the gated module still causes a child to be
+rather than drifts.
+
+**That import check is a proxy, and calling it anything stronger would mislead
+the next reader.** `universal_html.py` still imports `os`, and `os.posix_spawn`,
+`os.spawnv`, `os.execv` and `os.system` all start a process without touching
+either banned name. It is the strongest *cheap* proxy available and it catches
+every realistic regression, because parent-side process management in this
+codebase is written with `asyncio.create_subprocess_exec` and nothing else — but
+it is a proxy. It also carries a cost worth stating in advance: a legitimate
+future use of `asyncio` in the Markdown-probe path, a `gather` over two probes
+say, turns a guard the reviewer's rules call load-bearing red for a reason
+unrelated to subprocesses, and the cheapest way out would be to weaken it. The
+right move then is to narrow the guard to the process primitives, not to delete
+it. One call site in the gated module still causes a child to be
 spawned: `fetch_html_via_nodriver` calls `_run_pipe_probe`, which lives in the
 runner. That is the intended shape — the machinery is on the omitted side and only
 the decision to run it is on the gated one — and it is stated here because the
 import guard is textual and cannot see it. Moving the call as well would push the
 pipe-probe records after `worker.spawn` in the diagnostics stream, which is a
 behaviour change this extraction had no reason to make.
+
+**A pooled slot is released exactly once on every exit path**, and the shape that
+guarantees it is worth stating before anyone edits this function again. The
+acquisition sits inside the `try` whose `finally` releases — not before it, or a
+raise in between strands the slot — and that `try` carries **only** a `finally`:
+the pool-restart `try/except` keeps its narrower scope around the worker run,
+because a pre-run failure entering the restart handler would meet names the raise
+skipped past and surface as an `UnboundLocalError` instead of itself. The restart
+path releases the stale slot and only then clears the local name, so a failure in
+the re-acquire cannot let the `finally` queue the same slot twice, while a failure
+in the terminate or the release itself still leaves it recoverable;
+`ChromiumPool.release` is an unconditional `queue.put`, so a slot queued twice
+hands one browser and one profile directory to two callers.
 
 `_build_worker_command` stays with `fetch_html_via_nodriver`; it is pure and
 hermetically testable, so it belongs on the gated side. Five smaller helpers that
@@ -2178,12 +2207,14 @@ the old target raises `AttributeError` rather than quietly working again.
 back proved the parent still read the child's stdout — the exact drift that left
 them red. With the runner doubled they prove only that its return value reaches
 the caller. The streaming claim moved to `tests/test_worker_runner.py`, which
-asserts it against a **real** child process, where no fake can satisfy it. Until
-E7-2's fixture-child battery lands, those two `subsystem` cases are the whole of
-the runner's behavioural coverage, and §10.4 control 1's "every omitted module
-has non-zero coverage in the observational report" rests on them; E7-2 should
-say whether it absorbs them or leaves them, so the claim does not end up with
-two owners.
+asserts it against a **real** child process, where no fake can satisfy it. That
+file carries **four** `subsystem` cases — stdout returned, non-zero exit, where
+the timeout budget is read from, and the runner's own emit order — plus six
+hermetic guards that hold the module boundary itself. Until E7-2's fixture-child
+battery lands, those four are the whole of the runner's behavioural coverage,
+and §10.4 control 1's "every omitted module has non-zero coverage in the
+observational report" rests on them; E7-2 should say whether it absorbs them or
+leaves them, so the claim does not end up with two owners.
 
 **A second consequence: `FakeWorkerProcess` now has no production consumer.**
 Nothing hands it to production between E2-3 and E2-4, so the agreement between
