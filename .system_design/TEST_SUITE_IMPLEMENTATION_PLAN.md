@@ -306,7 +306,7 @@ it carries no X-number.
   asked for and holds each replacement to the live child run. It covers its own
   three retirements only; the five older rows stay prose, declined in writing
   with the reason, and nothing later is scoped to convert them.
-- **E1-6.** No diff. *Verify:* **0 failed** on Windows and Linux, and
+- **E1-6.** *Verify:* **0 failed** on Windows and Linux, and
   `BASELINE_FAILURES.md` lists no remaining ids — the two facts are checked
   together, since either alone can be true while the other is not. CI enforcement
   begins here. **The Windows half must come from a real Windows run**, not from
@@ -314,6 +314,26 @@ it carries no X-number.
   blocks became identical, which makes the cross-platform difference check a
   tautology, and nothing else asserts the Windows block until E4-1's matrix
   exists. A drained document is evidence of nothing on a platform nobody ran.
+  **"No diff" was the prediction, and it was wrong** — corrected here rather than
+  quietly failed, following E1-5's precedent for an unsatisfiable clause. The
+  clause that mattered is the one that held: the run was demanded, it was taken,
+  and it found the suite red on Windows. Insisting on the run is what this step
+  contributed; a step with no diff would have declared the milestone on a green
+  Linux run beside a drained document, which is exactly the pair of facts that
+  were both true while Windows was broken. Measured: `2 failed, 446 passed` at
+  `38026ae`.
+  **The step stays typed `milestone` even though it carries a diff.** Five steps
+  depend on it with the `complete` kind — E4-1 and E11-1 through E11-4 — and
+  `scripts/check_plan_dag.py` accepts `complete` only against a milestone,
+  decision, operation or external prerequisite. Retyping it to `PR` would break
+  those five dependencies at once for a bookkeeping reason. The type describes
+  what the step *is* — a verification gate its dependents schedule against — not
+  whether repairing what it found cost a diff, and the diff is the repair rather
+  than authorable work in its own right.
+  **What it repaired**, in one line: a retry-backoff test asserted a value
+  derived from `os.path.realpath`, which is platform-dependent, so it demanded a
+  snap multiplier that Windows can never produce. Detail in `TEST_SUITE.md` §8
+  block A item 5 and in the ledger's *"Verified"* section.
 
 ---
 

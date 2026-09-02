@@ -16,9 +16,17 @@ and what `tests/test_baseline_failure_ledger.py` asserts against a live run.
 
 Every entry below is a test that fails today and is expected to. **E1-2 through
 E1-5 each delete exactly the ids they repair and add none.** E1-6 — the
-suite-green milestone — is reached when both blocks are empty, at which point the
-guard is asserting that a real run has no failures at all. The document and the
-milestone are therefore the same fact, checked once.
+suite-green milestone — needs both blocks empty.
+
+**It needs more than that, and the milestone proved it.** This paragraph used to
+end "the document and the milestone are therefore the same fact, checked once."
+That was false, and a real run is what showed it: at commit `38026ae` both blocks
+were empty, the guard was green on Linux, and **the suite was red on Windows** —
+because the failing test was newer than the platform's only measurement and no
+lane had run since. An empty ledger is a **necessary** condition for the
+milestone, never a sufficient one. It can only ever assert something about the
+platform the guard is running on, and a claim about a platform is worth exactly
+one run on it. See *"Verified — the suite-green milestone"* below.
 
 **An id may leave this ledger only by passing.** Deleting a test, renaming its
 class or marking it skipped removes it from the failing set too, and all three
@@ -93,6 +101,12 @@ failing set — so it is kept rather than deleted with E1-6. Its cost is one ext
 child run of the suite, roughly doubling wall time; that is accepted because the
 alternative is trusting twelve repaired tests to stay repaired with nothing
 watching them.
+
+**It has now paid for itself once, measurably.** On the first Windows run in this
+repository's history the guard — not a reviewer — caught the regression,
+classified it under *"Failing but not in the ledger (a regression; fix the test,
+do not add the id)"*, and named the one node id responsible. The instruction in
+that message is what was followed.
 
 ## What is asserted and what is provenance
 
@@ -243,17 +257,26 @@ four**: the test it retires failed *because* it faked a platform, its replacemen
 patches no platform attribute at all, and `_resolve_web_search_max_concurrency`
 reads one environment variable and one integer and nothing else.
 
-**E1-6 must still take its Windows figure from a real run**, not from this
-document. A drained document is evidence of nothing on a platform nobody ran, and
-with the two blocks now identical the cross-platform difference check below is a
-tautology. Distinguishing a run from an argument, above, is the whole reason this
-section survives to the milestone.
+**E1-6 took its Windows figure from a real run, and the run disagreed with the
+argument.** That was the point of insisting on one: a drained document is
+evidence of nothing on a platform nobody ran, and with the two blocks identical
+the cross-platform difference check below is a tautology. Distinguishing a run
+from an argument, above, is the whole reason this section survived to the
+milestone, and it earned its keep — the first Windows run in this repository's
+history found a real failure. See *"Verified — the suite-green milestone"* below
+for what it found and what it now records.
 
-**One claim went uncovered with E1-5, deliberately.** The three retired
-concurrency tests were, between them, the only thing in the tree that would
-notice an `os.name` branch reappearing in that resolver. Nothing asserts its
-absence now; the replacement's docstring says so, and E1-6's one real Windows run
-is the next thing to cover it.
+**The argument above was sound; it was also incomplete, and the distinction
+matters.** Every claim it makes about E1-2 through E1-5's *repairs* held up on
+Windows. What it could not cover is a test written **after** the baseline run and
+never executed on the platform at all — which is exactly what failed. An argument
+about the repairs is not an argument about the suite, and only a run is.
+
+**One claim went uncovered with E1-5, deliberately, and is now covered.** The
+three retired concurrency tests were, between them, the only thing in the tree
+that would notice an `os.name` branch reappearing in that resolver. E1-6's real
+Windows run is what covers it: the resolver produced identical results on both
+platforms, so no platform branch has reappeared in it.
 
 **The five-row relocation table above is not machine-checked, and stays that
 way.** It maps each retired id to the *function* its claim moved to. Converting
@@ -265,9 +288,109 @@ asserting a mapping this step never measured, which is attributing to another
 step's run a fact that run did not produce: the failure the `Result:`/
 `Remaining:` split exists to prevent, committed in a table instead of in a
 number. So it is declined, in writing, and **no later step is scoped to convert
-it** — E1-6 has no diff. Those five rows stand as prose backed by E1-2's one-off
-hand-run, which is what they have always been. The block below is machine-checked
+it**. Those five rows stand as prose backed by E1-2's one-off hand-run, which is
+what they have always been.
+
+**That decline used to rest on "E1-6 has no diff", and no longer can**, because
+E1-6 took one. The reason above is the real one and always was: the mapping was
+never measured, and no amount of diff budget in a later step conjures a
+measurement of a run that already happened. Re-grounded here rather than left
+resting on a premise the milestone falsified — a conclusion propped up by a
+stale fact is how a deliberate trade-off gets mistaken for an accident. The block below is machine-checked
 and says so.
+
+## Verified — the suite-green milestone
+
+Both platforms, measured. This section is the milestone's evidence and is the
+only place in this document where a **Windows figure comes from a run** rather
+than from the argument recorded above.
+
+It carries no `Result:` bullet, deliberately: `_documented_platform_headings`
+identifies a platform section by exactly that line, so a bullet of that shape
+here would manufacture a phantom platform and fail
+`test_ledger_documents_every_platform_the_guard_knows`. The same constraint the
+*"Relocated claims"* section below records, for the same reason.
+
+- **Linux** · 2026-09-02 · Ubuntu 24.04.4 LTS · Linux 6.8.0-138 ·
+  CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 · hypothesis 6.167.1 ·
+  mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3 —
+  **0 failed, 449 passed, 2 skipped, 16 subtests passed.**
+- **Windows** · 2026-09-02 · Windows Server 2025 (10.0.26100) ·
+  GitHub Actions `windows-latest` · CPython 3.13.15 · same dependency set,
+  verified from the run's own `pip list` —
+  **0 failed, 449 passed, 2 skipped, 16 subtests passed.**
+
+The two runs agree exactly, including the subtest count, which is a stronger
+result than the milestone required and is worth stating: the suite is not merely
+green on both, it is green in the same shape on both. That reconciliation is the
+check worth making on any recorded pair — a divergence would mean a test collects
+on one platform and not the other, which is the condition this milestone is the
+last opportunity to notice before the CI matrix exists.
+
+**Both figures are one-off developer-driven runs, and the Linux one is no more
+routine than the Windows one.** `ci.yml` states in terms that it does not run
+`pytest`; there is no lane on either platform. Neither number is re-derived by
+anything until the CI epic.
+
+Measured on the same throwaway-branch instrument the Windows baseline used — a
+temporary workflow on a branch of its own, deleted once the numbers were
+recorded. It touched neither `ci.yml` nor any workflow region the implementation
+plan serialises, and **it is not the Windows CI lane**; that still arrives with
+the CI epic. Nothing re-runs these two figures, which is why the milestone is
+immediately followed by the workflow that makes them enforceable.
+
+### What the first Windows run found
+
+**It was red**, and the failure was real:
+
+```console
+2 failed, 446 passed, 2 skipped, 16 subtests passed
+FAILED tests/test_nodriver_worker_sandbox.py::TestNodriverWorkerSandbox::test_backoff_grows_with_each_attempt_and_scales_for_snap
+FAILED tests/test_baseline_failure_ledger.py::test_live_outcome_matches_the_ledger
+```
+
+The second is this guard, reporting the first under *"Failing but not in the
+ledger (a regression; fix the test, do not add the id)"*. It is one defect, not
+two, and the guard behaved exactly as designed on a platform it had never run on.
+
+**The id was not added to the Windows block.** The instruction in the guard's own
+message is the rule this document states — a new red test is a regression, and
+this ledger holds what is left of the pre-existing twelve. The block stayed empty
+and the test was repaired.
+
+**Root cause, established on the platform rather than argued.** The test drove
+the retry backoff `base * 2**attempt * snap_multiplier` and expected the snap
+multiplier to apply, which needs `_is_snap_browser` to answer `True` for a
+`/snap/`-prefixed path. That function calls `os.path.realpath`, which is
+platform-dependent. A probe step in the same temporary workflow ran the shipped
+function on the runner:
+
+```console
+'/snap/bin/chromium-for-tests' -> realpath='D:\snap\bin\chromium-for-tests' is_snap=False
+```
+
+Windows rewrites the separators and prepends a drive letter, so the `/snap/`
+marker cannot survive and **no path whatsoever classifies as snap there**. The
+recorded delays were the un-multiplied series. Production is correct and was left
+alone — snap is a Linux packaging format — so the defect was the test's, and the
+repair injects the classification through a seam instead of deriving it from the
+host's path semantics. The wiring that remains asserted, and the coverage given
+up, are stated in that test's docstring and in `TEST_SUITE.md`.
+
+**No relocation row was added, and none is needed.** The test was rewritten in
+place under its existing node id, which is the pattern this document says to
+prefer: the id never left the collected set, so nothing left this ledger by
+deletion and *"Relocated claims"* is untouched. Stated because it is the first
+question this document trains a reader to ask.
+
+**Why nothing caught it earlier, and why that is the lesson.** The test landed
+2026-09-01, at commit `a95462e`; the Windows baseline was measured 2026-08-31 at
+commit `3af0563`. It is **newer than the only Windows run this repository had
+ever had**, and no lane has run since. The drain argument above covers the
+*repairs* E1-2 through E1-5 made, and every part of it held. It could not cover a
+test written after the measurement and never executed on the platform, because no
+argument can. That gap closes only with a Windows lane, not with a better
+argument.
 
 ## Relocated claims
 
@@ -336,11 +459,13 @@ pass everything that actually runs.
 **It is a weaker check than the one it replaces, and knowingly so.** While the
 blocks differed, this section pinned a verified Windows fact. Empty, it says
 only that the two blocks match — which two identically *wrong* blocks also
-satisfy. Combined with the Windows section being unmeasurable until the CI
-epic's Windows lane exists, that means the Windows block is now asserted by
-nothing that runs. E1-6 must not read "0 failed on both platforms" off this
-document: the Linux half is checked against a real run, the Windows half is a
-claim awaiting its lane.
+satisfy. That was the whole of the Windows evidence until the milestone, which is
+why E1-6 was forbidden to read "0 failed on both platforms" off this document.
+**It did not: it ran the suite on Windows, found a failure this section could
+never have shown, and recorded the result below.** The warning is kept in the
+past tense rather than deleted, because the same hole reopens the moment a test
+is added that no Windows lane executes — which is precisely how the failure got
+in, and it stays open until the CI epic's matrix exists.
 
 ```text
 ```
@@ -393,8 +518,14 @@ different word.
 Four of those eleven left with E1-2, three more with E1-3, three more with E1-4
 and the last with E1-5, hence none remaining. **All eleven left by inference, not
 by a run** — that argument is stated once, in *"How each block was drained"*
-above, and is not repeated here; what it rests on is that no repair touches a
-branch reading `os.name` or `sys.platform`. E1-5's id is the one that most
+above, and is not repeated here. The *end state* it argued for has since been
+confirmed by a real Windows run, recorded under *"Verified — the suite-green
+milestone"*; the drains themselves were still taken on the argument, and that
+distinction is kept rather than smoothed over. What the argument rests on is that
+no repair **asserts a value computed by** a branch reading `os.name` or
+`sys.platform` — the precise phrasing the section above uses, restored here,
+where this sentence had kept the looser "touches" wording that section explicitly
+records as false. E1-5's id is the one that most
 obviously could have: it left because the test *faked* a platform the resolver
 never reads. **The frozen `3 skipped` is now
 stale by one:** the third skip *was*
