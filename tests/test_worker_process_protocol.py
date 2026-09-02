@@ -234,6 +234,177 @@ def test_isinstance_accepts_a_double_with_a_wrong_wait_signature() -> None:
 # --------------------------------------------------------------------------
 
 
+#: Modules permitted to carry a class mentioning the whole worker-process
+#: surface. Everything else must import `FakeWorkerProcess`.
+#:
+#: Exactly two, and both are real candidates -- verified by running the detector
+#: with an empty allow-list, which flags these and nothing else. The
+#: `tests/typing_negative/` fixtures are *not* listed: one omits `stdout` and the
+#: other declares no class, so neither is ever a candidate, and listing them
+#: would be a silently inert entry that a rename could never invalidate.
+CANONICAL_DOUBLE_MODULES: Final = (
+    # The canonical double.
+    "tests/doubles/worker_process.py",
+    # This module's own deliberately-wrong doubles, which exist to prove the
+    # runtime checks can fail.
+    "tests/test_worker_process_protocol.py",
+)
+
+
+def _classes_mentioning_the_whole_surface(source: str, filename: str) -> list[str]:
+    """Find classes that name every member of the worker-process surface.
+
+    Collects, per class, the names bound as class attributes or methods plus
+    every ``self.X`` appearing anywhere in a method body. That last part
+    harvests attribute **reads** as well as assignments, so this is deliberately
+    over-inclusive: a class that merely reads all four attributes and defines
+    the three methods is reported. Over-inclusive is the safe direction for a
+    guard whose miss is a silent second definition.
+
+    Args:
+        source: Python source text to scan.
+        filename: Name used in the parse error, for a legible failure.
+
+    Returns:
+        The names of matching classes, in source order.
+    """
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source, filename=filename)):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        functions = [
+            body
+            for body in node.body
+            if isinstance(body, ast.FunctionDef | ast.AsyncFunctionDef)
+        ]
+        mentioned = {function.name for function in functions}
+        mentioned |= {
+            target.attr
+            for function in functions
+            for target in ast.walk(function)
+            if isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        }
+        mentioned |= {
+            body.target.id
+            for body in node.body
+            if isinstance(body, ast.AnnAssign) and isinstance(body.target, ast.Name)
+        }
+        mentioned |= {
+            target.id
+            for body in node.body
+            if isinstance(body, ast.Assign)
+            for target in body.targets
+            if isinstance(target, ast.Name)
+        }
+        if CONSUMED_SURFACE <= mentioned:
+            found.append(node.name)
+    return found
+
+
+#: Synthetic sources pinning what the detector does and does not reach.
+#:
+#: The second row is the point of the pair, and it is uncomfortable: the double
+#: that actually broke the loader tests declared `returncode` and
+#: `communicate()` only, so **this guard would not have caught the outage it was
+#: written after.** It catches a *whole-surface* redeclaration, which is the
+#: shape a well-meaning author writes when they reimplement the double rather
+#: than import it. A partial or split stand-in is out of reach, and no wording
+#: in this module should imply otherwise.
+DETECTOR_CASES: Final = (
+    (
+        "whole-surface copy",
+        """
+class _Copy:
+    def __init__(self) -> None:
+        self.stdout = None
+        self.stderr = None
+        self.pid = 1
+        self.returncode = None
+
+    async def wait(self) -> int: return 0
+    def kill(self) -> None: ...
+    def terminate(self) -> None: ...
+""",
+        True,
+    ),
+    (
+        "the original _FakeProc, which this guard does NOT reach",
+        """
+class _FakeProc:
+    returncode = 0
+
+    async def communicate(self):
+        return b"<html>ok</html>", b""
+""",
+        False,
+    ),
+)
+
+
+@pytest.mark.parametrize(("label", "source", "expected"), DETECTOR_CASES)
+def test_second_double_detector_reports_only_a_whole_surface_copy(
+    label: str, source: str, expected: bool
+) -> None:
+    """Pin what the second-double detector reaches, in both directions.
+
+    Without this the guard below has no way to fail: its only other
+    anti-vacuity assertion counts modules scanned, which stays true however
+    broken the detector is.
+
+    Args:
+        label: Human-readable name for the planted shape.
+        source: The synthetic module source.
+        expected: Whether the detector should report a class.
+    """
+    reported = bool(_classes_mentioning_the_whole_surface(source, f"<{label}>"))
+
+    assert reported is expected, (
+        f"The second-double detector {'missed' if expected else 'now flags'} "
+        f"{label!r}. If this is a deliberate widening, update DETECTOR_CASES and "
+        "the wording that describes the guard's reach in this module, "
+        ".github/review/rules/python-tests.md and TEST_SUITE.md section 8."
+    )
+
+
+def test_no_test_module_declares_a_second_worker_double() -> None:
+    """Keep exactly one whole-surface definition of the worker-process shape.
+
+    The outage this Protocol exists to prevent was a hand-rolled double drifting
+    from production. Repairing the three loader tests removed the last three
+    copies; nothing but this stops a fourth appearing, because a test module is
+    not inside the mypy target and a convention is not a check.
+
+    **Its reach is a whole-surface redeclaration, and no more.** The double that
+    caused the outage named only `returncode` and `communicate()` and would not
+    be reported here -- see `DETECTOR_CASES`. What this catches is the shape a
+    later author writes when they reimplement the canonical double instead of
+    importing it.
+    """
+    offenders: list[str] = []
+    scanned = 0
+    for module in sorted((REPO_ROOT / "tests").rglob("*.py")):
+        relative = module.relative_to(REPO_ROOT).as_posix()
+        if relative in CANONICAL_DOUBLE_MODULES:
+            continue
+        scanned += 1
+        offenders.extend(
+            f"{relative}::{name}"
+            for name in _classes_mentioning_the_whole_surface(
+                module.read_text(encoding="utf-8"), str(module)
+            )
+        )
+
+    assert scanned, "No test modules were scanned, so this case checked nothing."
+    assert not offenders, (
+        f"These classes redeclare the whole worker-process surface: {offenders}. "
+        "Import FakeWorkerProcess from tests/doubles/worker_process.py instead -- "
+        "a second definition of this shape is the drift the Protocol exists to "
+        "prevent."
+    )
+
+
 def test_no_source_module_imports_from_tests() -> None:
     """Keep production free of test-tree imports, which is why the Protocol ships in src/"""
     offenders: list[str] = []

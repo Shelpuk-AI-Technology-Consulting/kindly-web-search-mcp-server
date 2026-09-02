@@ -58,8 +58,14 @@ node id, so the id leaves this ledger by passing and the rule holds natively
 with no exception and nothing to take on trust. E1-3 rewrote three test bodies
 under their existing names and the guard reported all three under *"In the
 ledger, ran, and passed"* — the strongest of its four categories, and the one
-that needs no supporting document. E1-4 replaces a fixture, so it is in the same
-position.
+that needs no supporting document. **E1-4 confirmed the prediction:** it replaced
+three hand-rolled doubles with the canonical typed fake under the same three node
+ids, and the guard — run with the tests repaired and this ledger not yet drained
+— named exactly those three under *"In the ledger, ran, and passed"* and nothing
+under the other three categories. That intermediate evidence is regenerable at
+any later date from `git show <this step's parent>:.system_design/BASELINE_FAILURES.md`,
+which is strictly better than E1-2's one-off hand-run, and is the pattern E1-5
+should follow.
 
 **The step to watch is E1-5**, which rewrites the concurrency test to be
 OS-neutral. Its id is `test_web_search_concurrency_defaults_on_windows`, and a
@@ -196,7 +202,10 @@ an empty failing set on a red suite, and two of this repository's three
 `subTest` sites are in `tests/test_universal_html_loader.py`, one of the files
 this ledger tracks.
 
-## What the remaining four are
+## What the remaining one is
+
+E1-5 owns the final form of this section: it drains the last id, and E1-6 is
+defined as having no diff, so there is no later step in which to tidy it.
 
 Grouped by cause, so a reviewer can tell which repair step owns which id. The
 grouping is by module rather than per id, because the blocks are sorted and so
@@ -205,12 +214,33 @@ from it.
 
 | Module | Ids | Cause | Repaired by |
 |---|---|---|---|
-| `test_universal_html_loader.py` | 3 | `fetch_html_via_nodriver` streams `proc.stdout`; `_FakeProc` never grew one | E1-4 |
 | `test_server.py` | 1 | asserts a Windows concurrency cap that `_resolve_web_search_max_concurrency` no longer has | E1-5 |
 
 `test_nodriver_worker_sandbox.py` has left this table entirely: its five
 flag-and-default ids relocated with E1-2 and its three orchestration ids were
-repaired in place by E1-3.
+repaired in place by E1-3. `test_universal_html_loader.py` has now left it too —
+E1-4 rebuilt its three doubles on the canonical typed fake and **rewrote all three
+in place**, so each id leaves under this guard's strongest category: in the
+ledger, collected, ran, and passed. No relocation row is owed, because no claim
+moved layer; the same three node ids assert the same four things, against a
+double that is now held to production's surface by the Protocol harness rather
+than by hand. The guard's own wording for that category is *"In the ledger, ran,
+and passed"*; it is quoted verbatim here so a reader grepping the guard finds it.
+
+**Measured on Linux.**
+
+The Windows block was drained without a Windows run, and here is the argument
+for it. No lane exists yet, so the honest options were to drain on a stated
+argument or to leave Windows carrying three ids the code no longer fails on.
+These three tests are OS-neutral by construction: they patch
+`asyncio.create_subprocess_exec`, so no process is ever spawned, and every
+assertion they make — `-m` and the worker module in argv, `PYTHONPATH` in the
+child environment, `--browser-executable-path`, and the loopback `NO_PROXY`
+entries — is computed by the same platform-independent code on both. Nothing in
+the repair touches a branch that reads `os.name` or `sys.platform`. The Linux
+half is checked against a real run; the Windows half is this argument, and it is
+labelled as one rather than presented as a measurement. E1-6 must still take its
+Windows figure from a real run.
 
 ## Why the two platforms differ
 
@@ -246,22 +276,20 @@ claim awaiting its lane.
   Linux 6.8.0-138 · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 12 failed, 303 passed, 2 skipped, 9 subtests passed
-- **Remaining:** 4 failed
+- **Remaining:** 1 failed
 
 This is the figure §1.1 predicted from source and labelled unmeasured. It was
 measured, and it matched: twelve, being the eight stale `_fetch_html` callers,
 the three stale loader tests and the one obsolete Windows concurrency test.
 
-Five have since left with E1-2, the flag-and-default half of the eight, and
-three more with E1-3, which repaired the orchestration half in place — hence
-four remaining, listed below. The **Result** line keeps saying twelve because
+Five have since left with E1-2, the flag-and-default half of the eight; three
+more with E1-3, which repaired the orchestration half in place; and three more
+with E1-4, which rebuilt the loader doubles on the canonical typed fake — hence
+one remaining, listed below. The **Result** line keeps saying twelve because
 that is what the run said.
 
 ```text
 tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_windows
-tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_passes_browser_executable_path_when_set
-tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_sets_no_proxy_for_loopback
-tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_spawns_worker_subprocess
 ```
 
 ## Windows
@@ -270,7 +298,7 @@ tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_sp
   (10.0.26100) · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
   mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3
 - **Result:** 11 failed, 303 passed, 3 skipped, 9 subtests passed
-- **Remaining:** 4 failed
+- **Remaining:** 1 failed
 
 Measured on a GitHub Actions `windows-latest` runner, from a temporary workflow
 on a branch of its own that was deleted once the numbers were recorded. It
@@ -287,8 +315,13 @@ check worth making on any recorded run: a larger total than the list would mean
 a test failed more than once, through subtests the summary reports under a
 different word.
 
-Four of those eleven left with E1-2 and three more with E1-3, hence four
-remaining. **The frozen `3 skipped` is now stale by one:** the third skip *was*
+Four of those eleven left with E1-2, three more with E1-3 and three more with
+E1-4, hence one remaining. **E1-4's three left by inference, not by a run** —
+that argument is stated once, in *"What the remaining one is"* above, and is not
+repeated here; what it rests on is that the three loader tests spawn no process
+and touch no `os.name` or `sys.platform` branch. E1-2's four and E1-3's three
+are in the same position for the same reason. **The frozen `3 skipped` is now
+stale by one:** the third skip *was*
 `test_forces_sandbox_off_when_running_as_root`, which E1-2 deleted. It is left
 as measured, because editing a measurement to keep it plausible is the failure
 mode the two-line split exists to prevent. There is no Windows lane in CI until
@@ -296,7 +329,4 @@ the CI epic, so this section cannot be re-measured here.
 
 ```text
 tests/test_server.py::TestWebSearchTool::test_web_search_concurrency_defaults_on_windows
-tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_passes_browser_executable_path_when_set
-tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_sets_no_proxy_for_loopback
-tests/test_universal_html_loader.py::TestUniversalHtmlLoader::test_fetch_html_spawns_worker_subprocess
 ```
