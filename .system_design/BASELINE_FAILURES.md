@@ -319,14 +319,33 @@ here would manufacture a phantom platform and fail
 `test_ledger_documents_every_platform_the_guard_knows`. The same constraint the
 *"Relocated claims"* section below records, for the same reason.
 
-- **Linux** · 2026-09-02 · Ubuntu 24.04.4 LTS · Linux 6.8.0-138 ·
+Both were taken at the tree of commit **`f3f5771`**, this step's last
+substantive commit. A figure that cannot be pinned to a tree cannot be
+re-derived or falsified, which in a document arguing that a platform claim is
+worth exactly one run would be self-defeating.
+
+- **Linux** · 2026-09-02 · commit `f3f5771` · Ubuntu 24.04.4 LTS ·
+  Linux 6.8.0-138 · CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 ·
+  hypothesis 6.167.1 · mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 ·
+  nodriver 0.50.3 —
+  **0 failed, 449 passed, 2 skipped, 16 subtests passed.**
+- **Windows** · 2026-09-02 · commit `f3f5771`, run as probe commit `3cc4a88` ·
+  Windows Server 2025 (10.0.26100) · GitHub Actions `windows-latest` ·
   CPython 3.13.15 · pytest 9.1.1 · pytest-asyncio 1.4.0 · hypothesis 6.167.1 ·
-  mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3 —
+  mcp 1.29.1 · starlette 1.6.0 · uvicorn 0.52.4 · nodriver 0.50.3, read from the
+  run's own `pip list` —
   **0 failed, 449 passed, 2 skipped, 16 subtests passed.**
-- **Windows** · 2026-09-02 · Windows Server 2025 (10.0.26100) ·
-  GitHub Actions `windows-latest` · CPython 3.13.15 · same dependency set,
-  verified from the run's own `pip list` —
-  **0 failed, 449 passed, 2 skipped, 16 subtests passed.**
+
+`3cc4a88` is `f3f5771` plus the temporary workflow file and nothing else,
+verified with `git diff --stat` before the run and quoted in the pull request. It
+is named rather than hidden because the sha the runner reported is the one a
+reader would look for, and it no longer exists — the branch was deleted, as the
+instrument requires.
+
+**The commit recording these figures is necessarily later than `f3f5771`**, since
+a run cannot name the commit that records it. Its diff against `f3f5771` is this
+subsection alone. Stated because this document treats an unpinnable measurement
+as no measurement, and the same standard applies to its own bookkeeping.
 
 The two runs agree exactly, including the subtest count, which is a stronger
 result than the milestone required and is worth stating: the suite is not merely
