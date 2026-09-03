@@ -118,7 +118,7 @@ action).
 
 ## 2. Sequencing for parallelism
 
-<!-- totals: steps=78 authorable=50 pr_authorable=46 -->
+<!-- totals: steps=79 authorable=51 pr_authorable=47 -->
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
@@ -808,6 +808,7 @@ typo'd selector fails the job.
 | **E5-5** | Markdown transforms against the corpus | PR | impl E3-3 | M |
 | **E5-6** | Text accumulators and encoding-cookie helpers | PR | impl E0-2 | S |
 | **E5-7** | Redaction helper units — existing behaviour only | PR | impl E0-2 | M |
+| **E5-8** | Search-provider parsing and error paths | PR | impl E0-2 | L |
 
 E5-3 and E5-4 own **disjoint** function sets, so they can run in parallel without
 duplicating tests or touching the same files.
@@ -906,6 +907,25 @@ duplicating tests or touching the same files.
   merges green; every emit-boundary assertion belongs to E9-1.
   *Verify:* properties fail if a masking rule is removed; no test added here fails
   on the current tree.
+
+- **E5-8.** The six coroutines `PROVIDERS` dispatches to, driven with
+  `httpx.MockTransport`. **Closes the two risk-matrix rows no step owned** —
+  provider parsing (`partial`) and provider errors (`gap`) — which is why it
+  exists as its own step rather than as scope on a migration or canary step.
+  §3.1 carries the count that motivates it: coverage runs *inversely* to
+  selection priority. Serper, the default provider, has one happy-path test;
+  `search_serpbase` has **no test module at all**; no provider has a `401` case.
+  E8-4's Serper canary does not substitute — it is nightly, needs a real
+  credential, and cannot drive a failure deterministically.
+  *Verify:* for each of the six, the documented success shape, the malformed-item
+  and empty-result paths, and `401`, `429`, a non-JSON body, a wrong-shaped JSON
+  body and a timeout; each case fails if its branch is removed. Also fixes
+  `search_searxng`'s aggregate re-raise to chain with `from`, so the per-instance
+  error is assertable as more than a substring — the one production change in
+  this step, and the reason the error assertions are worth writing.
+  **Deliberately not split per provider**: the six modules are independent, so
+  one engineer can land them in any order, and splitting would multiply the
+  shared `MockTransport` helper across six PRs.
 
 ---
 
@@ -1318,7 +1338,7 @@ under `tests/`; this unblocks E6-4.
 
 | ID | Step | Type | Blocked by | Size |
 |---|---|---|---|---|
-| **E13-1** | Suite complete | milestone | merge E10-10, merge E10-7, merge E10-11, merge E13-2, merge E12-1, complete E11-5, merge E6-1, merge E6-3, merge E6-4, merge E4-13, merge E7-1, merge E8-2, merge E8-3, merge E2-4, merge E5-5, merge E5-6, merge E9-1, merge E9-5, merge E9-6, merge E9-7 | S |
+| **E13-1** | Suite complete | milestone | merge E10-10, merge E10-7, merge E10-11, merge E13-2, merge E12-1, complete E11-5, merge E6-1, merge E6-3, merge E6-4, merge E4-13, merge E7-1, merge E8-2, merge E8-3, merge E2-4, merge E5-5, merge E5-6, merge E5-8, merge E9-1, merge E9-5, merge E9-6, merge E9-7 | S |
 | **E13-2** | Record the risk-matrix owners in `TEST_SUITE.md` | PR | complete X-6 | S |
 
 No diff. Exists because "every row is done" is otherwise something nobody checks:

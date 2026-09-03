@@ -160,6 +160,47 @@ for another.
 
 ### 3.1 Targets
 
+**Search-provider response parsing and error paths.** `search_serper`,
+`search_serpbase`, `search_tavily`, `search_searxng`, `search_sofya`,
+`search_youcom` — the six coroutines `PROVIDERS` dispatches to. Driven with
+`httpx.MockTransport`, so this is L1 and belongs in the `fast` job.
+
+**Coverage today runs inversely to selection priority**, which is the reason this
+is called out rather than left to the risk matrix. Counted 2026-09-03:
+
+| Provider | Selection order | Unit tests | HTTP error statuses covered |
+|---|---|---|---|
+| Serper | **1st — the default** | **1** (happy-path parse) | none |
+| SerpBase | 2nd | **0 — no test module exists** | none |
+| Tavily | 3rd | **1** (happy-path parse) | none |
+| SearXNG | 4th | 9 | 403, 429, invalid JSON |
+| Sofya | 5th | 11 | none — shape and empty only |
+| You.com | 6th | 15 | none — shape, empty, missing key |
+
+So the first provider a deployment actually selects is the least tested, and
+`search_serpbase` — which parses a whole provider's responses — is executed by no
+test in the tree. **No provider has a `401` case**, which is the failure an
+operator meets first: a key that is wrong, expired, or revoked. None has a
+timeout case.
+
+The instrument is settled and cheap — `MockTransport` is already how
+`test_searxng_unit.py` works — so what is missing is the work, not a decision
+about how to do it. Each provider needs its documented success shape, the
+malformed-item and empty-result paths it already claims to handle, and the five
+transport-level failures: `401`, `429`, a non-JSON body, a JSON body of the wrong
+shape, and a timeout.
+
+**One production defect is in scope here rather than filed separately**, because
+it is the thing that makes these errors hard to act on:
+`search_searxng` catches every per-instance exception in its multi-URL loop and
+re-raises `SearxngError(f"All configured SearXNG instances failed. Last error:
+{last_error}")` **without `from`**, so the branch's own message survives only as
+a substring of an aggregate and the exception chain is discarded entirely. The
+403 branch exists to tell an operator "enable the JSON format"; today that
+sentence reaches them flattened into a string with no traceback behind it. Fix
+the chaining as part of pinning the behaviour, so the assertion is written
+against an error worth raising.
+
 **Launch-argument and sandbox decisions.** `_build_chromium_launch_args`,
 `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
 `_resolve_start_retry_attempts`, `_resolve_snap_backoff_multiplier`,
@@ -1498,8 +1539,8 @@ The **Today** column describes *test coverage*, not implementation status.
 | Subsystem / behaviour | Today | Target layer | CI job | Owner |
 |---|---|---|---|---|
 | Provider routing, strict order, no fallback | covered | L1 | `fast` | |
-| Serper / SerpBase / Tavily / SearXNG / Sofya parsing | partial | L1 | `fast` | |
-| Provider errors: 401, 429, malformed JSON, timeout, empty | gap | L1 (`httpx.MockTransport`) | `fast` | |
+| Serper / SerpBase / Tavily / SearXNG / Sofya parsing | partial — §3.1 counts it per provider; E5-8 owns it | L1 | `fast` | |
+| Provider errors: 401, 429, malformed JSON, timeout, empty | gap — E5-8 owns it | L1 (`httpx.MockTransport`) | `fast` | |
 | Provider registry ⇄ docs | covered | L2 | `fast` | |
 | StackExchange / GitHub issues / GitHub discussions / Wikipedia | partial — parsing covered, failure paths thin | L1 + L2 | `fast` | |
 | arXiv + PDF extraction | partial | L1 | `fast` | |
