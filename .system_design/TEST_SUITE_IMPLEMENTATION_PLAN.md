@@ -400,7 +400,12 @@ it carries no X-number.
   the pool off, so a rewire passing `slot=None` would have killed pooled reuse
   with the suite green and no node id moved.
 
-> **Deferred:** the **parent-side pool blocks have no hermetic coverage and no
+> **Deferred — CLEARED IN E2-3. Read the closing paragraph before acting on any
+> of this.** Every line address below was measured against `32ca6b9` and none of
+> them resolves in the current tree; the function was restructured by the very
+> step this block says would not touch it.
+>
+> The **parent-side pool blocks have no hermetic coverage and no
 > owner**. E2-2 covered the pooled *command shape*; it did not touch the
 > acquisition block (`universal_html.py:627-645`, opening at `pool = None`,
 > with `use_pool = reuse_enabled()` at `:629`) or the pool-restart retry block
@@ -429,6 +434,21 @@ it carries no X-number.
 > `ChromiumPool.slots` without returning it to the queue, and repeated
 > occurrences starve the pool. Pre-existing and not worsened by E2-2, whose
 > contribution to that window is pure list building.
+>
+> **Closed by E2-3, and the sentence above beginning "E2-3 does not clear them
+> either" is retracted.** It reasoned from the step's verify clause rather than
+> from what restructuring that function would make cheap, and it was wrong. Five
+> committed cases in `tests/test_universal_html_loader.py` now reach these
+> blocks: `test_pool_slot_is_released_when_the_run_never_starts`,
+> `test_pool_slot_is_released_once_when_the_replacement_is_unreachable`,
+> `test_pool_restart_retry_builds_a_second_command_for_the_second_slot`,
+> `test_non_retryable_worker_failure_is_not_retried` and
+> `test_pool_acquisition_failure_falls_back_to_an_unpooled_run`. The leak is
+> fixed, and so is a double release the block did not know about. What is left
+> is `ChromiumPool.release`'s own missing membership check, which is in E7-3's
+> verify clause. This block is kept rather than deleted because the plan's own
+> note says the item was rediscovered three times, and a reader who finds it a
+> fourth should find the answer attached to it.
 - **E2-3.** **Production change, highest-leverage step in the plan** — it opens the
   L3 worker stream and makes the coverage classification expressible (§10.4,
   §11.2). E1-4 lands first so a green characterization baseline exists.
@@ -446,12 +466,92 @@ it carries no X-number.
   `_run_worker_command` importable and accepts an arbitrary command; no `command=`
   parameter on any public function; `universal_html.py` retains the Markdown-probe
   path and no subprocess management.
+  **Landed.** `worker_runner.py` holds the spawn, both stream readers, the
+  accumulators, the heartbeat, the terminator, the pipe probe and the new
+  `_run_worker_command(command, *, env, default_timeout_seconds, diagnostics)`.
+  `universal_html.py` imports neither `asyncio` nor `subprocess`, which is how
+  the boundary is asserted — both are required to touch a process, so their joint
+  absence is the claim rather than a proxy for it — and which incidentally makes
+  the old patch target raise `AttributeError`. Six things worth carrying forward.
+
+  **One.** The four characterization tests now patch
+  `universal_html._run_worker_command`. They therefore no longer drive a process
+  double, and the claim they used to carry — that the parent reads the child's
+  stdout — moved to `tests/test_worker_runner.py`, which runs a real child. That
+  file has **four** `subsystem` cases — stdout returned, non-zero exit, the
+  timeout budget's source, and the runner's emit order — and six hermetic
+  boundary guards. Until E7-2 lands, those four are the whole of the runner's
+  behavioural coverage, and §10.4 control 1 rests on them.
+
+  **Two.** The budget is resolved from the `env` argument, not from `os.environ`.
+  Identical at the production call site — the loader builds `env` from
+  `os.environ` and never writes `KINDLY_HTML_TOTAL_TIMEOUT_SECONDS` — and it
+  means E7-2 can set the variable in the environment it hands a fixture child and
+  have it take effect, instead of watching the parent's ambient value win
+  silently. The parse stays *inside* the runner so
+  `worker.timeout_budget_parent` keeps its position after the spawn; both emit
+  orders are now pinned by tests, on each side of the seam, because a
+  justification nothing checks stops being true.
+
+  **Three.** The slot leak is fixed by opening the acquisition inside a **new**
+  `try/finally`. The pool-restart `try/except` keeps its old, narrower scope on
+  purpose: widening *that* one instead would send a pre-run failure into a
+  handler that reads names the raise skipped past, replacing the caller's error
+  with an `UnboundLocalError` while still releasing the slot — which is why the
+  case asserts the propagated exception's message and not only its type.
+
+  **Four, and not in the handover.** The retry path could release the same slot
+  **twice**: it released the stale slot and then re-acquired, and a raise from
+  that re-acquire left the local name still bound, so the outer `finally`
+  released it again. `ChromiumPool.release` is an unconditional `queue.put` with
+  no membership check, so a slot queued twice hands one browser and one profile
+  directory to two concurrent callers — worse than the leak it sits next to.
+  Fixed by clearing the name between the release and the re-acquire, and after
+  the terminate so a terminate that raises still leaves the slot recoverable.
+
+  **Five.** Three more parent-side pool claims the deferred block left unowned
+  are now asserted, because the new seam makes them one double each: a
+  non-retryable failure is not retried (which pins `_pool_error_requires_restart`'s
+  polarity — a mutation making it always-true survived every other case), and an
+  unusable pool falls back to an unpooled command with `pool.error` recorded.
+
+  **Six.** Falsified by **24** mutations across five batteries, each run under
+  **both** a cleared environment and one exporting every variable the code
+  reads. All 24 were caught. A further **two** were discarded rather than
+  counted: both were no-ops that changed no execution — one inserted a dead
+  `if reuse_enabled(): pass`, the other deleted a line after the assignment it
+  meant to remove — and both therefore "survived" while proving nothing.
+
+  That is the reason a battery should print **what it mutated**, not a score. A
+  survivor is the only mutation result needing interpretation, and the cheap
+  reading ("the test is weak") is wrong often enough to send an author writing
+  tests for a gap that is not there. The rule: before recording a survivor, name
+  the execution that differs; if you cannot, the mutation is broken.
+
+  Two counts in the first draft of this entry and its pull request disagreed —
+  20 against 25, neither of them right — and the automatic reviewer caught it.
+  Recorded because it is this document's own standing complaint about numbers in
+  prose that nothing checks, committed by the step that wrote the complaint.
 - **E2-4.** **Production change**, annotation only, since E2-1 already placed the
   Protocol in `src/`. **Sized on a narrower reading than the work requires.**
   Two other functions already take `proc: asyncio.subprocess.Process` —
   `_emit_worker_heartbeat` and `_terminate_process_tree` — and once the runner's
   parameter becomes `WorkerProcess`, passing it into either is an error, because
-  `WorkerProcess` is not assignable to `Process`. Two further things bite when
+  `WorkerProcess` is not assignable to `Process`.
+  **E2-3 raised this step's urgency.** With the four loader tests off the process
+  double, `FakeWorkerProcess` has no production consumer at all, and the only
+  thing tying its shape to what production reads is the hand-written
+  `CONSUMED_SURFACE` literal in `tests/test_worker_process_protocol.py` — whose
+  provenance comment E2-3 re-pointed at `_run_worker_command`. This annotation is
+  what restores a *checked* link. Until it lands, double and production can
+  diverge with the suite green.
+  **Take the docstrings with it.** Thirteen of `worker_runner.py`'s fourteen
+  symbols carry none: they moved verbatim from `universal_html.py`, where they
+  had none either, and an extraction that also rewrote what it moved could not
+  have been reviewed as an extraction. That leaves the module short of the
+  project's "every class, method and function" rule with no step owning the gap.
+  This one is annotating those same signatures and is the cheapest place to
+  close it. Two further things bite when
   `worker_runner.py` joins §10.3's `types` target: `universal_html.py:185`
   already fails that check today with `Module has no attribute "STARTUPINFO"`
   (mypy narrows on `sys.platform`, not on the `os.name` guard the code uses), and
@@ -569,7 +669,7 @@ typo'd selector fails the job.
   `fast-extras` is in `ci-required.needs` and the aggregate is green.
 - **E4-5.** Likewise created and activated together. `merge E2-4`, not `merge
   E2-1`: the job's whole purpose is catching signature drift on
-  `_run_worker_command`, which does not exist until E2-3 and is not annotated
+  `_run_worker_command`, which did not exist until E2-3 and is not annotated
   until E2-4. Created earlier, its target list would omit the one signature it
   exists to check, and the non-vacuity rule below would then prevent adding a
   target that did not yet exist. *Verify:* the negative-fixture directory is excluded; **`types` is in
@@ -710,7 +810,11 @@ duplicating tests or touching the same files.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
   HTML, length within cap) fail when the corresponding transform is disabled;
   golden matching only for handcrafted fragments.
-- **E5-6.** `_append_tail_text` and the encoding-cookie helpers. *Verify:*
+- **E5-6.** `_append_tail_text` — **moved by E2-3** from `universal_html.py` to
+  `scrape/worker_runner.py`, with the rest of the stderr-tail chain — and the
+  encoding-cookie helpers. Both addresses are in `.coveragerc-gate`'s `omit`
+  list, which does not excuse either from an L1 test; §10.4 records why the
+  helper is on the omitted side. *Verify:*
   boundary cases at exactly the limit, one under and one over; each fails if the
   comparison operator is flipped.
 - **E5-7.** Scoped to what `redact_url_credentials`, `mask_env_values`,
@@ -736,8 +840,15 @@ duplicating tests or touching the same files.
   *Verify:* renaming `num_results` fails it; a description reword does not; passes
   on mcp 1.25.0 and the newest allowed release.
 - **E6-2.** **Production change (small).** Sequenced after E2-3 because both touch
-  `universal_html.py`'s diagnostics path and would otherwise conflict. One
+  the parent-side diagnostics path and would otherwise conflict. One
   encoder/decoder pair used by both sides.
+  **Read the address twice: E2-3 has landed and the live decoder is no longer in
+  `universal_html.py`.** `_consume_stderr_line`, `_finalize_stderr_state`,
+  `_append_tail_text` and `_read_stderr_stream` are all in
+  `scrape/worker_runner.py` now. What stayed behind is
+  `_split_worker_diagnostics` — still dead, still a removal candidate, and now
+  the only `KINDLY_DIAG` parser in the gated module, which makes it easier to
+  mistake for the live one than it was before.
   *Verify:* §4.3's stream cases — fragmentation, several frames per chunk, CRLF,
   EOF without newline, multi-byte split across chunks, malformed payload capping,
   oversized line truncation — each failing if its branch is removed.
@@ -769,13 +880,91 @@ duplicating tests or touching the same files.
   *Verify:* clean run returns the child's **HTML** and parsed diagnostics; hanging
   child killed at the deadline; killed parent leaves no orphan; stderr garbage does
   not crash the parent; non-zero exit surfaces a readable error. Windows and Linux.
-- **E7-3.** Slot acquisition and release, reuse, pool sizing, port allocation
+  **And:** `tests/test_worker_runner.py`'s four `subsystem` cases are each either
+  relocated with ledger relocation rows or explicitly retained, and its six
+  hermetic boundary guards stay in place either way — they live in the same file
+  and are listed in the reviewer's guard registry, so "retire the node ids"
+  applied to the file rather than to the four cases would take the boundary with
+  them.
+  **`_terminate_process_tree` does not kill a tree on POSIX. Confirmed
+  defect — this step's "killed parent leaves no orphan" bullet already owns it,
+  and should be written knowing it starts red.** The non-Windows branch is
+  `proc.kill()` + `await proc.wait()`, and `Process.kill()` signals the direct
+  child only. The Windows branch walks the tree explicitly with
+  `taskkill /T /F /PID`, so the two platforms do different things under one
+  name. Measured on Linux against a child that had spawned a grandchild:
+
+  ```
+  before: child alive=True   grandchild alive=True
+  after : child alive=False  grandchild alive=True  PPid: 1  -> ORPHANED
+  ```
+
+  In production the grandchild is Chromium, and a SIGKILLed worker runs no
+  cleanup of its own — so a timed-out worker leaves a browser behind on Linux
+  and does not on Windows. Raised by the automatic reviewer on E2-3, which moved
+  the function verbatim and did not change it. Fixing it is a behaviour change to
+  process termination and belongs with the lifecycle battery that can prove it,
+  not with an extraction. Candidates worth measuring: a process group
+  (`start_new_session=True` at spawn, then `os.killpg`), or walking children
+  before the kill.
+
+  **A pre-existing cost this step should decide about, measured by E2-3's review
+  and owned by nobody yet.** With diagnostics enabled, every worker run is padded
+  by up to `STREAM_HEARTBEAT_INTERVAL_SECONDS` (2.0 s) *after the child has
+  already exited*: `_emit_worker_heartbeat` sleeps before re-reading
+  `proc.returncode`, and the run's `asyncio.gather` waits for all four tasks.
+  Measured at exactly 2.00 s on each of E2-3's two diagnostics-enabled subsystem
+  cases. Not a regression — it moved verbatim — but this step owns the
+  lifecycle, and a battery of hanging-child cases will pay it repeatedly.
+  **A shape to know before writing the hanging-child case:** the parent's budget
+  and the child's environment are one mapping. `_run_worker_command` resolves
+  `KINDLY_HTML_TOTAL_TIMEOUT_SECONDS` from the `env` it hands the child, so to
+  give the child a deadline different from the parent's, drive the parent's with
+  `default_timeout_seconds` and leave `env` clean.
+  **Two of those five already have a committed owner, and this step must decide
+  its fate.** E2-3 shipped `tests/test_worker_runner.py` with **four** `subsystem`
+  cases against an ad-hoc `python -c` child. Two overlap this step's bullets: a
+  clean run returns exactly what the child wrote to stdout, and a non-zero exit
+  raises carrying the child's stderr. The other two are pins rather than
+  lifecycle claims and must be moved rather than dropped —
+  `test_timeout_budget_is_read_from_the_environment_it_is_given` is what stops
+  the budget's source drifting back to `os.environ`, and
+  `test_runner_diagnostics_keep_their_order` is half of the emit-order pin.
+  They were not scope creep — the extraction's own verify clause requires showing
+  the runner takes an arbitrary command, and the stdout claim is the one the four
+  loader tests gave up when they moved onto the runner seam, so dropping it would
+  have weakened the suite. Rewrite them against E3-1's fixture child and retire
+  the node ids **with relocation rows**, or keep them and scope this step's two
+  bullets to what the fixture child adds. Either is fine; leaving one claim with
+  two owners is not — §3.1 goes out of its way to avoid exactly that.
+  **Also inherited:** until this step lands, those two cases are the entire
+  behavioural coverage of `worker_runner.py`, and §10.4 control 1's "every
+  omitted module shows non-zero coverage in the observational report" rests on
+  them. And the emit-order pins E2-3 added on both sides of the seam
+  (`worker.process_started` → `worker.timeout_budget_parent` → `worker.stdout`)
+  are what stop the timeout parse drifting out of the runner; a lifecycle case
+  that reorders those records should move the pin, not delete it.
+- **E7-3.** **E2-3 fixed two release defects in the pool's *caller* and left this
+  step the pool's own half.** A slot acquired and then abandoned by a raise before
+  the worker run was never queued again; and the restart path could queue one slot
+  **twice** when its replacement acquire failed. Both are asserted from the caller
+  side, against a doubled pool, in `tests/test_universal_html_loader.py`. What
+  nothing asserts is `ChromiumPool.release` itself: it is an unconditional
+  `queue.put` with no membership check, which is what made the second defect hand
+  one browser and one profile directory to two concurrent callers rather than
+  merely miscount. A double release from anywhere else does the same, and this
+  step owns the pool.
+
+  Slot acquisition and release, reuse, pool sizing, port allocation
   within `KINDLY_NODRIVER_PORT_RANGE`, acquire timeout under contention,
   concurrency, shutdown. **Written against a locally installed Chromium** — only
   CI validation needs E4-6's image, which is why the image is a `merge`
   dependency rather than an `impl` one.
   *Verify:* after shutdown every spawned PID is gone; the port-range test fails if
-  the range is ignored. Closes the repo's largest untested module.
+  the range is ignored; **a slot released twice is not queued twice** — `release`
+  rejects or de-duplicates a slot already in the queue, falsified by releasing one
+  slot twice and observing two concurrent acquires hand back the same object.
+  Closes the repo's largest untested module.
 
 ---
 
@@ -912,6 +1101,11 @@ what flips if a policy proxy is ever added.
 
 - **E10-1.** Every `src/**/*.py` in the gating scope or in `omit`, exactly once.
   *Verify:* a module in neither fails; a module in both fails.
+  **E2-3 supplied the module the omit list had been naming in advance.** Every
+  pattern in `.coveragerc-gate` now matches a real file, so this step's walk has
+  nothing to special-case; `tests/test_coverage_configuration.py` asserts the
+  runner's absence from the gating report from now on, which it could not while
+  the file did not exist.
 - **E10-2.** The checker plus unit tests over **synthetic** `coverage.json`
   fixtures; not yet pointed at the real tree, so it merges green. *Verify:* a
   synthetic report with a zero-covered gating module fails; non-zero passes.
@@ -923,7 +1117,10 @@ what flips if a policy proxy is ever added.
   local `coverage combine`, HTML/JSON artefact with `if-no-files-found: error`.
   *Verify:* `worker_runner.py` shows non-zero coverage; a forcibly killed child
   contributes nothing, and that limit is documented in the job output rather than
-  hidden by an exclusion.
+  hidden by an exclusion. **What produces that non-zero figure today** is E2-3's
+  four `subsystem` cases in `tests/test_worker_runner.py` and nothing else, until
+  E7-2 lands — so if E7-2 retires them, this verify clause needs their
+  replacement to be in the `subsystem` selection, not merely to exist.
 - **E10-5.** The same for the `chromium` job. *Verify:* `chromium_pool.py` shows
   non-zero coverage.
 - **E10-6.** **Each job runs the checker against the report it produced, and only

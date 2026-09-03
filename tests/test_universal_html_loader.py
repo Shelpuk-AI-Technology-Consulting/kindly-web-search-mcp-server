@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import io
 import os
 import sys
 from collections.abc import Iterator
@@ -10,11 +12,12 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tests.doubles.worker_process import FakeWorkerProcess, primed_reader
+from kindly_web_search_mcp_server.utils.diagnostics import Diagnostics
 
-#: Stdout the worker double hands back. Fed through a real `asyncio.StreamReader`,
-#: so the bytes travel the path production reads: this is the wiring that broke,
-#: and asserting the returned value is what proves it intact.
+#: Stdout the doubled runner hands back. Held as bytes, and decoded at each use,
+#: so it stays the same literal `tests/test_worker_runner.py` writes from a real
+#: child — the two files assert the same payload at different strengths, and a
+#: divergence between them should be a deliberate edit rather than a drift.
 WORKER_STDOUT = b"<html><body><p>ok</p></body></html>"
 
 #: Every variable `fetch_html_via_nodriver` reads that can change what these
@@ -92,8 +95,11 @@ def pinned_environment(**overrides: str) -> Iterator[None]:
     all — it returns a live slot.
 
     The pooled path with a *real* pool is a subsystem concern and is not this
-    file's to cover. One case below overrides this default with
-    `get_chromium_pool` doubled, which never reaches a launch.
+    file's to cover. The rule for the cases that override this default: every one
+    of them must also double `get_chromium_pool`, or it reaches a real browser.
+    No count is given, deliberately. An earlier wording gave one, was wrong by a
+    case on the day it was written, and was wrong inside the very sentence
+    explaining that counts go stale.
 
     Args:
         **overrides: Variables this case needs set, applied after the clear.
@@ -110,6 +116,24 @@ def pinned_environment(**overrides: str) -> Iterator[None]:
     environment.update(overrides)
     with patch.dict("os.environ", environment, clear=True):
         yield
+
+
+def _run_call(mock_run: AsyncMock) -> tuple[list[str], dict[str, object]]:
+    """Read the command and keyword arguments off the runner double's last call.
+
+    The command is `_run_worker_command`'s first **positional** parameter, so a
+    case that looked for it in `kwargs` would find nothing and assert nothing.
+    One accessor, so that stays true in one place.
+
+    Args:
+        mock_run: The double standing in for `_run_worker_command`.
+
+    Returns:
+        The argv the runner was handed, and the keyword arguments it received.
+    """
+    call = mock_run.call_args
+    assert call is not None, "the worker runner was never called"
+    return call.args[0], call.kwargs
 
 
 class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
@@ -148,7 +172,26 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Hello world", out)
 
     async def test_fetch_html_spawns_worker_subprocess(self) -> None:
-        """Spawn the worker module, and return what its stdout produced"""
+        """Spawn the worker module, and return what the runner produced
+
+        **The seam is `_run_worker_command`, not the standard library.** Until
+        the runner was extracted these cases patched
+        `universal_html.asyncio.create_subprocess_exec`, which resolves through
+        the shared `asyncio` module object and so replaced the spawn primitive
+        for the whole process. The suite design rules that out as opaque
+        coupling and made removing it this extraction's job; the module no
+        longer imports `asyncio` at all, so the old target now raises
+        `AttributeError` rather than quietly working.
+
+        **What that costs, stated rather than hidden.** These cases used to
+        drive a `FakeWorkerProcess` through production's stream readers, so the
+        returned markup proved the parent still read the child's stdout — the
+        exact drift that left this file red. With the runner doubled, the
+        equality below proves only that the runner's return value reaches the
+        caller unaltered. The streaming claim moved to
+        `tests/test_worker_runner.py`, which asserts it against a real child
+        process, where it can no longer be satisfied by a fake.
+        """
         from kindly_web_search_mcp_server.scrape.universal_html import (
             fetch_html_via_nodriver,
         )
@@ -156,29 +199,21 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         with (
             pinned_environment(),
             patch(
-                "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
                 new_callable=AsyncMock,
-            ) as mock_spawn,
+                return_value=WORKER_STDOUT.decode(),
+            ) as mock_run,
         ):
-            mock_spawn.return_value = FakeWorkerProcess(
-                stdout=primed_reader(WORKER_STDOUT),
-                stderr=primed_reader(b"noisy but ignored"),
-            )
             html = await fetch_html_via_nodriver("https://example.com")
 
-        # The returned markup is the assertion that matters: it is the only one
-        # that fails if the parent stops reading the child's stdout, the drift
-        # that left this test red. Compared whole rather than by substring, so
-        # truncation or mangling through the accumulator's decode fails too.
         self.assertEqual(html, WORKER_STDOUT.decode())
-        self.assertTrue(mock_spawn.called)
-        args, kwargs = mock_spawn.call_args
-        # Membership, not adjacency: the builder's exact shape is asserted at the
-        # unit layer once `_build_worker_command` is extracted. Pinning order
-        # here as well would put one claim at two layers.
-        self.assertIn("-m", args)
-        self.assertIn("kindly_web_search_mcp_server.scrape.nodriver_worker", args)
-        self.assertIn("env", kwargs)
+        self.assertTrue(mock_run.called)
+        command, kwargs = _run_call(mock_run)
+        # Membership, not adjacency: `tests/test_worker_command_builder.py` owns
+        # the builder's exact shape by whole-list equality. Pinning order here as
+        # well would put one claim at two layers.
+        self.assertIn("-m", command)
+        self.assertIn("kindly_web_search_mcp_server.scrape.nodriver_worker", command)
         self.assertIn("PYTHONPATH", kwargs["env"])
 
     async def test_fetch_html_passes_browser_executable_path_when_set(self) -> None:
@@ -190,18 +225,16 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         with (
             pinned_environment(KINDLY_BROWSER_EXECUTABLE_PATH="/usr/bin/chromium"),
             patch(
-                "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
                 new_callable=AsyncMock,
-            ) as mock_spawn,
+                return_value=WORKER_STDOUT.decode(),
+            ) as mock_run,
         ):
-            mock_spawn.return_value = FakeWorkerProcess(
-                stdout=primed_reader(WORKER_STDOUT), stderr=primed_reader(b"")
-            )
             await fetch_html_via_nodriver("https://example.com")
 
-        args, _kwargs = mock_spawn.call_args
-        self.assertIn("--browser-executable-path", args)
-        self.assertIn("/usr/bin/chromium", args)
+        command, _kwargs = _run_call(mock_run)
+        self.assertIn("--browser-executable-path", command)
+        self.assertIn("/usr/bin/chromium", command)
 
     async def test_fetch_html_sets_no_proxy_for_loopback(self) -> None:
         """Exempt loopback from the proxy, so the child can reach its own DevTools"""
@@ -218,23 +251,21 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
                 KINDLY_NODRIVER_ENSURE_NO_PROXY_LOCALHOST="1",
             ),
             patch(
-                "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
                 new_callable=AsyncMock,
-            ) as mock_spawn,
+                return_value=WORKER_STDOUT.decode(),
+            ) as mock_run,
         ):
-            mock_spawn.return_value = FakeWorkerProcess(
-                stdout=primed_reader(WORKER_STDOUT), stderr=primed_reader(b"")
-            )
             await fetch_html_via_nodriver("https://example.com")
 
-        _args, kwargs = mock_spawn.call_args
+        _command, kwargs = _run_call(mock_run)
         env = kwargs.get("env") or {}
         no_proxy = (env.get("NO_PROXY") or env.get("no_proxy") or "").lower()
         self.assertIn("localhost", no_proxy)
         self.assertIn("127.0.0.1", no_proxy)
 
     async def test_pooled_fetch_spawns_exactly_what_the_builder_returned(self) -> None:
-        """Spawn the builder's command verbatim, and build it for the pooled slot
+        """Run the builder's command verbatim, and build it for the pooled slot
 
         Wiring only, no shape: `tests/test_worker_command_builder.py` owns what
         the command line looks like, and the three cases above own it at
@@ -291,22 +322,390 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
                 return_value=sentinel_command,
             ) as mock_builder,
             patch(
-                "kindly_web_search_mcp_server.scrape.universal_html.asyncio.create_subprocess_exec",
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
                 new_callable=AsyncMock,
-            ) as mock_spawn,
+                return_value=WORKER_STDOUT.decode(),
+            ) as mock_run,
         ):
-            mock_spawn.return_value = FakeWorkerProcess(
-                stdout=primed_reader(WORKER_STDOUT), stderr=primed_reader(b"")
-            )
             await fetch_html_via_nodriver("https://example.com")
 
         self.assertEqual(
             pool.acquire.await_count, 1, "the pooled slot was never acquired"
         )
-        args, _kwargs = mock_spawn.call_args
-        self.assertEqual(list(args), sentinel_command)
+        command, _kwargs = _run_call(mock_run)
+        self.assertEqual(command, sentinel_command)
         self.assertEqual(mock_builder.call_count, 1)
         self.assertIs(mock_builder.call_args_list[0].kwargs["slot"], slot)
+        # The ordinary success path's release count. Every other release
+        # assertion in this file is on a failure path, and "released exactly
+        # once on every exit path" is not shown by failure paths alone.
+        self.assertEqual(pool.release.await_count, 1)
+
+    async def test_pool_slot_is_released_when_the_run_never_starts(self) -> None:
+        """Return the pooled slot even when the failure precedes the worker run
+
+        The defect this pins, measured before the fix with the acquisition
+        forced to succeed and a `RuntimeError` injected in the window::
+
+            queue before: 1 | slots: 1
+            raised: RuntimeError
+            queue after : 0 | slots: 1
+            SLOT STRANDED: True
+
+        The slot was acquired at the top of `fetch_html_via_nodriver` while the
+        `finally` that returns it hung off a `try` opened much further down, so
+        anything raising in between stranded it. Bounded rather than fatal —
+        once every slot is stranded, `acquire` times out, returns `None`, and
+        callers fall back to a cold browser — which is why it was carried as a
+        medium-severity defect into the step that restructures this function
+        rather than filed as its own.
+
+        The failure is injected at the builder because that is the first thing
+        the window does after acquiring, and because it is a call the case can
+        reach without doubling anything the acquisition itself depends on. The
+        pool is a full double: this case is about the caller's release
+        contract, not about the pool's own bookkeeping.
+        """
+        from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot = ChromiumSlot(slot_id=5, host="127.0.0.5", port=9445)
+        pool = AsyncMock()
+        pool.acquire.return_value = slot
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._build_worker_command",
+                side_effect=RuntimeError("injected after acquisition"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                await fetch_html_via_nodriver("https://example.com")
+
+        # The identity of the propagated error, not only its type. Widening the
+        # *retry* try to cover the acquisition would also release the slot and
+        # satisfy every other assertion here, while sending this failure into
+        # the pool-restart handler, which reads names the raise skipped past —
+        # so the caller would receive an UnboundLocalError instead of its own
+        # error, with nothing to say why.
+        self.assertEqual(str(caught.exception), "injected after acquisition")
+        self.assertEqual(
+            pool.acquire.await_count, 1, "the pooled slot was never acquired"
+        )
+        self.assertEqual(
+            pool.release.await_count, 1, "the acquired slot was never released"
+        )
+        self.assertIs(pool.release.await_args.args[0], slot)
+
+    async def test_pool_restart_retry_builds_a_second_command_for_the_second_slot(
+        self,
+    ) -> None:
+        """Rebuild the command for the replacement slot after a pool restart
+
+        The retry call site had been verified exactly once, by a throwaway
+        differential run against the pre-extraction implementation, and by no
+        committed test: a mutation there — reusing the stale slot, or passing
+        `slot=None` — survived the whole fault-injection battery, which reaches
+        the *first* builder call only. Restructuring this function inherits that
+        gap, so it is closed here.
+
+        The first run fails with a message the restart classifier matches. Its
+        wording is load-bearing: `_pool_error_requires_restart` scans the
+        exception chain for a fixed set of patterns, and an unmatched message is
+        re-raised without any retry at all, which would leave this case passing
+        for the wrong reason. `assertEqual` on the call count is what catches
+        that — a re-raise gives one builder call, not two.
+        """
+        from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        first = ChromiumSlot(slot_id=1, host="127.0.0.1", port=9441)
+        second = ChromiumSlot(slot_id=2, host="127.0.0.2", port=9442)
+        pool = AsyncMock()
+        pool.acquire.side_effect = [first, second]
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._build_worker_command",
+                side_effect=[["first-command"], ["second-command"]],
+            ) as mock_builder,
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                side_effect=[
+                    RuntimeError("nodriver worker failed (exit=1): boom"),
+                    WORKER_STDOUT.decode(),
+                ],
+            ) as mock_run,
+        ):
+            html = await fetch_html_via_nodriver("https://example.com")
+
+        self.assertEqual(html, WORKER_STDOUT.decode())
+        self.assertEqual(mock_builder.call_count, 2)
+        self.assertIs(mock_builder.call_args_list[0].kwargs["slot"], first)
+        self.assertIs(mock_builder.call_args_list[1].kwargs["slot"], second)
+        self.assertEqual(
+            [call.args[0] for call in mock_run.call_args_list],
+            [["first-command"], ["second-command"]],
+        )
+        # Both slots go back, each once, in the order they were held. A retry
+        # that released the stale slot and then let the `finally` release it
+        # again would show `[first, first]` -- the shape that hands one browser
+        # to two callers.
+        self.assertEqual(
+            [call.args[0] for call in pool.release.await_args_list], [first, second]
+        )
+
+    async def test_pool_slot_is_released_once_when_the_replacement_is_unreachable(
+        self,
+    ) -> None:
+        """Never queue the same slot twice, however the replacement acquire ends
+
+        The restart path releases the failed slot and immediately acquires a
+        replacement. If that acquire raises — it is outside the block that
+        swallows acquisition errors, and `asyncio.Queue.get` under a `wait_for`
+        can be cancelled — the local name still referred to the slot just
+        released, and the `finally` released it a second time.
+
+        That is worse than the leak above rather than merely different.
+        `ChromiumPool.release` is an unconditional `queue.put` with no
+        membership check, so the same slot sits in the queue twice and two
+        concurrent callers are handed one browser and one profile directory.
+        """
+        from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot = ChromiumSlot(slot_id=7, host="127.0.0.7", port=9447)
+        pool = AsyncMock()
+        pool.acquire.side_effect = [slot, asyncio.CancelledError()]
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("nodriver worker failed (exit=1): boom"),
+            ),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await fetch_html_via_nodriver("https://example.com")
+
+        self.assertEqual(
+            pool.release.await_count,
+            1,
+            "the stale slot was released more than once",
+        )
+
+    async def test_a_failed_release_leaves_the_stale_slot_recoverable(self) -> None:
+        """Keep the slot reachable when handing it back is what fails
+
+        The restart path's four statements are ordered so each failure mode
+        leaves the slot in exactly one place, and this is the case for the
+        middle one. The local name is cleared **after** the release, not before,
+        so a release that raises leaves the slot still bound and the outer
+        `finally` returns it. Cleared before, the slot would be stranded — the
+        very defect the surrounding fix exists to remove, reintroduced one
+        statement further along.
+
+        Near-unreachable in production today: `ChromiumPool.release` is a
+        `Diagnostics.emit` — which swallows everything — followed by an
+        unbounded `queue.put`. Pinned anyway, because the ordering reads like an
+        accident without it, and the cheapest tidy-up available to the next
+        author is to move that line back.
+        """
+        from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot = ChromiumSlot(slot_id=9, host="127.0.0.9", port=9449)
+        pool = AsyncMock()
+        pool.acquire.return_value = slot
+        pool.release.side_effect = [RuntimeError("queue is unwell"), None]
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("nodriver worker failed (exit=1): boom"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                await fetch_html_via_nodriver("https://example.com")
+
+        # Twice: the restart path's attempt, which raised, and the `finally`'s,
+        # which is the recovery. Both name the same slot.
+        self.assertEqual(pool.release.await_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in pool.release.await_args_list], [slot, slot]
+        )
+
+    async def test_non_retryable_worker_failure_is_not_retried(self) -> None:
+        """Retry only the failures the restart classifier actually recognises
+
+        The polarity of `_pool_error_requires_restart`, which the retry case
+        above cannot see: a mutation making that predicate always true leaves
+        every case that feeds it a matching message passing. This one feeds it a
+        message matching none of its patterns and requires exactly one run and
+        one build — and the original error, not a second failure's.
+        """
+        from kindly_web_search_mcp_server.scrape.chromium_pool import ChromiumSlot
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot = ChromiumSlot(slot_id=8, host="127.0.0.8", port=9448)
+        pool = AsyncMock()
+        pool.acquire.return_value = slot
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._build_worker_command",
+                return_value=["only-command"],
+            ) as mock_builder,
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                side_effect=ValueError("nothing the classifier knows about"),
+            ) as mock_run,
+        ):
+            with self.assertRaises(ValueError) as caught:
+                await fetch_html_via_nodriver("https://example.com")
+
+        self.assertEqual(str(caught.exception), "nothing the classifier knows about")
+        self.assertEqual(mock_builder.call_count, 1)
+        self.assertEqual(mock_run.await_count, 1)
+        self.assertEqual(pool.release.await_count, 1)
+
+    async def test_pool_acquisition_failure_falls_back_to_an_unpooled_run(self) -> None:
+        """Degrade to a cold browser rather than failing when the pool is unusable
+
+        The acquisition block swallows every exception on purpose: a pool that
+        cannot be reached is a performance problem, not a fetch failure. Three
+        things follow from that and are asserted together, because the swallow
+        makes each of them invisible on its own — the fetch still succeeds, the
+        command is built for no slot, and the reason is recorded rather than
+        lost.
+
+        Nothing is released: no slot was ever acquired, and a `finally` that
+        released on a `None` slot would fail against a real pool.
+        """
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        diagnostics = Diagnostics(
+            request_id="pool-fallback", enabled=True, stream=io.StringIO()
+        )
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("no pool today"),
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_pipe_probe",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._build_worker_command",
+                return_value=["unpooled-command"],
+            ) as mock_builder,
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                return_value=WORKER_STDOUT.decode(),
+            ),
+        ):
+            html = await fetch_html_via_nodriver(
+                "https://example.com", diagnostics=diagnostics
+            )
+
+        self.assertEqual(html, WORKER_STDOUT.decode())
+        self.assertIsNone(mock_builder.call_args.kwargs["slot"])
+        self.assertIn("pool.error", [entry["stage"] for entry in diagnostics.entries])
+
+    async def test_caller_side_diagnostics_keep_their_order(self) -> None:
+        """Pin the order of the records the loader emits around the worker run
+
+        The extraction moved the timeout parse and its
+        `worker.timeout_budget_parent` record into the runner rather than
+        resolving the budget in the caller, and the reason given was that the
+        record would otherwise change position in the stream. A reason nothing
+        checks is a reason that stops being true, so the caller's own sequence
+        is pinned here and the runner's in `tests/test_worker_runner.py`.
+
+        Order, not membership: every stage below is emitted on any successful
+        diagnostic run, so a set comparison would pass with them shuffled.
+
+        The pipe probe is doubled because it spawns a real interpreter, which is
+        not this lane's business — its *position* is the claim, and that
+        survives the double.
+        """
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        diagnostics = Diagnostics(
+            request_id="emit-order", enabled=True, stream=io.StringIO()
+        )
+
+        with (
+            pinned_environment(),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_pipe_probe",
+                new_callable=AsyncMock,
+            ) as mock_probe,
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                return_value=WORKER_STDOUT.decode(),
+            ),
+        ):
+            await fetch_html_via_nodriver(
+                "https://example.com", diagnostics=diagnostics
+            )
+
+        stages = [entry["stage"] for entry in diagnostics.entries]
+        self.assertEqual(stages, ["worker.diagnostics_state", "worker.spawn"])
+        self.assertTrue(mock_probe.await_count == 1, "the pipe probe did not run")
 
 
 class TestMarkdownSuffixProbe(unittest.IsolatedAsyncioTestCase):

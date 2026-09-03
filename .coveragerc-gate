@@ -22,11 +22,18 @@ relative_files = true
 # Omission is not forgiveness. Each of these must still show non-zero coverage in
 # the observational L3 report, which is where they are actually exercised.
 #
-# `scrape/worker_runner.py` does not exist yet: it is the process-management
-# module extracted from `universal_html.py` by a later step. It is listed now
-# because `omit` works at file granularity, which is precisely what forces that
-# extraction -- the runner cannot be exempted while it still lives inside a
-# module that must stay in the gating scope.
+# `scrape/worker_runner.py` is the process-management module extracted from
+# `universal_html.py`. It was listed here before it existed, because `omit` works
+# at file granularity and that is precisely what forced the extraction -- the
+# runner could not be exempted while it still lived inside a module that must
+# stay in the gating scope.
+#
+# It carries five helpers that ARE hermetically testable and are exempted with
+# it: the tail accumulator, the stderr line consumer and its finaliser, the
+# stream-progress emitter, and the platform launch options. Splitting them into a
+# third module would keep them gated, and was rejected as more structure than a
+# handful of single-consumer helpers earns. The cost is real and is recorded
+# here rather than discovered later: those five are outside the diff gate.
 omit =
     */scrape/nodriver_worker.py
     */scrape/chromium_pool.py

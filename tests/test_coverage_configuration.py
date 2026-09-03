@@ -95,10 +95,10 @@ EXPECTED_PATHS: dict[str, list[str]] = {
 }
 
 # The modules section 10.4 classifies as having no hermetic seam, in the order
-# the document lists them. ``worker_runner.py`` does not exist yet -- it is the
-# process-management module a later step extracts from ``universal_html.py`` --
-# and coverage.py tolerates an ``omit`` pattern that matches nothing, so the list
-# ships as designed.
+# the document lists them. All three now exist: ``worker_runner.py`` was listed
+# here before its extraction landed, on the strength of coverage.py tolerating an
+# ``omit`` pattern that matches nothing, and the extraction has since supplied
+# it.
 EXPECTED_OMIT: list[str] = [
     "*/scrape/nodriver_worker.py",
     "*/scrape/chromium_pool.py",
@@ -225,6 +225,11 @@ UNEXECUTED_REPORT_PATH = f"src/{PACKAGE}/scrape/chromium_pool.py"
 # which point the control would stop controlling anything.
 UNRECOGNISED_OPTION = "Unrecognized option"
 EXEMPT_REPORT_PATH = f"src/{PACKAGE}/scrape/nodriver_worker.py"
+
+# The third exempt module: the parent-side process runner. Asserted alongside the
+# other two from the moment it existed, because "the runner is out of the gating
+# view" is the claim its extraction was made to deliver.
+RUNNER_REPORT_PATH = f"src/{PACKAGE}/scrape/worker_runner.py"
 
 
 def _config_path(name: str) -> Path:
@@ -844,8 +849,10 @@ def test_the_gate_configuration_omits_the_modules_with_no_hermetic_seam(
     failed to produce anything at all would otherwise satisfy every absence
     assertion here.
 
-    ``worker_runner.py`` is deliberately not asserted -- it is the module a later
-    step extracts, and does not exist yet.
+    All three exempt modules are asserted, ``worker_runner.py`` included: it was
+    excluded from this check only while it did not exist, and leaving it out now
+    would let the extraction's whole point -- that the runner leaves the gating
+    view -- go unverified.
 
     Args:
         tmp_path: pytest's per-test temporary directory.
@@ -859,7 +866,7 @@ def test_the_gate_configuration_omits_the_modules_with_no_hermetic_seam(
         f"{PROBE_REPORT_PATH}, so its emptiness -- not the omit list -- is what "
         f"the assertions below would be measuring. Reported: {sorted(files)}"
     )
-    for omitted in (UNEXECUTED_REPORT_PATH, EXEMPT_REPORT_PATH):
+    for omitted in (UNEXECUTED_REPORT_PATH, EXEMPT_REPORT_PATH, RUNNER_REPORT_PATH):
         assert omitted not in files, (
             f"{omitted} appears in a report taken under {GATE_CONFIG}; section "
             "10.4 classifies it as having no hermetic seam and requires it out "
