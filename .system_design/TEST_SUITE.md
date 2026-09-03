@@ -519,7 +519,9 @@ force the answer anyway.
 `tests/child_processes/worker_child.py`, a stdlib-only script spawned by path.
 It is the instrument §5.2's lifecycle group and §5.4's cleanup claims are
 measured with, and `tests/test_worker_child_fixture.py` is its calibration —
-ten cases that drive each flag against a real process.
+twelve cases, ten of which drive the script as a real process; the other two are
+hermetic guards over the file itself (its imports, and that pytest collects
+nothing from the directory).
 
 **Orthogonal flags, not exclusive modes**, applied in a fixed order: spawn a
 descendant, announce readiness, emit requested frames, write stderr garbage,

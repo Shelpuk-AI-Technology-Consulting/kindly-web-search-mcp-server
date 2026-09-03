@@ -31,6 +31,7 @@ import ast
 import contextlib
 import json
 import os
+import pathlib
 import queue
 import signal
 import subprocess
@@ -75,6 +76,16 @@ READINESS_TIMEOUT_SECONDS = 30.0
 #: Ceiling on reaping a child during teardown. Shorter than the readiness budget
 #: because by this point the process has already been signalled.
 REAP_TIMEOUT_SECONDS = 10.0
+
+#: How long the hang case waits to prove the child is *still there*. A liveness
+#: bound, and the inverse of a startup budget: it fails only if the child dies,
+#: never if the machine is slow, so it cannot become the flake generator section
+#: 5.2a warns about. Short because the claim needs no longer.
+HANG_LIVENESS_SECONDS = 0.5
+
+#: Bounded moment teardown gives a child that is already exiting, before
+#: deciding it has to be killed.
+EXIT_GRACE_SECONDS = 0.5
 
 #: The stage the readiness frame carries.
 READY_STAGE = "fixture.ready"
@@ -122,10 +133,14 @@ def _kill_pid(pid: int) -> None:
                 ["taskkill", "/F", "/PID", str(pid)],
                 capture_output=True,
                 check=False,
+                timeout=REAP_TIMEOUT_SECONDS,
             )
         else:
             os.kill(pid, signal.SIGKILL)
-    except OSError:
+    # Bounded and swallowed because this runs in `finally`: a `taskkill` stalled
+    # behind a scanner must fail the case that is already failing, not hang the
+    # suite in teardown.
+    except (OSError, subprocess.TimeoutExpired):
         return
 
 
@@ -136,23 +151,40 @@ def _pid_is_alive(pid: int) -> bool:
         pid: The process to probe.
 
     Returns:
-        ``True`` while the process exists. On POSIX a signal-0 probe also
-        succeeds against a zombie, so callers must reap a direct child before
-        trusting a ``False`` from this function to mean anything.
+        ``True`` while the process is running. "Running" is exact on Windows and
+        on Linux; on other POSIX platforms it degrades to "exists in the process
+        table", because the signal-0 probe alone cannot exclude a zombie and
+        there is no ``/proc`` to consult. A ``False`` for a direct child is only
+        meaningful once that child has been waited for.
     """
     if sys.platform == "win32":
-        completed = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
+        try:
+            completed = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=REAP_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return False
         return str(pid) in completed.stdout
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    # A signal-0 probe succeeds against a zombie, so on Linux the process state
+    # is read as well. Cheap -- one `open` -- and it is what lets the descendant
+    # case mean "running" rather than "exists in the process table". `/proc` is
+    # Linux-only; on other POSIX platforms the probe stays as strong as it was.
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    # Field three, after the comm field, which is parenthesised and may itself
+    # contain spaces -- so split after the last ")" rather than on whitespace.
+    _, _, rest = stat.rpartition(")")
+    return rest.split()[0] != "Z"
 
 
 def _pump_lines(stream: Any, sink: queue.Queue[bytes | None]) -> None:
@@ -194,12 +226,18 @@ class _RunningChild:
         proc: The process handle.
         ready: The decoded readiness frame, once awaited.
         stderr_lines: Queue of complete stderr lines, ``None`` marking the end.
+        argv: The full command the child was spawned with, quoted in failures.
+        ready_line: The raw readiness line, kept so a case can route it through
+            the production decoder along with the frames that followed it.
         stdout_sink: Single-element list receiving the whole stdout payload.
+        killed_while_running: Whether teardown had to kill a child that had not
+            finished, which makes its stdout payload untrustworthy.
     """
 
     proc: subprocess.Popen[bytes]
     stderr_lines: queue.Queue[bytes | None]
     argv: list[str] = field(default_factory=list)
+    ready_line: bytes = b""
     stdout_sink: list[bytes] = field(default_factory=list)
     ready: dict[str, Any] = field(default_factory=dict)
     killed_while_running: bool = False
@@ -262,12 +300,6 @@ class _RunningChild:
 
     def next_stderr_line(self, timeout: float) -> bytes:
         """Take the next complete stderr line, waiting up to ``timeout``.
-
-        Args:
-            timeout: Seconds to wait before giving up.
-
-        Returns:
-            One line, including its terminator.
 
         Waits in slices rather than in one long block so that a child which has
         *died* is reported as dead within a slice instead of after the whole
@@ -379,6 +411,10 @@ def _decode_frame(line: bytes) -> dict[str, Any]:
     Raises:
         AssertionError: If the line is not a frame, or its payload is not a JSON
             object. Both carry the offending line so a failure is readable.
+        json.JSONDecodeError: If the payload will not decode at all. Left to
+            propagate rather than converted, because the caller that matters
+            catches it beside ``AssertionError`` and adds the child's exit code
+            -- this is the path an ``argparse`` usage message takes.
     """
     assert line.startswith(FRAME_PREFIX), f"not a diagnostic frame: {line!r}"
     payload = line[len(FRAME_PREFIX) :].strip()
@@ -468,12 +504,34 @@ def _fixture_child(*args: str) -> Iterator[_RunningChild]:
     try:
         # The readiness frame is the script's first output by contract, so this
         # both waits for startup and asserts that ordering in one step.
+        #
+        # Wrapped in its own handler because the interesting failure is not the
+        # timeout, it is the *chatty death*: a child given an unknown flag has
+        # `argparse` write usage to stderr and then exit 2, so the line arrives,
+        # the exit-code branch in `next_stderr_line` is never reached, and
+        # without this the report would name neither the exit code nor the argv.
         first = child.next_stderr_line(READINESS_TIMEOUT_SECONDS)
-        child.ready = _decode_frame(first)
-        assert child.ready.get("stage") == READY_STAGE, (
-            f"the first stderr frame was {child.ready.get('stage')!r}, "
-            f"not {READY_STAGE!r}"
-        )
+        child.ready_line = first
+        try:
+            child.ready = _decode_frame(first)
+            assert child.ready.get("stage") == READY_STAGE, (
+                f"the first stderr frame was {child.ready.get('stage')!r}, "
+                f"not {READY_STAGE!r}"
+            )
+        except (AssertionError, json.JSONDecodeError) as failure:
+            # A child that has already exited did not merely emit the wrong
+            # frame -- it died talking, which is a different diagnosis. Waited
+            # for briefly first: `argparse` writes its usage and *then* exits,
+            # so polling the instant the line arrives would often report a
+            # still-running child and lose the exit code that names the cause.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=EXIT_GRACE_SECONDS)
+            code = proc.poll()
+            died = "" if code is None else f" The child had exited with code {code}."
+            raise AssertionError(
+                f"the fixture child's first stderr line is not a readiness "
+                f"frame: {failure}{died}{child.captured_report()}"
+            ) from failure
         print(
             f"fixture child readiness: "
             f"{int((time.monotonic() - started) * 1000)} ms (telemetry, not asserted)"
@@ -492,6 +550,12 @@ def _fixture_child(*args: str) -> Iterator[_RunningChild]:
         grandchild = child.grandchild_pid
         if grandchild is not None:
             _kill_pid(grandchild)
+        # A child that is on its way out is given a bounded moment first. Its
+        # stderr reaching end of file does not mean it has exited, so a case
+        # that drained the stream can arrive here microseconds early and record
+        # a kill that did not need to happen.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=EXIT_GRACE_SECONDS)
         # Only signal a child that is still running. A child that has already
         # exited is a zombie until waited for, so its pid is still signallable --
         # and a case asserting the exit code it chose should not have to reason
@@ -503,20 +567,30 @@ def _fixture_child(*args: str) -> Iterator[_RunningChild]:
             proc.wait(timeout=REAP_TIMEOUT_SECONDS)
         for thread in threads:
             thread.join(timeout=REAP_TIMEOUT_SECONDS)
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
+        # Only close a pipe whose pump has finished with it. Reachable when the
+        # reap above timed out and a pump is still inside `read`; closing under
+        # it there would raise in a thread nothing is watching.
+        if all(not thread.is_alive() for thread in threads):
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 def test_the_fixture_child_imports_only_the_standard_library() -> None:
     """Keep the fixture independent of the code it is used to test
 
-    A fixture that imported ``kindly_web_search_mcp_server`` could reproduce a
-    production defect rather than expose it: a frame built by the same encoder
-    the parent decodes proves the two agree with themselves, not that either is
-    right. A third-party import would additionally make the script fail to start
-    in any environment without that package, which is a confusing way to learn a
-    dependency is missing.
+    The reasons are about *startability*, not purity. The runner hands its child
+    a **complete** environment rather than merging one into the parent's, so
+    whether an import of the package resolved would depend on whatever path
+    setup that environment happened to carry; and the suite reaches ``src/``
+    only through the ``sys.path`` insertion in ``tests/conftest.py``, which a
+    script invoked by path never executes. A third-party import would fail the
+    same way, in any environment without that package.
+
+    The argument this does **not** rest on -- and the script's own docstring
+    says so too -- is that importing the code under test lets a defect hide. It
+    is true in general and weak here, because the decoder case pins these frames
+    to the production decoder anyway.
 
     Asserted over the module's own syntax tree rather than by running it, so the
     check holds for a branch that never executes.
@@ -650,11 +724,19 @@ def test_the_real_decoder_accepts_every_frame_the_fixture_emits() -> None:
     from every downstream assertion rather than failing one.
     """
     with _fixture_child("--emit-frame", "alpha") as child:
-        lines = child.drain_stderr(READINESS_TIMEOUT_SECONDS)
+        # The readiness line is put back at the front. The spawn helper consumes
+        # it before yielding, and it is the frame with the most structure to get
+        # wrong -- a nested object holding an int pid beside a JSON `null` -- as
+        # well as the one a reaping harness has to read. Leaving it out would
+        # check the decoder against the fixture's simplest output only.
+        lines = [child.ready_line, *child.drain_stderr(READINESS_TIMEOUT_SECONDS)]
 
     state = _route_through_real_decoder(lines)
 
-    assert [entry["stage"] for entry in state.worker_entries] == ["alpha"]
+    assert [entry["stage"] for entry in state.worker_entries] == [
+        READY_STAGE,
+        "alpha",
+    ]
     assert state.parse_errors == []
     assert state.tail == ""
 
@@ -680,7 +762,10 @@ def test_writes_the_requested_payload_to_stdout_unmodified() -> None:
         # to wait.
         assert child.wait_for_exit() == 0
 
-    assert child.stdout_bytes().decode("utf-8") == WORKER_STDOUT
+    # Compared as bytes, which is the literal claim. Decoding first would turn a
+    # payload the script had mangled into a `UnicodeDecodeError` from the test's
+    # own comparison rather than into a readable inequality.
+    assert child.stdout_bytes() == WORKER_STDOUT.encode("utf-8")
 
 
 @pytest.mark.subsystem
@@ -740,11 +825,23 @@ def test_hang_mode_outlives_its_own_startup_and_dies_when_killed() -> None:
     as a failure here.
     """
     with _fixture_child("--hang") as child:
-        assert child.proc.poll() is None, "the hanging child exited on its own"
+        # A liveness bound, not a startup budget. `poll()` alone runs
+        # microseconds after the readiness line is read, while the child's
+        # interpreter may still be shutting down, so it passes whether or not
+        # the child hangs -- measured: with `--hang` turned into a no-op the
+        # whole module still passed, five runs out of five. Waiting instead
+        # inverts the claim: this can only fail if the child *died*, which is
+        # the thing under test, so it is not the fixed startup threshold section
+        # 5.2a forbids.
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.proc.wait(timeout=HANG_LIVENESS_SECONDS)
+
         _kill_pid(child.proc.pid)
         code = child.wait_for_exit()
 
-    assert code is not None
+    # Not `is not None`, which `Popen.wait` guarantees and so asserts nothing:
+    # a killed process reports `-SIGKILL` on POSIX and taskkill's 1 on Windows.
+    assert code != 0
 
 
 @pytest.mark.subsystem
@@ -787,16 +884,79 @@ def test_spawns_a_live_descendant_and_reports_its_pid() -> None:
 
         assert isinstance(grandchild, int)
         assert grandchild != child.proc.pid
+
+        # Observed after a bound, not at once, and the bound is spent on the
+        # child's own liveness so nothing here is a bare sleep. Checking
+        # immediately is too early to mean anything: a descendant replaced by
+        # `python -c pass` is still genuinely running for its first few tens of
+        # milliseconds, so the probe answers "alive" truthfully and the case
+        # proves nothing. Measured -- that mutation survived an immediate probe
+        # and fails this one.
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.proc.wait(timeout=HANG_LIVENESS_SECONDS)
+
         assert _pid_is_alive(grandchild), (
-            f"the readiness frame reported pid {grandchild}, which is not running"
+            f"the readiness frame reported pid {grandchild}, which is not a "
+            f"running process"
         )
 
-    # Triage of a mutant this case cannot kill. Replacing the descendant's sleep
-    # with `pass` -- so it exits at once -- leaves every assertion above passing.
-    # Measured: it survives. The reason is not a gap in the assertions but in
-    # what a pid can be asked on POSIX: the descendant is a child of the fixture
-    # child, which hangs and never reaps it, so it becomes a zombie, and a
-    # signal-0 probe succeeds against a zombie. Telling "running" from "exited
-    # but unreaped" portably needs a process-table library this suite does not
-    # depend on. The claim that survives is the one asserted: the reported pid
-    # names a process that exists and is not the child itself.
+    # What "running" costs, and where it still is not free. A signal-0 probe
+    # succeeds against a *zombie*, and the descendant is a child of a fixture
+    # child that hangs and never reaps it -- so on POSIX the obvious probe
+    # cannot tell "running" from "exited but unreaped". `_pid_is_alive` reads
+    # `/proc/<pid>/stat` on Linux to close that, which is one `open` and no new
+    # dependency. It is not closed on macOS or the BSDs, where there is no
+    # `/proc` and the probe falls back to the weaker claim; a process-table
+    # library would be the fix, and this suite does not carry one.
+
+
+@pytest.mark.subsystem
+def test_a_child_that_dies_talking_is_reported_with_its_exit_code() -> None:
+    """Diagnose a bad command line as one, not as a startup timeout
+
+    The most common failure in this module is not a slow machine, it is a flag
+    the script does not have -- because each case is written *before* the flag it
+    drives, so it meets ``argparse`` first. ``argparse`` writes usage to stderr
+    and then exits 2, which is the awkward shape: a line *does* arrive, so the
+    poll's exit-code branch never runs, and without the readiness decode being
+    guarded the report would name neither the exit code nor the command.
+
+    This is the case that would have been missing when the behaviour it names
+    was added, so it is written against the real thing: an unknown flag.
+    """
+    with pytest.raises(AssertionError) as excinfo, _fixture_child("--no-such-flag"):
+        pass
+
+    message = str(excinfo.value)
+    assert "exited with code 2" in message
+    assert "--no-such-flag" in message
+    assert "usage:" in message
+
+
+@pytest.mark.subsystem
+def test_a_failure_inside_the_block_carries_the_childs_own_output() -> None:
+    """Attach what the child said to a failure about what the child did
+
+    Section 5.4 requires child output to be captured and attached on failure.
+    The child is a separate process, so pytest shows nothing of it: without this
+    every failure here reads "the child did not do what was expected" with no
+    way to see what it did instead.
+
+    The failure is forced rather than provoked, because the claim is about the
+    reporting path and not about any particular way of reaching it. Asserting
+    that the original message survives matters as much as the attachment --
+    wrapping an assertion is an easy way to lose the sentence that named the
+    problem.
+    """
+    with (
+        pytest.raises(AssertionError) as excinfo,
+        _fixture_child("--emit-frame", "alpha", "--hang"),
+    ):
+        raise AssertionError("the original complaint")
+
+    message = str(excinfo.value)
+    assert "the original complaint" in message
+    assert "argv:" in message
+    # The child's real frame, not a placeholder: this is what distinguishes an
+    # attachment that captured the stream from one that captured an empty one.
+    assert "alpha" in message

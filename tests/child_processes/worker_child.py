@@ -86,8 +86,13 @@ GARBAGE_PLAIN_LINE = "chrome: ordinary noise on stderr"
 #: on a backstop rather than on behaviour.
 MAX_LIFETIME_SECONDS = 300.0
 
-#: Length of one sleep slice. Short because a single long ``time.sleep`` is not
-#: interruptible by a console control event on Windows.
+#: Length of one sleep slice. A deadline loop needs a granularity, and this is
+#: it -- nothing more. An earlier draft justified it as making the sleep
+#: interruptible on Windows, which is not true of any Python this project
+#: supports: CPython's Windows ``time.sleep`` waits on the SIGINT event and is
+#: already interrupted by Ctrl-C. Nothing here sends a console control event
+#: either; the reaper uses ``taskkill /F`` and ``SIGKILL``, neither of which a
+#: sleep can delay.
 _SLEEP_SLICE_SECONDS = 0.25
 
 #: Monotonic clock origin for the ``elapsed_ms`` field, seeded at import so the
@@ -199,8 +204,9 @@ def _write_stderr_garbage() -> None:
         GARBAGE_PLAIN_LINE.encode("utf-8"),
         (FRAME_PREFIX + '{"stage": "truncated"').encode("utf-8"),
         (FRAME_PREFIX + '"a string, not an object"').encode("utf-8"),
-        # A lone continuation byte and a bare 0xFF: neither can begin a valid
-        # UTF-8 sequence, so a strict decode raises and a replacing one does not.
+        # A bare 0xFF followed by a lone continuation byte: neither can begin a
+        # valid UTF-8 sequence, so a strict decode raises and a replacing one
+        # does not.
         b"\xff\x80 undecodable browser noise",
     ]
     for line in lines:
