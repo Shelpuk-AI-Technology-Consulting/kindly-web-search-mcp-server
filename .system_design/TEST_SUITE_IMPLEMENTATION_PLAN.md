@@ -1097,7 +1097,15 @@ duplicating tests or touching the same files.
   the range is ignored; **a slot released twice is not queued twice** — `release`
   rejects or de-duplicates a slot already in the queue, falsified by releasing one
   slot twice and observing two concurrent acquires hand back the same object.
-  Closes the repo's largest untested module.
+  Closes the repo's largest **still** untested module — one call site left it
+  ahead of this step. `tests/test_chromium_pool_slot_start.py` covers
+  `ChromiumSlot._start`'s snap DevTools budget, both polarities, hermetically:
+  it landed with the snap-detection fix because that fix owed both of the
+  detector's call sites a case. **It belongs to this step now.** Extend it rather
+  than opening a second module over the same coroutine, and note what it
+  deliberately leaves — its own docstring lists port selection, profile
+  directories, the slot health probe and the pool's queueing, every one of which
+  is this step's.
 
 ---
 

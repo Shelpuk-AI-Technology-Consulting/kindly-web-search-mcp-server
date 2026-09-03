@@ -91,6 +91,8 @@ specific:
   `_emit_worker_heartbeat`, `_terminate_process_tree`. The 3 stale loader tests
   target this.
 - **All of `scrape/chromium_pool.py`** (372 lines) — no test file references it.
+  *(Since narrowed: `tests/test_chromium_pool_slot_start.py` covers
+  `ChromiumSlot._start`'s snap DevTools budget. The rest of the module stands.)*
 
 Working and not to be disturbed: 15 of 18 tests in
 `test_universal_html_loader.py` cover the Markdown-suffix probe path end to end,
@@ -227,6 +229,16 @@ differently depending on where the developer's Chromium came from — and
 POSIX. A case that pins only the first asserts one answer on Linux and its
 opposite on Windows.
 
+The guard is spelled `os.name != "posix"` and not `sys.platform` or a Linux test,
+on two separate grounds. POSIX rather than Linux: macOS has no snap either, but a
+`/snap/` path there classified as snap before the guard existed and
+misclassifying one costs only a longer timeout — narrowing it would be a
+behaviour change made for tidiness. `os.name` rather than `sys.platform`: the
+convention this repository already records is that only a body touching
+platform-exclusive stdlib needs the `sys.platform` spelling, because mypy narrows
+on it and then declines to check the branch it calls unreachable; this body is
+ordinary and both runs should read it.
+
 The function used to answer *wrongly* on both platforms, for two different
 measured reasons. One was a defect and is fixed; the other was correct and now
 rests on an explicit guard instead of an accident.
@@ -249,6 +261,18 @@ rests on an explicit guard instead of an accident.
   **fixed** — the marker is tested on the path as given, then on the resolved
   path. Resolving still earns its place: a browser reached by an ordinary path
   can be a snap package underneath, and only the resolved form says so.
+
+**The executable path is never `realpath`-resolved before launch, and must not
+be.** `_resolve_browser_executable_path` returns the path as configured or as
+found on `PATH`; only `_is_snap_browser` resolves, and only to answer a question.
+That distinction is load-bearing: `/usr/bin/snap` dispatches on the *name the
+binary was invoked as*, and every `/snap/bin/<app>` is a symlink to it — so
+launching the resolved path starts the snap CLI and prints its help, not
+Chromium. Confirmed on snapd's own forum
+(`forum.snapcraft.io/t/symlinks-and-snap-bin-structure/16532`), where a
+maintainer states the dispatch rule outright. Stated here because the variable
+the launcher reads is called `resolved_browser_executable_path` and this section
+now puts `os.path.realpath` in the reader's mind two hundred lines above it.
 
 E1-6 hit the first of these and repaired the affected test by injecting the
 classification. The path-shape wiring it gave up has since been restored at both
@@ -2063,10 +2087,14 @@ would actually have caught this project's worst gap, and the first draft of this
 section did not have it.
 
 By default coverage.py reports only files it *observed being executed*. A module
-no test ever imports is absent from the report entirely — so
-`scrape/chromium_pool.py`, 372 lines with no test file, would contribute nothing
-and drag nothing down. It would be invisible rather than visibly at zero. Setting
-`source_pkgs` is what makes coverage.py report never-executed files.
+a given run never imports is absent from the report entirely — so
+`scrape/chromium_pool.py`, 372 lines, would contribute nothing and drag nothing
+down under any run that does not reach it. It would be invisible rather than
+visibly at zero. Setting `source_pkgs` is what makes coverage.py report
+never-executed files. (That module is no longer wholly untested — the snap
+DevTools budget of `ChromiumSlot._start` is covered — but the guard's control
+uses a standalone probe script that imports one unrelated module, so the
+observable is unaffected.)
 
 Three configuration files, because the jobs genuinely need different behaviour and
 an earlier draft described settings that were not in the file it displayed:

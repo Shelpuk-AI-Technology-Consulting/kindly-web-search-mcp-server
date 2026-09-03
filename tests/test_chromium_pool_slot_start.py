@@ -23,11 +23,11 @@ helper below.
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -80,12 +80,10 @@ SYSTEM_BROWSER_PATH = "/usr/bin/chromium"
 def pinned_ambient_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin every ambient input these cases do not vary.
 
-    ``os.name`` is pinned because `_is_snap_browser` refuses to classify
-    anything as snap away from POSIX -- snap is a Linux packaging format -- so a
-    case that left it to the host would assert one budget on Linux and the other
-    on Windows. That is not hypothetical: a case elsewhere in this suite did
-    exactly that and went red on the first Windows run this repository ever
-    took. On Linux the pin changes nothing and is applied anyway.
+    The detector's own two ambient inputs are **not** pinned here: they are
+    pinned around its single call, by :func:`_pinned_detector` below, so that
+    nothing else in the slot's startup sees a rewritten ``os.name`` or
+    ``os.path.realpath``.
 
     :func:`shutil.which` is pinned to "nothing installed" although both cases
     set an explicit executable variable and never reach the ``PATH`` probe. A
@@ -107,8 +105,45 @@ def pinned_ambient_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
         "KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER", SNAP_BACKOFF_MULTIPLIER
     )
-    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
+
+
+def _pinned_detector(realpath_targets: dict[str, str]) -> Any:
+    """Build a `_is_snap_browser` double that runs the **real** one under pinned inputs.
+
+    The classification these cases assert has to be *derived* from the path --
+    that is the wiring they exist to prove -- but both of the detector's ambient
+    inputs answer differently per machine and per platform: ``os.path.realpath``
+    depends on where the developer's Chromium came from, and ``os.name`` decides
+    whether anything may classify as snap at all. Pinning either for the whole
+    slot start would be a process-global reaching well past the subject, and the
+    real :class:`tempfile.TemporaryDirectory` runs inside that window. So the
+    pins are scoped to the detector's own call.
+
+    Autospecced like the other doubles here, so a production change calling the
+    detector with the wrong arity raises rather than being quietly accepted.
+
+    Args:
+        realpath_targets: What ``os.path.realpath`` should answer, by path. A
+            path absent from the mapping resolves to itself, which is what the
+            real call does for an executable that is not a symlink.
+
+    Returns:
+        An autospec double of `_is_snap_browser` returning the real answer.
+    """
+    real_detector = worker._is_snap_browser
+
+    def _realpath(path: str, *_args: object, **_kwargs: object) -> str:
+        return realpath_targets.get(path, path)
+
+    def _classify(executable_path: str) -> bool:
+        with (
+            patch.object(worker.os, "name", "posix"),
+            patch.object(worker.os.path, "realpath", _realpath),
+        ):
+            return real_detector(executable_path)
+
+    return create_autospec(worker._is_snap_browser, side_effect=_classify)
 
 
 async def _devtools_budget_for(
@@ -123,26 +158,27 @@ async def _devtools_budget_for(
     than by doubling the resolver, so the real resolution chain runs and the
     case's subject stays the classification rather than a stand-in for it.
 
+    Four seams are installed, and they are what keeps this a unit test: the port
+    picker would bind a socket, `_launch_chromium` would spawn a real Chromium,
+    `_wait_for_devtools_ready` would speak HTTP to it, and the detector's two
+    ambient inputs would otherwise come from the host. The profile directory is
+    left real and removed again below.
+
     Args:
-        monkeypatch: pytest fixture used to set the executable variable and pin
-            ``os.path.realpath``.
+        monkeypatch: pytest fixture used to set the executable variable.
         executable_path: The browser path the slot should start.
-        realpath_targets: What ``os.path.realpath`` answers, by path. A path
-            absent from the mapping resolves to itself, which is what the real
-            call does for an executable that is not a symlink.
+        realpath_targets: What ``os.path.realpath`` answers inside the detector,
+            by path.
 
     Returns:
         The ``timeout_seconds`` `_wait_for_devtools_ready` was called with.
     """
     monkeypatch.setenv("KINDLY_BROWSER_EXECUTABLE_PATH", executable_path)
 
-    def _realpath(path: str, *_args: object, **_kwargs: object) -> str:
-        return realpath_targets.get(path, path)
-
-    monkeypatch.setattr(os.path, "realpath", _realpath)
-
     slot = chromium_pool.ChromiumSlot(slot_id=0)
+    detector = _pinned_detector(realpath_targets)
     with (
+        patch.object(worker, "_is_snap_browser", detector),
         patch.object(worker, "_launch_chromium", autospec=True),
         patch.object(worker, "_wait_for_devtools_ready", autospec=True) as wait_ready,
         patch.object(chromium_pool, "_pick_port", autospec=True, return_value=9222),
@@ -156,6 +192,9 @@ async def _devtools_budget_for(
                 slot.user_data_dir.cleanup()
                 slot.user_data_dir = None
 
+    # Asked once, and about the path the slot resolved -- not about some default
+    # reached for elsewhere.
+    detector.assert_called_once_with(executable_path)
     return float(wait_ready.call_args.kwargs["timeout_seconds"])
 
 
@@ -170,9 +209,10 @@ async def test_the_snap_launcher_path_lengthens_the_pooled_devtools_budget(
     before testing for the marker threw away the evidence. On the shipped
     defaults that is 12 s where 36 s was intended.
 
-    The classification is **derived from the path**, not injected. Both of its
-    ambient inputs are pinned -- ``os.name`` by the fixture and
-    ``os.path.realpath`` here -- so the case asserts one constant everywhere.
+    The classification is **derived from the path**, not injected: both of the
+    detector's ambient inputs are pinned around its own call, so the case
+    asserts one constant everywhere without rewriting them for the rest of the
+    slot's startup.
 
     Args:
         monkeypatch: pytest fixture used to pin this case's inputs.

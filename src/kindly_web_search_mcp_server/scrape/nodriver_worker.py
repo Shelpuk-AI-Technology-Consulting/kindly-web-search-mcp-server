@@ -368,6 +368,11 @@ def _is_snap_browser(executable_path: str) -> bool:
     # Snap is a Linux packaging format. On Windows a single leading slash is not
     # absolute, so the marker below would match a path that no snap runtime
     # could ever have produced; refuse the whole question there instead.
+    # POSIX rather than Linux deliberately: macOS has no snap either, but it
+    # answered the marker before this guard existed and a misclassification there
+    # only lengthens a timeout, so narrowing it would be a behaviour change made
+    # for tidiness. `os.name`, not `sys.platform`, because the body is ordinary
+    # stdlib and both mypy runs should read it.
     if os.name != "posix":
         return False
     # The marker is tested on the path AS GIVEN first, and that ordering is the

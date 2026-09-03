@@ -861,6 +861,42 @@ def test_no_path_is_classified_as_snap_away_from_posix(
     assert _is_snap_browser(UBUNTU_SNAP_LAUNCHER) is False
 
 
+def test_a_snap_path_is_still_classified_as_snap_when_it_cannot_be_resolved(
+    posix_platform: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Answer from the path alone when ``realpath`` fails on a ``/snap/`` path
+
+    The ordering case. The marker is tested on the path as given **before** the
+    resolver is called, and this is the only case that can tell that ordering
+    from the tidier-looking arrangement a future reader will reach for:
+
+    .. code-block:: python
+
+        try:
+            resolved = os.path.realpath(executable_path)
+        except Exception:
+            return False
+        return "/snap/" in executable_path or "/snap/" in resolved
+
+    That version satisfies every other case in this module and at both call
+    sites, and answers ``False`` here -- where the shipped function and the
+    repaired one both answer ``True``. It is a live, non-equivalent mutation of
+    the one property this repair exists to establish, so it gets a case rather
+    than a comment.
+
+    Args:
+        posix_platform: fixture pinning ``os.name``.
+        monkeypatch: pytest fixture used to make ``os.path.realpath`` fail.
+    """
+    def _raising(_path: str, *_args: object, **_kwargs: object) -> str:
+        raise OSError("filesystem is unavailable")
+
+    monkeypatch.setattr(os.path, "realpath", _raising)
+
+    assert _is_snap_browser(UBUNTU_SNAP_LAUNCHER) is True
+
+
 def test_a_path_that_cannot_be_resolved_is_not_classified_as_snap(
     posix_platform: None,
     monkeypatch: pytest.MonkeyPatch,

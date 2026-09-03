@@ -215,9 +215,18 @@ INHERITED_COVERAGE_STARTUP_VARIABLES = (
 PROBE_MODULE = f"{PACKAGE}.utils.logging"
 PROBE_REPORT_PATH = f"src/{PACKAGE}/utils/logging.py"
 
-# The module with no test file anywhere -- 213 statements, and the concrete gap
-# that made control 1 necessary. It is the observable for both the whole-package
-# claim and the exemption claim.
+# The module that made control 1 necessary -- 213 statements, and the observable
+# for both the whole-package claim and the exemption claim.
+#
+# It was chosen when nothing in the suite referenced it at all. That is no longer
+# true: `tests/test_chromium_pool_slot_start.py` imports it and drives
+# `ChromiumSlot._start`. The choice still holds, and for a reason that does not
+# depend on the module staying untested: control 1 runs a **standalone probe
+# script** that imports one unrelated module, so nothing this suite does reaches
+# this file inside that probe. What the module has to be is unimported *by the
+# probe*, not unimported by the repository -- stated here because the original
+# phrasing said the latter and would have gone quietly false without any test
+# noticing.
 UNEXECUTED_REPORT_PATH = f"src/{PACKAGE}/scrape/chromium_pool.py"
 
 # The opening of coverage.py's warning for an option it does not know. Spelled
@@ -803,9 +812,11 @@ def test_the_base_configuration_reports_an_unexecuted_module_at_zero(
 
     This is control 1, and the one observable that proves ``source_pkgs`` is
     doing its job. Under coverage.py's defaults the report contains only files
-    that were observed executing, so ``chromium_pool.py`` -- which no test
-    imports -- would be absent from the report rather than visibly uncovered,
-    and would drag nothing down.
+    that were observed executing, so ``chromium_pool.py`` -- which the probe
+    script below never imports -- would be absent from the report rather than
+    visibly uncovered, and would drag nothing down. See
+    :data:`UNEXECUTED_REPORT_PATH` for why "the probe never imports it" is the
+    property that matters here, and not "no test imports it".
 
     ``num_statements`` is asserted alongside the zero because a module reported
     with no statements at all would satisfy ``covered_lines == 0`` while proving
