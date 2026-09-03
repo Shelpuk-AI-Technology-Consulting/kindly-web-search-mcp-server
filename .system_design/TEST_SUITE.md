@@ -604,9 +604,12 @@ where a file was put. `tests/fixture_servers/` is named for what it holds, match
 **Standard library only, and guarded** — for two reasons, neither of which is
 purity. **Circularity:** this module is the instrument that pins the SearXNG
 contract, and an instrument importing `kindly_web_search_mcp_server` would pin
-that contract against the parser under test. **Startability:** it is imported by
-a test in the `package` job, where the only third-party packages present are the
-wheel's own dependencies.
+that contract against the parser under test. **Startability:** it is written to be
+imported by a test in the `package` job — which **does not exist yet**; E3-5 and
+E8-1 build it — where the only third-party packages present will be the wheel's
+own dependencies. The rule is enforced now, before that job exists, because a
+dependency added in the meantime would be found by whoever builds the job rather
+than by whoever added it.
 
 The argument this does **not** rest on, and E3-1's equivalent section makes the
 same distinction, is that an `httpx` import would break the `package` job. It
@@ -614,8 +617,8 @@ would not: `httpx` is a runtime dependency of the wheel and resolves from
 `site-packages` there. The guard reads this file's syntax tree rather than
 importing it, so a branch that never executes is covered too.
 
-**How the `package` job reaches it.** `tests/__init__.py` makes `tests` a regular
-package, so pytest's prepend import mode puts the **checkout root** on
+**How the `package` job will reach it**, recorded now so its author does not have
+to re-derive it. `tests/__init__.py` makes `tests` a regular package, so pytest's prepend import mode puts the **checkout root** on
 `sys.path` — not `<checkout>/src` — and `tests.fixture_servers.searxng_contract`
 resolves from there. Because this project is `src`-layout, the checkout root
 exposes no `kindly_web_search_mcp_server`, so that path does not endanger §6.1's
@@ -681,10 +684,12 @@ The rows below are **driven**, not described: the guard parses this table and
 issues each request against a live instance, so a row nobody implemented, and a
 documented answer that later changed, both turn CI red. It also pins the row
 *count*, because pinning each member without pinning the set lets a deleted row
-shrink the sweep to green — measured, and it reported 16 passed.
+shrink the sweep to green — re-measured against the module as it stands: 17 of
+its 18 cases pass and nothing fails. With the count pinned the same deletion
+fails at *collection*, naming the number of rows it found.
 
 What it does **not** catch, also measured: a route with no row at all. Adding an
-undocumented `/healthz` returning 200 left the module green. The guard compares
+undocumented `/healthz` returning 200 leaves the module at its full 18 passed. The guard compares
 the fixture against the table row by row and cannot see a behaviour the table
 never mentions, so a new route has to be documented deliberately.
 
@@ -757,8 +762,16 @@ answered, and appends under a lock. Recording *after* the write would let a
 client that has already been answered read the log before the handler thread
 appended to it — a race the caller cannot see and cannot work around. This is
 the same shape as E3-1's readiness-before-payload defect, which cost three
-failures in forty runs before it was found; the ordering is stated here so a
-later reader does not tidy it away.
+failures in forty runs before it was found.
+
+**No test holds it, and that is recorded rather than implied.** Moving the record
+after the write leaves the calibration module at its full 18 passed, 5 runs out
+of 5 — the window between a client's last read and the handler thread's next
+statement is too narrow for a synchronous case to land in, and closing it
+deterministically would need a fixture knob whose only user is that test. The
+ordering is held by this paragraph, by the comment on `do_GET`, and by the triage
+in the docstring of the case that would otherwise have to kill it. The lock is
+undriven for the same reason: no case here issues two concurrent requests.
 That is the observation §6.1's provider-selection claim needs: an empty result
 list looks identical whether SearXNG served it or whether nothing was called at
 all, and the diagnostics frame alone says which provider was *selected*, not
@@ -897,10 +910,20 @@ covers packaging and entrypoints, which nothing else touches.
 `monkeypatch` cannot reach it and there is no provider-injection API. The
 mechanism is **configuration, not patching**: stand up a local HTTP server that
 implements the SearXNG response contract — **§5.2b, built in E3-2**, not a second
-implementation — and start the child with
-`SEARXNG_BASE_URL` pointing at it and `SERPER_API_KEY`, `SERPBASE_API_KEY` and
-`TAVILY_API_KEY` cleared, so SearXNG wins provider selection. `search_searxng` is
-configured entirely by URL, which makes it the natural seam.
+implementation — and start the child with `SEARXNG_BASE_URL` pointing at it.
+`search_searxng` is configured entirely by URL, which makes it the natural seam.
+
+**Give the child a cleared environment, not one with three variables deleted.**
+Earlier drafts of this section named `SERPER_API_KEY`, `SERPBASE_API_KEY` and
+`TAVILY_API_KEY`; E3-2 measured that prescription to be insufficient, and it is
+corrected here rather than left for its next reader to rediscover. It misses two
+provider variables that already exist (`SOFYA_API_KEY`, `YDC_API_KEY` — the list
+belongs to `PROVIDERS`, not to prose), every provider added later, the eight
+`SEARXNG_*` tuning variables `search_searxng` reads at the point of use, and —
+decisively — the proxy variables, because production leaves `trust_env` at its
+default and an ambient `ALL_PROXY` routes a request aimed at loopback through a
+proxy. §5.2b carries the measurement. Build the child's environment additively:
+start from nothing and add what the run needs.
 
 **Do not add a production "test provider" hook.** An unrestricted injection point
 in shipped code is a larger risk than the test is worth, on a server that is

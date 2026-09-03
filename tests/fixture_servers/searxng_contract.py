@@ -16,9 +16,11 @@ constraint on production.
 first is **circularity**: this module is the instrument that pins the SearXNG
 contract, and an instrument that imported ``kindly_web_search_mcp_server`` would
 be pinning that contract against the parser under test. The second is
-**startability**: it is imported by a test in the job that installs the built
-wheel into a fresh virtual environment, where the only third-party packages
-present are the wheel's own dependencies.
+**startability**: it is written to be imported by a test in the job that installs
+the built wheel into a fresh virtual environment, where the only third-party
+packages present will be the wheel's own dependencies. That job does not exist
+yet. The rule is enforced now anyway, because a dependency added in the meantime
+would be found by whoever builds the job rather than by whoever added it.
 
 The argument this deliberately does **not** rest on is that an ``httpx`` import
 would break that job. It would not — ``httpx`` is a runtime dependency of the

@@ -270,10 +270,12 @@ def _documented_requests() -> list[tuple[str, int, str]]:
         _design_section(),
         re.MULTILINE,
     )
-    # The COUNT, not just non-emptiness. Measured: with only `assert rows`,
-    # deleting the `/elsewhere` row from the design document left this module
-    # reporting 16 passed -- the sweep silently shrank instead of failing, which
-    # is precisely the cheap escape the reviewer rule file names for this guard.
+    # The COUNT, not just non-emptiness. Re-measured against this module as it
+    # stands: with only `assert rows`, deleting the `/elsewhere` row from the
+    # design document leaves it reporting 17 passed -- the sweep silently shrinks
+    # instead of failing, which is precisely the cheap escape the reviewer rule
+    # file names for this guard. With the count pinned the same deletion fails at
+    # *collection* ("parsed 4 request rows"), which is louder still.
     assert len(rows) == DOCUMENTED_REQUEST_COUNT, (
         f"parsed {len(rows)} request rows out of {DESIGN_SECTION_HEADING}, "
         f"expected {DOCUMENTED_REQUEST_COUNT}"
@@ -293,7 +295,8 @@ def test_every_documented_request_gets_its_documented_status(
     and so does a documented answer that later changed.
 
     **What it does not catch, measured:** a route with no row at all. Adding an
-    undocumented ``/healthz`` returning 200 left this module reporting 17 passed.
+    undocumented ``/healthz`` returning 200 leaves this module reporting 18
+    passed -- its full count, so nothing anywhere notices.
     The guard compares the fixture against the table row by row; it cannot see a
     behaviour the table never mentions. Said plainly here because the earlier
     wording claimed otherwise, and a reader who believed it would skip
@@ -405,8 +408,8 @@ def test_it_records_the_searches_it_answered() -> None:
     **One mutant survives here, and it is triaged rather than left silent.** The
     handler records *before* it writes any response byte, which is what makes
     "the client got a response" imply "the request is in the log". Moving the
-    call after the write leaves this module reporting 17 passed -- measured, 5
-    runs out of 5. The window between a client's last read and a handler thread's
+    call after the write leaves this module reporting 18 passed -- its full count,
+    re-measured 5 runs out of 5. The window between a client's last read and a handler thread's
     next statement is too narrow for a synchronous case to land in, and closing
     it deterministically would need a fixture knob whose only user is this test.
     So the ordering is held by the comment on ``do_GET`` and by §5.2b, not by an
