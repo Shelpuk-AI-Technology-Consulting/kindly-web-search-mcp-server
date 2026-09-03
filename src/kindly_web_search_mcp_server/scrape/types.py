@@ -1,19 +1,21 @@
 """Type-only declarations for the worker-process seam.
 
-This module holds the structural contract between ``universal_html.py`` and the
+This module holds the structural contract between ``worker_runner.py`` and the
 child process it spawns. It declares no behaviour and imports nothing from this
 package, so importing it can never pull in the scraping stack.
 
-It lives under ``src/`` rather than under ``tests/`` for one reason: a later step
-annotates production code with :class:`WorkerProcess`, and production must never
-import from the test tree. Declaring it here also means there is exactly one
-definition of the shape, which is the drift this module exists to prevent — a
-Protocol declared in a test module would be the second.
+It lives under ``src/`` rather than under ``tests/`` for one reason:
+``worker_runner._run_worker_command`` annotates the process it spawns with
+:class:`WorkerProcess`, and production must never import from the test tree.
+Declaring it here also means there is exactly one definition of the shape, which
+is the drift this module exists to prevent — a Protocol declared in a test module
+would be the second.
 
 The name follows the convention for a type-only module. It shadows the stdlib
-``types`` only for absolute-import resolution inside this package, which this
-project uses throughout, and it is unrelated to the type-check CI job that
-shares the word.
+``types`` only within this package, and it is unrelated to the type-check CI job
+that shares the word. Its one production consumer imports it relatively
+(``from .types import WorkerProcess``), matching that module's other
+intra-package import; measured, nothing depends on which spelling is used.
 """
 
 from __future__ import annotations
@@ -24,11 +26,18 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class WorkerProcess(Protocol):
-    """The surface ``fetch_html_via_nodriver`` consumes from its child process.
+    """The surface ``worker_runner._run_worker_command`` consumes from its child.
 
-    Exactly the seven members production reads, and no more. The set is asserted
-    against a literal in :mod:`tests.test_worker_process_protocol`, so padding it
-    with a member nothing consumes fails the suite.
+    Exactly the seven members production reads, and no more. Two independent
+    checks hold that now. A literal in :mod:`tests.test_worker_process_protocol`
+    fails if this Protocol is padded with a member nothing consumes; and the
+    annotation on the spawned process fails if production reads an eighth member
+    or loses one of the seven. The second direction was open until the runner
+    was annotated, and until then the literal was the only link.
+
+    The consumer is no longer ``fetch_html_via_nodriver``: the runner extraction
+    took the spawn, the stream reads and the exit status out of it, and that
+    function now touches no process at all.
 
     ``@runtime_checkable`` is required for the *presence* half of the contract:
     without it ``isinstance`` raises ``TypeError`` rather than answering. It is
@@ -43,9 +52,10 @@ class WorkerProcess(Protocol):
     :class:`asyncio.subprocess.Process` does *not* satisfy this Protocol — mypy
     rejects it with "Protocol member WorkerProcess.returncode expected settable
     variable, got read-only attribute", because ``returncode`` is a read-only
-    property on the real type. A later step annotates production code with this
-    Protocol and passes it a real process, so the attribute spelling would have
-    made that step impossible. Do not "simplify" these back to annotations.
+    property on the real type. ``worker_runner._run_worker_command`` annotates
+    the process it spawns with this Protocol and is handed a real one, so the
+    attribute spelling would have made that annotation impossible. Do not
+    "simplify" these back to annotations.
 
     The cost, recorded so it is not mistaken for an oversight: read-only members
     are covariant, so a double declaring ``returncode: int`` — one that can never
@@ -80,6 +90,13 @@ class WorkerProcess(Protocol):
     @property
     def pid(self) -> int:
         """The child's process id.
+
+        Declared ``int`` rather than ``int | None``, and production was brought
+        into line rather than the other way round: ``_terminate_process_tree``
+        used to guard ``proc.pid is not None``, which this declaration makes
+        dead for every implementer. Measured on the real type as well —
+        ``asyncio.subprocess.Process`` assigns ``self.pid`` once in ``__init__``
+        from ``transport.get_pid()`` and never clears it.
 
         Returns:
             The operating-system process id, used to kill the process tree.
