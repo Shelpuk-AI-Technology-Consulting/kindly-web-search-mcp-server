@@ -629,6 +629,22 @@ it carries no X-number.
   **zero results** (§6.1). *Verify:* `search_searxng` parses its responses; with
   `SEARXNG_BASE_URL` pointed at it and higher-priority provider variables cleared,
   `search_web` selects SearXNG; zero-result mode returns `[]`.
+
+  **Landed.** `tests/fixture_servers/searxng_contract.py` plus seventeen cases in
+  `tests/test_searxng_contract_server.py`; the interface, its rationale and its
+  known limits are §5.2b. Three things the build changed about the surrounding
+  plan. **The readiness handshake is satisfied by construction here, not by
+  polling** — `socketserver.TCPServer.__init__` binds *and* listens, so the wait
+  this step's clause asks for has already succeeded when the constructor returns;
+  §5.4 now says when that substitution is legitimate, so the next fixture author
+  does not read it as licence to skip the rule. **"Higher-priority provider
+  variables cleared" is not sufficient and the clause understates the work**:
+  production builds its `httpx` client with `trust_env` at its default, so an
+  ambient `ALL_PROXY` alone fails all three verify cases — measured — and the
+  eight `SEARXNG_*` tuning variables reach the same code. The cases clear the
+  environment outright. And **the `403` branch is not driven here**: it is
+  already pinned at L1, and driving it again would need a fixture knob whose only
+  user is a duplicate test.
 - **E3-3.** `tests/corpus/html/`, the `.meta.json` sidecar schema, a policy test
   for §3.3. *Verify:* the policy test fails on a snapshot with no sidecar; over
   200 KB; a sidecar missing **source URL, capture date, or licence/rationale**; and

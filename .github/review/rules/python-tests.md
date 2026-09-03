@@ -48,7 +48,7 @@
 
 ## The guard tests — treat these as load-bearing
 
-Twelve tests exist to hold an invariant that nothing else enforces. A pull request
+Thirteen tests exist to hold an invariant that nothing else enforces. A pull request
 that changes what they guard, without changing them, is a finding; a pull request
 that *weakens* one to make a change pass is a critical finding.
 
@@ -67,15 +67,16 @@ that *weakens* one to make a change pass is a critical finding.
 | `test_baseline_failure_ledger.py` | **two** invariants. First, that `.system_design/BASELINE_FAILURES.md` names exactly the tests that fail today — it re-runs the suite in a child process with the live-test opt-ins cleared and compares node ids, so a repair that forgets to delete its ledger entry and a new red test both turn it red, and for opposite reasons it names separately. Second, that every relocation row in that document landed: the guard's first complaint can only fire for an id still listed, so deleting a test *and* its ledger entry in one change is otherwise indistinguishable from repairing it, and the `<retired id> -> <replacement id>` rows close that hole by holding each replacement to the same child run — collected, and neither failing nor skipped — while requiring the retired id to be gone. Deleting a relocation row to make a rename pass is weakening a guard. Both invariants share one child run through a session fixture, so the module still spawns exactly one |
 
 | `test_worker_child_fixture.py` | **two of its twelve cases only.** The other ten calibrate a test instrument -- they drive the fixture child's flags against a real process, and a change to that script is meant to change them. The two that are load-bearing hold properties of the script rather than of any test: that `tests/child_processes/worker_child.py` imports **only** the standard library, and that pytest collects nothing from that directory. The first is what keeps the fixture startable at all -- the process runner hands its child a *complete* environment, and a path-invoked script never runs `tests/conftest.py`, so an import of the package would resolve or not depending on ambient path setup; the anti-flake harness and the lifecycle steps are both scheduled to edit that script, and nothing else enforces either property. The second has a cheap escape under a rename -- deleting the case -- and if it goes the script becomes collectable, which means executed at collection time, which means frames on the runner's stderr and possibly a hang. Weakening either is weakening a guard; editing the other ten alongside the script is ordinary work |
+| `test_searxng_contract_server.py` | **three of its seventeen cases only.** The other fourteen calibrate a test instrument -- they drive a local HTTP server that answers like a self-hosted SearXNG instance, and a change to that server is meant to change them. The three that are load-bearing are: that `tests/fixture_servers/searxng_contract.py` imports **only** the standard library; that the response it serves equals, value for value, the specimen recorded in the design document; and that every row of that document's request/answer table is driven against a live instance. The first holds two properties at once -- the instrument must not import the parser it exists to pin, which would be circular, and it must start in an environment carrying only the wheel's own dependencies, which is the job that consumes it. The second and third are what stop the fixture becoming *more permissive than a real instance*: a stand-in that answered JSON to a request the real thing refuses lets a caller pass here and fail in production, which is the one failure a stand-in exists to prevent. Both have the same cheap escape -- comparing field names instead of values, or deleting a table row -- and taking it is weakening a guard; editing the other fourteen alongside the server is ordinary work |
 
-Four of these are coupled: `test_min_selected_guard.py`,
-`test_coverage_configuration.py` and `test_baseline_failure_ledger.py` all
-import `_section_body` from `test_pytest_configuration.py` rather than keeping
-their own copy of the fence-aware section bound, which exists because the naive
-heading regex was measured wrong — on §10.4's own blocks, whose opening comment
-sits at column 0 and reads as a heading. A change to that helper's name or
-behaviour breaks all four guards, so it is not the private detail its underscore
-suggests.
+Five of these are coupled: `test_min_selected_guard.py`,
+`test_coverage_configuration.py`, `test_baseline_failure_ledger.py` and
+`test_searxng_contract_server.py` all import `_section_body` from
+`test_pytest_configuration.py` rather than keeping their own copy of the
+fence-aware section bound, which exists because the naive heading regex was
+measured wrong — on §10.4's own blocks, whose opening comment sits at column 0
+and reads as a heading. A change to that helper's name or behaviour breaks all
+five guards, so it is not the private detail its underscore suggests.
 
 Plus `test_worker_launch_args_redaction.py` for the subprocess command line — the
 same class of guard, one layer down.
