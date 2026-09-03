@@ -448,16 +448,27 @@ def test_a_search_with_no_query_returns_searxngs_own_error_body() -> None:
 
 
 def test_the_fixture_server_imports_only_the_standard_library() -> None:
-    """Keep the fixture importable in the job that installs the wheel
+    """Keep the fixture free of the parser it pins, and startable anywhere
 
-    §6.1's `package` job installs the built wheel into a fresh virtual
-    environment and asserts the server module resolves under ``site-packages``
-    rather than under the checkout. This module is imported by a test in that
-    job. An ``httpx`` import -- or anything under ``src/`` -- would drag a
-    checkout-resolved import into the one job whose purpose is proving the wheel
-    stands alone.
+    Two reasons, and the weaker one is named so nobody rests on it.
+    **Circularity:** this package is the instrument that pins the SearXNG
+    contract, and an instrument importing ``kindly_web_search_mcp_server`` would
+    pin that contract against the parser under test. **Startability:** it is
+    written to be imported by a test in §6.1's `package` job -- which **does not
+    exist yet**; E3-5 and E8-1 build it -- where the only third-party packages
+    present will be the wheel's own dependencies.
 
-    Asserted over the module's syntax tree rather than by importing it, so a
+    The argument this does **not** rest on, though an earlier draft of this
+    docstring did: that an ``httpx`` import would break that job. It would not.
+    ``httpx`` is a runtime dependency of the wheel and resolves from
+    ``site-packages`` there, so it says nothing about the checkout. Only an
+    import of *this project* does.
+
+    The rule is enforced now, ahead of its consumer, because a dependency added
+    in the meantime would otherwise be found by whoever builds that job rather
+    than by whoever added it.
+
+    Asserted over each module's syntax tree rather than by importing it, so a
     branch that never executes is covered too.
     """
     modules = sorted(FIXTURE_SERVER_PACKAGE.glob("*.py"))
