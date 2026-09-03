@@ -160,6 +160,11 @@ python_version = "3.13"
 # developer's local run cannot diverge.
 files = [
     "src/kindly_web_search_mcp_server/scrape/types.py",
+    # The seam itself. Production annotates the process it spawns with
+    # `WorkerProcess`, so this is what makes mypy compare the Protocol against
+    # what production actually reads -- the direction an introspection test
+    # cannot reach, because it sees only the Protocol.
+    "src/kindly_web_search_mcp_server/scrape/worker_runner.py",
     "tests/doubles",
 ]
 # There is no `py.typed` marker under `src/`, and the project is installed as a

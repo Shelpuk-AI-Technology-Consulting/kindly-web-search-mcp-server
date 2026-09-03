@@ -58,6 +58,7 @@ from ..utils.diagnostics import (
     Diagnostics,
     truncate_text,
 )
+from .types import WorkerProcess
 
 
 @dataclass
@@ -382,7 +383,7 @@ async def _read_stderr_stream(
 
 
 async def _emit_worker_heartbeat(
-    proc: asyncio.subprocess.Process,
+    proc: WorkerProcess,
     stdout_state: _StdoutAccumulator,
     stderr_state: _StderrAccumulator,
     *,
@@ -404,7 +405,7 @@ async def _emit_worker_heartbeat(
         await asyncio.sleep(STREAM_HEARTBEAT_INTERVAL_SECONDS)
 
 
-async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
+async def _terminate_process_tree(proc: WorkerProcess) -> None:
     if proc.returncode is not None:
         return
 
@@ -492,7 +493,7 @@ async def _run_worker_command(
             if the streams were never opened.
     """
     started = time.monotonic()
-    proc = await asyncio.create_subprocess_exec(
+    proc: WorkerProcess = await asyncio.create_subprocess_exec(
         *command,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,

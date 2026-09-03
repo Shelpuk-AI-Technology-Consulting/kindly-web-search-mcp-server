@@ -32,6 +32,7 @@ import ast
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -440,6 +441,74 @@ def test_no_source_module_imports_from_tests() -> None:
     )
 
 
+RUNNER_PATH = (
+    REPO_ROOT / "src" / "kindly_web_search_mcp_server" / "scrape" / "worker_runner.py"
+)
+
+
+def test_production_annotates_the_spawned_process_with_the_protocol() -> None:
+    """Prove production names the Protocol on the value it spawns.
+
+    The static cases below spawn a child mypy and are ``subsystem``-marked, so a
+    lane running only the fast set would notice nothing if the annotation were
+    deleted. This is the hermetic half, and it costs one AST parse.
+
+    It asserts the *annotation*, not the import. An ``if TYPE_CHECKING:`` import
+    with no use satisfies "the module imports WorkerProcess", and so does an
+    import beside a signature somebody forgot to annotate; neither makes mypy
+    compare the Protocol with what production reads.
+    """
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(RUNNER_PATH))
+
+    runner = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_run_worker_command"
+        ),
+        None,
+    )
+    assert runner is not None, "_run_worker_command has moved or been renamed."
+
+    annotated = [
+        node
+        for node in ast.walk(runner)
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "proc"
+        and isinstance(node.annotation, ast.Name)
+        and node.annotation.id == "WorkerProcess"
+    ]
+    assert annotated, (
+        "The process _run_worker_command spawns is not annotated "
+        "`WorkerProcess`. Without that annotation mypy checks production's "
+        "reads against the concrete asyncio type, the Protocol constrains "
+        "nothing, and the only thing tying the double's shape to what "
+        "production consumes is the CONSUMED_SURFACE literal above -- which is "
+        "a literal, not a check."
+    )
+
+    # A relative import, deliberately: the mutation cases below type-check a
+    # COPY of the tree, and an absolute import would resolve back to the
+    # repository's own Protocol, leaving both `types.py` mutations invisible.
+    relative = any(
+        isinstance(node, ast.ImportFrom)
+        and node.level == 1
+        and node.module == "types"
+        and any(alias.name == "WorkerProcess" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    assert relative, (
+        "worker_runner.py does not import WorkerProcess relatively "
+        "(`from .types import WorkerProcess`). An absolute import resolves "
+        "against mypy's search path, so a mutated copy of the Protocol would be "
+        "silently ignored and test_mypy_rejects_each_seam_mutation would go "
+        "green on the repository's own unmutated types.py."
+    )
+
+
 # --------------------------------------------------------------------------
 # The mypy configuration
 # --------------------------------------------------------------------------
@@ -502,6 +571,23 @@ def test_mypy_configuration_excludes_every_negative_fixture() -> None:
         f"{unexcluded} are not excluded from the mypy target. A file that must "
         "fail type-checking cannot sit in the path the job checks, or the job "
         "is red forever."
+    )
+
+
+def test_mypy_target_includes_the_worker_runner() -> None:
+    """Keep the annotated seam inside the checked target.
+
+    The annotation is only worth its diff while mypy reads it. Dropping the
+    module from ``files`` would leave every static case below checking a file
+    that no longer contains the seam, and each of them would go green.
+    """
+    files = _mypy_configuration()["files"]
+    expected = "src/kindly_web_search_mcp_server/scrape/worker_runner.py"
+
+    assert expected in files, (
+        f"{expected!r} is not in [tool.mypy] files, which is now {files}. "
+        "Outside the target, production can read a member the Protocol never "
+        "declares and nothing reports it."
     )
 
 
@@ -817,3 +903,194 @@ def test_the_any_fixture_is_clean_without_its_inline_directive(tmp_path: Path) -
         "so that directive is not what rejects it and the harness case proves "
         f"nothing about the setting.\n{result.stdout}"
     )
+
+
+# --------------------------------------------------------------------------
+# The seam itself: production's consumption checked against the Protocol
+#
+# This is the direction the Protocol harness above cannot reach. An
+# introspection test sees only the Protocol, so padding it with a member nothing
+# reads fails -- but production growing an eighth member, or dropping one of the
+# seven, does not. The annotation on the spawned process is what closes that,
+# and the mutations below are what prove it closed.
+# --------------------------------------------------------------------------
+
+# Each mutation is one exact substring swap applied to a throwaway copy of
+# `src/`. The (old, new) pair doubles as its own applied-check: a swap matching
+# nothing leaves the source identical, and the case says so rather than blaming
+# the seam for a clean run.
+SEAM_MUTATIONS: Final = {
+    "production_reads_a_member_the_protocol_never_declares": (
+        "worker_runner.py",
+        "    stdout_state: _StdoutAccumulator | None = None",
+        "    _undeclared = proc.stdin\n"
+        "    stdout_state: _StdoutAccumulator | None = None",
+        "attr-defined",
+    ),
+    "the_protocol_drops_a_member_production_reads": (
+        "types.py",
+        "    def stdout(self) -> asyncio.StreamReader | None:",
+        "    def stdout_renamed(self) -> asyncio.StreamReader | None:",
+        "attr-defined",
+    ),
+    "the_protocol_grows_a_member_a_real_process_lacks": (
+        "types.py",
+        "    @property\n    def stdout(self)",
+        "    @property\n"
+        "    def absent_from_a_real_process(self) -> int:\n"
+        '        """Declared by nobody, so a real process cannot satisfy it."""\n'
+        "        ...\n"
+        "\n"
+        "    @property\n"
+        "    def stdout(self)",
+        "assignment",
+    ),
+}
+
+
+def _run_mypy_on_copy(destination: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Type-check a copied ``worker_runner.py`` against the copy's own Protocol.
+
+    The committed configuration cannot be reused, and this is measured rather
+    than assumed. ``_run_mypy`` pins the child's ``cwd`` to the repository root
+    and ``pyproject.toml`` sets ``mypy_path = "$MYPY_CONFIG_FILE_DIR/src"`` --
+    the *repository's* ``src``. Under that configuration only the file named on
+    the command line comes from the copy: with the copy's ``types.py`` mutated,
+    mypy reported ``Success`` and ``-v`` showed it parsing the repository's
+    ``types.py``. So the copy gets its own config with an absolute ``mypy_path``,
+    and production imports the Protocol relatively, which cannot resolve outside
+    its own package.
+
+    The build deliberately contains this module and its followed imports only,
+    not ``tests/doubles``. With the double in it, the third mutation also breaks
+    ``FakeWorkerProcess``'s own ``_contract`` assignment -- machinery the earlier
+    step already ships -- and the case could no longer tell its claim from that
+    one. Measured: 5 errors across 2 files with the double in, 3 in 1 file
+    without it.
+
+    Args:
+        destination: Directory holding the copied tree.
+        *args: Extra flags appended to the invocation.
+
+    Returns:
+        The completed child mypy run.
+    """
+    config = destination / "mypy.ini"
+    config.write_text(
+        "[mypy]\n"
+        "python_version = 3.13\n"
+        f"mypy_path = {destination / 'src'}\n",
+        encoding="utf-8",
+    )
+    target = (
+        destination
+        / "src"
+        / "kindly_web_search_mcp_server"
+        / "scrape"
+        / "worker_runner.py"
+    )
+    return _run_mypy(
+        "--config-file",
+        str(config),
+        # A cache shared with the repository's runs would answer from the
+        # unmutated tree.
+        "--cache-dir",
+        str(destination / "cache"),
+        *args,
+        str(target),
+    )
+
+
+def _copy_source_tree(destination: Path) -> Path:
+    """Copy ``src/`` so a mutation never touches the repository.
+
+    Args:
+        destination: An empty directory, normally pytest's ``tmp_path``.
+
+    Returns:
+        The copied ``src`` root.
+    """
+    copied = destination / "src"
+    shutil.copytree(REPO_ROOT / "src", copied)
+    return copied
+
+
+@pytest.mark.subsystem
+def test_the_copied_tree_type_checks_cleanly(tmp_path: Path) -> None:
+    """Control for the mutation cases: prove an unmutated copy is clean.
+
+    Its job is narrower than it looks. It is *not* what proves the copy is on
+    mypy's path -- the two ``types.py`` mutations are, since they report nothing
+    at all if mypy read the repository's Protocol instead. What this excludes is
+    the other direction: a copy broken for some unrelated reason, under which
+    every mutation case would "detect" an error that was there all along.
+
+    Args:
+        tmp_path: Destination for the copied tree.
+    """
+    _copy_source_tree(tmp_path)
+
+    result = _run_mypy_on_copy(tmp_path)
+
+    _assert_resolved(result)
+    assert result.returncode == 0, (
+        "An unmutated copy of src/ does not type-check, so the mutation cases "
+        "below cannot attribute their errors to the mutation rather than to the "
+        f"copy.\n{result.stdout}"
+    )
+
+
+@pytest.mark.subsystem
+@pytest.mark.parametrize(("label", "mutation"), sorted(SEAM_MUTATIONS.items()))
+def test_mypy_rejects_each_seam_mutation(
+    label: str, mutation: tuple[str, str, str, str], tmp_path: Path
+) -> None:
+    """Prove the annotation makes production's consumption a checked claim.
+
+    Three drifts, one per direction the seam can fail in: production reading a
+    member the Protocol never declared, the Protocol losing a member production
+    reads, and the Protocol growing one a real ``asyncio.subprocess.Process``
+    cannot supply.
+
+    The error *code* is asserted, never the exit status: mypy exits non-zero for
+    a syntax error, an unresolved import or a crash just as readily. Membership,
+    never "the first" or "the only" error -- the third mutation also reports
+    ``arg-type`` at the two ``_run_pipe_probe`` call sites, which is correct
+    output and not a defect. And the reported path must fall inside the copy: a
+    diagnostic against the repository would mean the mutation was never read.
+
+    Args:
+        label: The drift being simulated.
+        mutation: File name, the exact text replaced, its replacement, and the
+            diagnostic that drift must provoke.
+        tmp_path: Destination for the copied tree.
+    """
+    filename, old, new, expected_code = mutation
+    copied = _copy_source_tree(tmp_path)
+    target = copied / "kindly_web_search_mcp_server" / "scrape" / filename
+    source = target.read_text(encoding="utf-8")
+    mutated = source.replace(old, new, 1)
+
+    # A swap matching nothing leaves a clean tree, and a case asserting an error
+    # would then fail with a message blaming the seam for a stale anchor.
+    assert mutated != source, (
+        f"The text this mutation replaces has moved in {filename}: {old!r}. The "
+        "case cannot simulate the drift it names until the anchor is updated."
+    )
+    target.write_text(mutated, encoding="utf-8")
+
+    result = _run_mypy_on_copy(tmp_path)
+
+    _assert_resolved(result)
+    reported = set(ERROR_CODE_PATTERN.findall(result.stdout))
+    assert expected_code in reported, (
+        f"Mutation {label!r} was not rejected with [{expected_code}]; mypy "
+        f"reported {sorted(reported) or 'nothing'}. With the seam annotated "
+        "this drift must fail the type check -- if it does not, production and "
+        f"the Protocol can diverge with the suite green.\n{result.stdout}"
+    )
+    assert str(tmp_path) in result.stdout, (
+        "mypy reported no diagnostic inside the copied tree, so it checked the "
+        f"repository's own sources and the mutation was never read.\n{result.stdout}"
+    )
+
