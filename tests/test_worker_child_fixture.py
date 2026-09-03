@@ -489,19 +489,27 @@ def _fixture_child(*args: str) -> Iterator[_RunningChild]:
         env=_child_environment(),
     )
     child = _RunningChild(proc=proc, stderr_lines=queue.Queue(), argv=argv)
-    assert proc.stdout is not None and proc.stderr is not None
-    threads = [
-        threading.Thread(
-            target=_pump_lines, args=(proc.stderr, child.stderr_lines), daemon=True
-        ),
-        threading.Thread(
-            target=_pump_all, args=(proc.stdout, child.stdout_sink), daemon=True
-        ),
-    ]
-    for thread in threads:
-        thread.start()
-
+    # The `try` opens the moment the process exists, not once it is fully set
+    # up. Everything between those two points can still fail -- `Thread.start`
+    # raises under thread exhaustion -- and a failure there leaves a running
+    # child with nothing to reap it but its own 300s backstop. Measured, by
+    # forcing `Thread.start` to raise: with the `try` opening after the threads
+    # start, the child is still alive once the helper has unwound; opening it
+    # here, it is gone.
+    threads: list[threading.Thread] = []
     try:
+        assert proc.stdout is not None and proc.stderr is not None
+        threads = [
+            threading.Thread(
+                target=_pump_lines, args=(proc.stderr, child.stderr_lines), daemon=True
+            ),
+            threading.Thread(
+                target=_pump_all, args=(proc.stdout, child.stdout_sink), daemon=True
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+
         # The readiness frame is the script's first output by contract, so this
         # both waits for startup and asserts that ordering in one step.
         #
