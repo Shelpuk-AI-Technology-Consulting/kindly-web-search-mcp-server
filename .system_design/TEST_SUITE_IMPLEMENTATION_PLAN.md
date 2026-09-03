@@ -118,7 +118,7 @@ action).
 
 ## 2. Sequencing for parallelism
 
-<!-- totals: steps=78 authorable=51 pr_authorable=47 -->
+<!-- totals: steps=78 authorable=50 pr_authorable=46 -->
 
 Only **E0-1 and E0-2** are serial — a dependency declaration and a pytest config
 block, both S. Everything else fans out. The validator computes what is
@@ -602,7 +602,7 @@ it carries no X-number.
 | **E3-1** | Fixture child process script | PR | impl E0-2 | M |
 | **E3-2** | Local SearXNG-contract HTTP server fixture | PR | impl E0-2 | M |
 | **E3-3** | HTML corpus scaffolding and governance | PR | impl E0-2 | M |
-| **E3-4** | Anti-flake harness helpers | PR | impl E0-2 | M |
+| **E3-4** | Anti-flake harness helpers | PR | impl E0-2, impl E3-1 | M |
 | **E3-5** | `tests/package/` and its marker policy test | PR | impl E0-2 | S |
 | **E3-6** | Injectable DNS-resolution and transport seam | PR | impl E0-2 | M |
 
@@ -612,6 +612,19 @@ it carries no X-number.
   startup budget** — a millisecond threshold is a flake generator on loaded runners
   and under antivirus process-start delay. Startup duration is printed as
   telemetry, never a pass condition.
+
+  **Landed.** `tests/child_processes/worker_child.py` plus ten smoke cases in
+  `tests/test_worker_child_fixture.py`; the interface, its rationale and its
+  known limits are §5.2a. Two things the build changed about the surrounding
+  plan. **E3-4 now depends on it**: that step's verify clause reads "a hanging
+  fixture child is killed at the deadline and its PID tree is gone", an artefact
+  only this step produces, and the column above said `impl E0-2` alone — the
+  ordering was accidental, held only by both steps sitting in one wave for one
+  engineer. And **E7-2 cannot reap the descendant through the runner**:
+  `_run_worker_command` surfaces worker frames only after the run ends, so the
+  pid in the readiness frame is unreachable mid-run. That step needs a second
+  channel — a `--pid-file` flag is the intended shape — and it is deliberately
+  not built here, because an unused flag is an unchecked one.
 - **E3-2.** Ephemeral port, readiness handshake, configurable result set including
   **zero results** (§6.1). *Verify:* `search_searxng` parses its responses; with
   `SEARXNG_BASE_URL` pointed at it and higher-priority provider variables cleared,
@@ -624,7 +637,14 @@ it carries no X-number.
   at least three handcrafted fragments.
 - **E3-4.** §5.4: readiness handshake, ephemeral ports, isolated profile
   directories, PID-tree cleanup keyed on spawned PIDs, child log capture on
-  failure. Test-only.
+  failure. Test-only. Blocked by E3-1, whose fixture child is the only thing in
+  the tree with a PID tree to reap; `tests/test_worker_child_fixture.py` already
+  carries a local, deliberately minimal version of the readiness, reaping and
+  log-capture halves, and generalising those is this step's job.
+  **Decide here, not later, whether the harness needs a descendant it was not
+  told about.** E3-1's `--spawn-grandchild` makes one descendant, one level
+  deep, and announces its pid — so a harness that reaps from the announcement is
+  never made to *walk* a tree.
   *Verify:* a hanging fixture child is killed at the deadline and its PID tree is
   gone; cleanup never matches processes by name.
 - **E3-5.** *Verify:* a file added there without `@pytest.mark.package` fails the
