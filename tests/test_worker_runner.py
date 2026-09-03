@@ -388,3 +388,76 @@ async def test_runner_diagnostics_keep_their_order() -> None:
         "worker.timeout_budget_parent",
         "worker.stdout",
     ], stages
+
+
+# --------------------------------------------------------------------------
+# Platform guards, and why the two are spelled differently
+# --------------------------------------------------------------------------
+
+# The rule, so a future reader can apply it without re-measuring:
+#
+#   Use `sys.platform` where the branch touches stdlib that exists only on that
+#   platform AND a second mypy run under `--platform win32` covers it.
+#   Use `os.name` where you want the branch checked on EVERY run.
+#
+# mypy narrows on `sys.platform` and never on `os.name`, and it does not
+# type-check code it considers unreachable. So the spelling decides which runs
+# read the branch at all, and the two functions below want different answers.
+PLATFORM_GUARDS = {
+    # Touches `subprocess.STARTUPINFO`, which typeshed declares win32-only. Under
+    # `os.name` this produced `Module has no attribute "STARTUPINFO"` the moment
+    # the module joined the type-check target.
+    "_subprocess_launch_options": ("sys.platform", "os.name"),
+    # Touches no platform-exclusive stdlib, so it costs nothing to keep readable
+    # on every run — and converting it would make mypy treat the whole `taskkill`
+    # path unreachable on Linux and stop checking it there.
+    "_terminate_process_tree": ("os.name", "sys.platform"),
+}
+
+
+@pytest.mark.parametrize(("function_name", "guards"), sorted(PLATFORM_GUARDS.items()))
+def test_each_platform_guard_uses_the_spelling_its_checking_needs(
+    function_name: str, guards: tuple[str, str]
+) -> None:
+    """Pin both halves of the two-spelling rule, so a tidy-up cannot erase coverage
+
+    The asymmetry reads as an oversight and is not. Asserting only the
+    `sys.platform` half would leave a "make it consistent" edit free to convert
+    the other function and silently stop Linux from checking its Windows branch;
+    asserting only the `os.name` half would let the `STARTUPINFO` defect return.
+    Both directions are pinned because each fails a different way.
+
+    Args:
+        function_name: The guarded function in `worker_runner.py`.
+        guards: The spelling it must use, and the one it must not.
+    """
+    required, forbidden = guards
+    source = Path(worker_runner.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=worker_runner.__file__)
+    function = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function_name
+        ),
+        None,
+    )
+    assert function is not None, f"{function_name} has moved or been renamed."
+
+    # Attribute accesses, not a text search: the comment that explains why the
+    # rejected spelling was rejected has to be free to name it.
+    accessed = {
+        f"{node.value.id}.{node.attr}"
+        for node in ast.walk(function)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+    }
+
+    assert required in accessed, (
+        f"{function_name} no longer reads `{required}`. See PLATFORM_GUARDS "
+        "above for which runs each spelling leaves the branch checked by."
+    )
+    assert forbidden not in accessed, (
+        f"{function_name} reads `{forbidden}`, which is the wrong spelling for "
+        "it. See PLATFORM_GUARDS above."
+    )

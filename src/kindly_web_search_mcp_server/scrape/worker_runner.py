@@ -48,6 +48,7 @@ import contextlib
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -88,7 +89,9 @@ PIPE_PROBE_SAMPLE_LIMIT = 400
 
 
 def _subprocess_launch_options() -> dict[str, Any]:
-    if os.name != "nt":
+    # `sys.platform`, not `os.name`: mypy narrows on the former only, and
+    # `subprocess.STARTUPINFO` below is win32-only in typeshed.
+    if sys.platform != "win32":
         return {}
     creationflags = 0
     creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
