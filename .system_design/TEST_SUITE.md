@@ -514,6 +514,77 @@ depends on it does not exist yet, and widening a registered meaning on
 speculation is the wrong direction. Resolve it with E4-1, whose job definitions
 force the answer anyway.
 
+### 5.2a The fixture child — built in E3-1
+
+`tests/child_processes/worker_child.py`, a stdlib-only script spawned by path.
+It is the instrument §5.2's lifecycle group and §5.4's cleanup claims are
+measured with, and `tests/test_worker_child_fixture.py` is its calibration —
+ten cases that drive each flag against a real process.
+
+**Orthogonal flags, not exclusive modes**, applied in a fixed order: spawn a
+descendant, announce readiness, emit requested frames, write stderr garbage,
+write the stdout payload, hang, exit with the requested code. The lifecycle
+tests need combinations — "emit frames and then hang" is how "a run that times
+out still yields the frames received before the deadline" gets exercised, and
+that is not expressible as a mode selector.
+
+| Flag | Effect |
+|---|---|
+| `--emit-frame STAGE` | One `KINDLY_DIAG` frame per occurrence, in order. |
+| `--stdout TEXT` | UTF-8 through the binary buffer, nothing added. |
+| `--stderr-garbage` | All four malformations the line router must survive. |
+| `--spawn-grandchild` | One descendant, pid reported in the readiness frame. |
+| `--hang` | Block after all other output. |
+| `--exit-code N` | Exit status, default `0`. |
+
+**Readiness is a frame on stderr, always first, always flushed.** Stderr rather
+than stdout because stdout is the payload channel the parent reads as the page.
+The flush is load-bearing and was nearly shipped unpinned: stderr is
+block-buffered behind a pipe, but a *short-lived* child's buffer is flushed at
+interpreter shutdown anyway, so a readiness case driving a child that exits
+passes with the flush deleted. Measured. The case drives `--hang` for that
+reason alone.
+
+**The readiness frame is not a live channel through `_run_worker_command`.** The
+runner appends worker frames to the caller's diagnostics only *after* the run
+ends, and not at all on the cancellation path; with `diagnostics=None` it parses
+and discards them. So a test that drives the fixture through the runner cannot
+read the descendant's pid while the run is in flight, and therefore cannot reap
+the tree from it. E7-2 needs a second channel for that — a `--pid-file` written
+before the readiness frame is the intended shape. Not built here: nothing
+consumes it yet, and an unused flag is an unchecked one.
+
+**Both pipes must be drained by whoever spawns it.** The stdout payload is
+written before the hang, so a harness reading only stderr blocks the child
+inside that write once the payload passes the pipe capacity — 64 KiB on Linux,
+unspecified and smaller on Windows — and every later "still hanging" assertion
+then passes for the wrong reason.
+
+**Nothing waits forever.** The hang and the descendant both carry a 300-second
+backstop, matching the ledger guard's own child budget. It exists for the case
+where the reaping harness never runs — a killed test runner, a cancelled CI job
+— and is explicitly **not** a synchronization point: no test may wait for it.
+
+**Known limits, recorded so a later step does not rediscover them.** The
+descendant is one level deep and announces its own pid, so a harness that reaps
+from the announcement never exercises a tree *walk*. There is no flag that
+produces a long line with no newline, or more than two malformed frames, so
+§4.3's "capped without raising" and "oversized line truncated" claims have no
+driver here — they belong with the codec work in E6-2, which also owns the fact
+that the parent implements no line cap at all today. Nothing writes undecodable
+bytes to *stdout*, so the runner's `errors="ignore"` decode is undriven. And the
+readiness frame is always emitted, so a fixture-driven run can never produce
+zero worker entries the way the real worker does with diagnostics off; the
+`fixture.` stage prefix is reserved so downstream filters can exclude it.
+
+**"A killed parent leaves no orphan" has two readings**, and the fixture serves
+one. E7-2's entry reads it as the tree-kill defect — the parent kills the child
+and orphans the grandchild — which `--spawn-grandchild` drives. §5.2's own
+sentence can also be read as killing the process that *runs* the runner and
+asserting the worker child is gone; that needs a killable parent harness this
+step does not ship, and today's code has no process group, job object or
+`PDEATHSIG` to satisfy it.
+
 ### 5.3 Chromium-specific — Linux container
 
 `ChromiumPool`: slot acquisition and release, reuse
