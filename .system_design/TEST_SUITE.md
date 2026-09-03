@@ -587,6 +587,265 @@ asserting the worker child is gone; that needs a killable parent harness this
 step does not ship, and today's code has no process group, job object or
 `PDEATHSIG` to satisfy it.
 
+### 5.2b The SearXNG-contract fixture server — built in E3-2
+
+`tests/fixture_servers/searxng_contract.py`, a stdlib-only HTTP server started in the
+test process on an ephemeral loopback port. It is the cross-process stubbing
+seam §6.1 depends on, and `tests/test_searxng_contract_server.py` is its
+calibration — eighteen cases, seventeen of which drive a real socket.
+
+**A new directory, not `tests/doubles/`.** `pyproject.toml` lists
+`tests/doubles` in the type-check job's `files`, so a module placed there joins
+that job's scope by its location alone. §10.3 keeps that job narrow on purpose;
+widening it to cover a socket server should be a decision, not a side effect of
+where a file was put. `tests/fixture_servers/` is named for what it holds, matching
+`tests/doubles/` and `tests/child_processes/`.
+
+**Standard library only, and guarded** — for two reasons, neither of which is
+purity. **Circularity:** this module is the instrument that pins the SearXNG
+contract, and an instrument importing `kindly_web_search_mcp_server` would pin
+that contract against the parser under test. **Startability:** it is written to be
+imported by a test in the `package` job — which **does not exist yet**; E3-5 and
+E8-1 build it — where the only third-party packages present will be the wheel's
+own dependencies. The rule is enforced now, before that job exists, because a
+dependency added in the meantime would be found by whoever builds the job rather
+than by whoever added it.
+
+The argument this does **not** rest on, and E3-1's equivalent section makes the
+same distinction, is that an `httpx` import would break the `package` job. It
+would not: `httpx` is a runtime dependency of the wheel and resolves from
+`site-packages` there. The guard reads this file's syntax tree rather than
+importing it, so a branch that never executes is covered too.
+
+**How the `package` job will reach it**, recorded now so its author does not have
+to re-derive it. `tests/__init__.py` makes `tests` a regular package, so pytest's prepend import mode puts the **checkout root** on
+`sys.path` — not `<checkout>/src` — and `tests.fixture_servers.searxng_contract`
+resolves from there. Because this project is `src`-layout, the checkout root
+exposes no `kindly_web_search_mcp_server`, so that path does not endanger §6.1's
+wheel-resolution assertion. The `package` job must reach the fixture this way and
+must **not** copy the `sys.path.insert(… / "src")` line that
+`tests/test_searxng_contract_server.py` carries for its own provider cases.
+
+**That is necessary and not sufficient**, and the gap is not this step's to
+close: `tests/conftest.py` inserts `<checkout>/src` at `sys.path[0]`
+*unconditionally* for anything collected under `tests/`, so the job's own test
+module inherits it whether or not it writes the line itself. §6.1 and §10.3
+record that conflict and its two candidate resolutions, and E8-1 owns it. A
+reader who takes the paragraph above as "the path is clean" will be wrong.
+
+**Readiness is structural, so nothing here handshakes.**
+`socketserver.TCPServer.__init__` calls `server_bind` and then `server_activate`,
+so the socket is *listening* before the constructor returns; a request arriving
+before the serving thread is scheduled waits in the accept backlog rather than
+being refused. Measured on CPython 3.13.15: a connection opened before
+`serve_forever()` had ever been called was answered `200`. This is the one place
+in §5.2/§5.4 where the readiness rule is satisfied by construction instead of by
+polling, and the distinction is worth keeping: a poll loop added here would be
+waiting out a window that does not exist, and its timeout would be the only
+thing anyone ever measured.
+
+**`server_bind` is overridden to skip a name lookup.**
+`http.server.HTTPServer.server_bind` calls `socket.getfqdn` on the bound host.
+That is a resolver call — 4 ms against a cached `/etc/hosts`, unbounded behind a
+slow one — inside a fixture that must not touch the network at all. Its result
+reaches only `server_name`, which nothing outside `CGIHTTPRequestHandler` reads,
+so the override costs nothing and removes a dependency the fixture should not
+have.
+
+**Teardown cannot hang, and the reason is worth writing down** because the
+obvious reading says it can. `ThreadingMixIn.server_close` ends in an *untimed*
+`self._threads.join()`. It is a no-op here: `_Threads.append` returns early for
+a daemon thread and `ThreadingHTTPServer` sets `daemon_threads = True`, so
+nothing is ever added to that list. And `serve_forever` runs the accept loop
+only, so a stuck handler does not delay `shutdown()` either. Measured against a
+handler deliberately sleeping 30 s: `shutdown()` 0.5001 s, `server_close()`
+0.0001 s, serving thread dead. The 0.5 s is the stdlib's default
+`poll_interval`, and it is the whole cost of every teardown, so this fixture
+passes `poll_interval=0.05` — measured across the calibration module, 7.35 s to
+0.93 s. Neither `daemon_threads` nor the poll interval is decoration.
+
+**HTTP/1.0, deliberately, though a real instance is 1.1.** The base class's
+default closes the connection after each response. Raising it to 1.1 would keep
+connections alive, leaving a handler thread blocked on the next request line
+after every call — and `ThreadingHTTPServer` runs daemon threads that
+`server_close` does not join, so those threads accumulate for the life of the
+run. The fidelity that matters here is the payload contract, not the transport
+version.
+
+**The contract is transcribed from SearXNG, not invented.** Read from
+`searx/webapp.py`, `searx/webutils.py` and `searx/result_types/_base.py` on
+`master`, 2026-09-03. Two things that reading changed. The envelope has **no**
+`number_of_results` key — older documentation and several third-party write-ups
+still show one, and a fixture built from memory would have served a field the
+real thing stopped producing. And the `format` check runs *before* the query
+check, so a disabled format is `403` even on a request that also has no query.
+
+The rows below are **driven**, not described: the guard parses this table and
+issues each request against a live instance, so a row nobody implemented, and a
+documented answer that later changed, both turn CI red. It also pins the row
+*count*, because pinning each member without pinning the set lets a deleted row
+shrink the sweep to green — re-measured against the module as it stands: 17 of
+its 18 cases pass and nothing fails. With the count pinned the same deletion
+fails at *collection*, naming the number of rows it found.
+
+What it does **not** catch, also measured: a route with no row at all. Adding an
+undocumented `/healthz` returning 200 leaves the module at its full 18 passed. The guard compares
+the fixture against the table row by row and cannot see a behaviour the table
+never mentions, so a new route has to be documented deliberately.
+
+| Request | Status | Content type | Why |
+|---|---|---|---|
+| `GET /search?q=kindly&format=json` | `200` | `application/json` | The served format. |
+| `GET /search?q=&format=json` | `400` | `application/json` | `webapp.py` rejects a blank `q`, and only after the format check. The body is `{"error": "No query"}`. |
+| `GET /search?q=kindly&format=csv` | `403` | `text/html` | A known format this instance has not enabled — the documented reason most public instances fail a JSON call, and the branch `search_searxng` has a dedicated message for. |
+| `GET /search?q=kindly` | `200` | `text/html` | No `format` means `html`. A caller that forgot the parameter must fail here the way it fails against a real instance, not be rescued. |
+| `GET /elsewhere?q=kindly` | `404` | `text/html` | **Stricter than the real thing**, which also serves `/`. Strictness is the safe direction for a fixture: it turns a misconfigured caller into an investigable failure, where permissiveness lets one pass here and fail against a real instance. |
+
+**The response is pinned against a specimen, not against a list of field
+names.** The block below is the complete body served for
+`GET /search?q=kindly&format=json` by an instance configured with the single
+result it shows. `test_the_served_response_matches_the_documented_specimen`
+starts that instance and asserts equality with this block — so an envelope key,
+a result field, a value's type, or the ordering cannot change on either side
+without turning CI red. A name-by-name comparison would have passed on a
+plausible-looking body; this cannot.
+
+```json
+{
+  "query": "kindly",
+  "results": [
+    {
+      "url": "https://example.com/kindly",
+      "title": "Kindly Web Search",
+      "content": "The first snippet.",
+      "engine": "fixture",
+      "engines": ["fixture"],
+      "parsed_url": ["https", "example.com", "/kindly", "", "", ""],
+      "template": "default.html",
+      "positions": [1],
+      "score": 1.0,
+      "category": "general",
+      "publishedDate": null,
+      "img_src": "",
+      "thumbnail": "",
+      "priority": "",
+      "iframe_src": null
+    }
+  ],
+  "answers": [],
+  "corrections": [],
+  "infoboxes": [],
+  "suggestions": [],
+  "unresponsive_engines": []
+}
+```
+
+**Fifteen keys, and the number is not arbitrary.** They are the ones
+`LegacyResult.__init__` sets unconditionally in `searx/result_types/_base.py`,
+which is the path a web result actually travels today — `ResultContainer` wraps
+untyped engine dictionaries in `LegacyResult`, and `as_dict` returns the
+dictionary itself. It is deliberately **not** the twenty-three struct fields of
+the typed `MainResult`: claiming those would assert a fidelity this fixture does
+not have. Four of the fifteen — `img_src`, `thumbnail`, `priority`,
+`iframe_src` — are always empty for a web result and always *present*, which is
+the case a slimmer fixture gets wrong: a parser that depended on a field's
+absence would pass against the fixture and fail against a real instance.
+
+`engines` is a `set` upstream and renders as an array; `parsed_url` is a
+`ParseResult`, a `NamedTuple`, and renders as a six-element array rather than an
+object. The engine name is the invented `fixture` so a capture of this output can
+never be mistaken for a capture of a live instance.
+
+**Requests are recorded before the response is written, and that order is
+load-bearing.** The instance keeps the path and parameters of everything it
+answered, and appends under a lock. Recording *after* the write would let a
+client that has already been answered read the log before the handler thread
+appended to it — a race the caller cannot see and cannot work around. This is
+the same shape as E3-1's readiness-before-payload defect, which cost three
+failures in forty runs before it was found.
+
+**No test holds it, and that is recorded rather than implied.** Moving the record
+after the write leaves the calibration module at its full 18 passed, 5 runs out
+of 5 — the window between a client's last read and the handler thread's next
+statement is too narrow for a synchronous case to land in, and closing it
+deterministically would need a fixture knob whose only user is that test. The
+ordering is held by this paragraph, by the comment on `do_GET`, and by the triage
+in the docstring of the case that would otherwise have to kill it. The lock is
+undriven for the same reason: no case here issues two concurrent requests.
+That is the observation §6.1's provider-selection claim needs: an empty result
+list looks identical whether SearXNG served it or whether nothing was called at
+all, and the diagnostics frame alone says which provider was *selected*, not
+that the call happened.
+
+**The per-test timeout has to be applied twice here, by two mechanisms.** §5.4's
+bound is not satisfied for the three cases that drive production by the ceiling
+the direct cases pass to `urllib`. `search_searxng` reads
+`SEARXNG_TIMEOUT_SECONDS` and hands the result to `client.get(timeout=…)`; with
+that variable cleared — which the hermetic sweep below requires — the value is an
+explicit `None`, and an explicit `None` **overrides** `AsyncClient(timeout=30)`
+rather than deferring to it. Measured on httpx 0.28.1 against a handler sleeping
+20 s: the client default raised `ReadTimeout` at 3.09 s; the explicit `None` was
+still running when the probe gave up. Those three cases therefore wrap the await
+in `asyncio.timeout`. Falsified: with the fixture handler wedged for 30 s, they
+fail in 31 s total instead of hanging the suite.
+
+**The provider and router cases run with the environment cleared, not with a
+delete-list.** `patch.dict(os.environ, {"SEARXNG_BASE_URL": …}, clear=True)`.
+A delete-list clears the variables somebody thought of, and production reads
+more than the six that select a provider: eight `SEARXNG_*` tuning variables, of
+which `SEARXNG_TIMEOUT_SECONDS` makes these cases flaky and
+`SEARXNG_HEADERS_JSON` makes them raise before a socket is opened — and,
+decisively, `search_searxng` and `search_web` both build
+`httpx.AsyncClient(timeout=30)` with `trust_env` left at its default, so an
+ambient `ALL_PROXY` routes a request aimed at loopback through a proxy.
+
+Measured, and it is not theoretical. With the clear removed and
+`ALL_PROXY=http://127.0.0.1:9` exported, **all three** provider and router cases
+fail; with `SERPER_API_KEY` exported instead, the two router cases fail and the
+provider case correctly does not. With the clear in place and both exported,
+all three pass. `scrape/universal_html.py` and `scrape/nodriver_worker.py`
+already carry separate defences against this same trap, which is the evidence
+that it bites in this codebase specifically. Clearing everything also covers the
+variable nobody has added yet — the failure that broke the ledger guard the day
+a sixth provider landed.
+
+**The 403 branch is deliberately *not* re-proven here.**
+`test_searxng_unit.py::test_search_searxng_raises_on_403` already pins it at L1
+against a `MockTransport`, which is the lowest layer that can prove it. Driving
+it again over a socket would need an `enabled_formats` knob on the fixture whose
+only user is a duplicate test, and it would land on a weaker assertion anyway:
+`search_searxng` catches every per-instance exception and re-raises
+`SearxngError("All configured SearXNG instances failed. Last error: …")` with no
+`from`, so the branch's own message survives only as a substring. The fixture
+still *serves* the 403 — the contract table drives it — because that is a
+fidelity claim about the fixture, not a claim about production.
+
+**Known limits, recorded so a later step does not rediscover them.** One
+response shape per instance, and no configurable failure modes — no `429`, no
+truncated body, no invalid JSON, no `POST` form endpoint, no paging, no
+`unresponsive_engines` content, and no instance-side bot detection (a real
+instance can reject the User-Agent `search_searxng` sends; this one ignores
+headers entirely). Each belongs with whichever step first drives it; an unused
+mode is an unchecked one. The instance also serves every query identically: it
+does not match on `q`, so a test needing two different result sets needs two
+instances.
+
+**Three of `search_searxng`'s own behaviours are undriven here, and none is an
+oversight.** It silently *drops* any result whose `title`, `url` or `content` is
+missing, non-string or blank — and a real instance produces blank `content`
+routinely, because its own normaliser blanks `content` when it equals `title`.
+It truncates at `num_results`. And it fails over across a comma-separated list
+of instances, which a single-instance fixture cannot exercise. The calibration
+passes `num_results` large enough that truncation never fires, so its "one
+result out per result configured" claim means what it says; driving the drop
+filters and the failover belongs with the provider-parsing work in E5, not with
+the instrument.
+
+**Value shapes are pinned, not just field names**, because the specimen is
+compared by equality. That is deliberate: a fixture emitting a string where
+`parsed_url` should be a six-element array would satisfy any name-based check
+and would misrepresent the contract.
+
 ### 5.3 Chromium-specific — Linux container
 
 `ChromiumPool`: slot acquisition and release, reuse
@@ -609,6 +868,18 @@ Every test in §5.2 and §5.3 that starts something real must:
   for processes named `chrome`, which is vulnerable to PID reuse and would kill a
   developer's own browser.
 - Capture and attach child stdout/stderr on failure.
+
+**A handshake may be satisfied by construction, and E3-2 is the case.** "Wait
+for an accepting port, with a timeout" is a wait that has *already succeeded*
+when a `socketserver.TCPServer` constructor returns: it binds and listens before
+it returns, so there is no window to poll out. Adding a poll loop there would not
+be caution, it would be waiting out a window that does not exist — and its
+timeout would become the only number anyone ever measured. The rule is
+unchanged; what satisfies it is. This applies **only** where the artefact's own
+constructor listens: a spawned child process (§5.2a) has a real window and must
+poll, which is why E3-1 does. Note the bound this buys: `request_queue_size` is
+5 on CPython 3.13, so at most five connections may queue before the serving
+thread is scheduled.
 
 **Four of those five do not bind a fully-doubled test**, and saying so is not a
 loophole — it is what stops the list reading as ignored. A test that starts no
@@ -638,10 +909,21 @@ covers packaging and entrypoints, which nothing else touches.
 **Stubbing across a process boundary.** The server runs in a separate process, so
 `monkeypatch` cannot reach it and there is no provider-injection API. The
 mechanism is **configuration, not patching**: stand up a local HTTP server that
-implements the SearXNG response contract, and start the child with
-`SEARXNG_BASE_URL` pointing at it and `SERPER_API_KEY`, `SERPBASE_API_KEY` and
-`TAVILY_API_KEY` cleared, so SearXNG wins provider selection. `search_searxng` is
-configured entirely by URL, which makes it the natural seam.
+implements the SearXNG response contract — **§5.2b, built in E3-2**, not a second
+implementation — and start the child with `SEARXNG_BASE_URL` pointing at it.
+`search_searxng` is configured entirely by URL, which makes it the natural seam.
+
+**Give the child a cleared environment, not one with three variables deleted.**
+Earlier drafts of this section named `SERPER_API_KEY`, `SERPBASE_API_KEY` and
+`TAVILY_API_KEY`; E3-2 measured that prescription to be insufficient, and it is
+corrected here rather than left for its next reader to rediscover. It misses two
+provider variables that already exist (`SOFYA_API_KEY`, `YDC_API_KEY` — the list
+belongs to `PROVIDERS`, not to prose), every provider added later, the eight
+`SEARXNG_*` tuning variables `search_searxng` reads at the point of use, and —
+decisively — the proxy variables, because production leaves `trust_env` at its
+default and an ambient `ALL_PROXY` routes a request aimed at loopback through a
+proxy. §5.2b carries the measurement. Build the child's environment additively:
+start from nothing and add what the run needs.
 
 **Do not add a production "test provider" hook.** An unrestricted injection point
 in shipped code is a larger risk than the test is worth, on a server that is
@@ -697,6 +979,8 @@ requirements specific to testing an installed artefact:
   the checkout. Without it the job can pass while exercising the source tree — a
   false positive on the one thing this job exists to prove.
 - Ephemeral port and readiness handshake for the fixture server; never a sleep.
+  §5.2b's server satisfies both by construction — the port is `0` and the
+  constructor listens — so this line costs its caller nothing.
 - Per-call and whole-process timeouts, so a failed entrypoint fails fast instead
   of hanging until the job timeout.
 - `finally` cleanup keyed on the PIDs this test spawned, with child stdout and
