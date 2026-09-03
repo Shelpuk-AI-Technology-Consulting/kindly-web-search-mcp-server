@@ -218,34 +218,49 @@ that never reach it: an environment-variable case that leaves the real lookup in
 place is a case whose result depends on whether the developer has Chromium
 installed.
 
-**`_is_snap_browser` reads the filesystem, and answers wrongly on both platforms
-for two different measured reasons.** Its only ambient input is
-`os.path.realpath`, so pin it —
-`monkeypatch.setattr(os.path, "realpath", …)` — in every case, on the same
-reasoning as `shutil.which` above: a case that leaves the real call in place
-answers differently depending on where the developer's Chromium came from.
+**`_is_snap_browser` has two ambient inputs, and both are pinned in every case
+that derives a classification.** They are `os.path.realpath` —
+`monkeypatch.setattr(os.path, "realpath", …)`, on the same reasoning as
+`shutil.which` above, because a case that leaves the real call in place answers
+differently depending on where the developer's Chromium came from — and
+`os.name`, because the function refuses to classify anything as snap away from
+POSIX. A case that pins only the first asserts one answer on Linux and its
+opposite on Windows.
 
-- **On Windows nothing classifies as snap, whatever the path.** A path with a
-  single leading slash is not absolute there, so `realpath` joins it against the
-  current working drive and normalises the separators; `/snap/bin/chromium`
-  becomes `<drive>:\snap\bin\chromium` and the `/snap/` marker the detector keys
-  on is erased. Measured against the shipped function on a `windows-latest`
-  runner. **This is correct production behaviour** — snap is a Linux packaging
-  format — and must not be "fixed" in the detector by matching separators.
-- **On Ubuntu the commonest snap install classifies as non-snap.** The real
-  `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, which `realpath` follows
-  before the prefix test. That one is an **open production defect**, reported and
-  characterised rather than repaired; see §14.
+The function used to answer *wrongly* on both platforms, for two different
+measured reasons. One was a defect and is fixed; the other was correct and now
+rests on an explicit guard instead of an accident.
+
+- **Nothing classifies as snap away from POSIX, whatever the path.** This is
+  correct production behaviour — snap is a Linux packaging format — and it used
+  to fall out of `realpath`: a path with a single leading slash is not absolute
+  on Windows, so it was joined against the current working drive and its
+  separators normalised, turning `/snap/bin/chromium` into
+  `<drive>:\snap\bin\chromium` and erasing the `/snap/` marker. Measured against
+  the then-shipped function on a `windows-latest` runner. Testing the path **as
+  given** removed that accident, so an `os.name` guard carries the answer now.
+  The instruction that stands is unchanged in substance: do not "fix" this by
+  matching separators.
+- **On Ubuntu the commonest snap install classified as non-snap.** The real
+  `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, which `realpath` followed
+  before the prefix test, so the browser that most needs the longer DevTools
+  budget was the only one that never got it. That was an open production defect,
+  carried across four steps as a characterised known-wrong answer; it is now
+  **fixed** — the marker is tested on the path as given, then on the resolved
+  path. Resolving still earns its place: a browser reached by an ordinary path
+  can be a snap package underneath, and only the resolved form says so.
 
 E1-6 hit the first of these and repaired the affected test by injecting the
-classification. The path-shape wiring it gave up belongs to **E5-4**, whose entry
-cites this section — the pointer runs both ways deliberately, because the layer
-split sends resolver tests to
+classification. The path-shape wiring it gave up has since been restored at both
+call sites by the fix above, which pins `os.name` and `os.path.realpath` rather
+than injecting an answer, and the component-level cases for `_is_snap_browser`
+landed with it in `tests/test_nodriver_worker_launch_resolvers.py`. **E5-4 no
+longer owns that function**; its classification group keeps
+`_is_retryable_browser_connect_error` alone. The pointer between this section and
+E5-4's entry is kept anyway, because the layer split sends resolver tests to
 `tests/test_nodriver_worker_launch_resolvers.py` while the traps were first
 recorded in `tests/test_nodriver_worker_sandbox.py`, which an E5-4 author has no
-reason to open. E5-4 lands *after* E4-2 makes the cross-platform job required, so
-the obvious first assertion — a `/snap/` path is snap — turns a required gate red
-rather than a local run.
+reason to open.
 
 **The `hasattr(os, "geteuid")` guard is not a testable branch.** Deleting the
 attribute exercises the *condition*, but the call sits inside a
@@ -1472,11 +1487,20 @@ conversion bug.
    block now asserts away.
 
    **The seam's cost was measured and then repaid.** Injecting the answer gives
-   up the wiring from a *path shape* to the classification, which belongs to
-   E5-4 — the step that owns `_is_snap_browser` outright. What it keeps is
+   up the wiring from a *path shape* to the classification. What it keeps is
    asserted explicitly: the detector is consulted, and about the path the caller
    supplied. Measured — with that assertion removed, a mutation asking the
    detector about the wrong path survives; with it, the mutation dies.
+
+   **Superseded in part.** The reasoning above is left as it was recorded, and
+   the two seam cases still stand — but the wiring it gave up has since been
+   restored. The Ubuntu misclassification named in §14 was repaired in a change
+   of its own, and `_is_snap_browser` now reads `os.name` as well as
+   `os.path.realpath`. Pinning **both** is what a case needs to derive a
+   classification from a path and still assert one constant on every platform;
+   pinning only `realpath`, as was possible when this was written, is not enough
+   and is the reason the seam looked unavoidable. Each call site gained a case
+   per polarity on that basis. See §3.1.
 
    **A live mutant on the line being repaired was found and killed.** The
    `if is_snap else 1.0` conditional was asserted by **nothing in the tree**:
@@ -2879,14 +2903,14 @@ is nothing to test.
   `_is_snap_browser`), which implies breakage has happened and will recur.
 - **`_split_worker_diagnostics` is dead code** (§4.3), flagged for removal under
   a separate change.
-- **`_is_snap_browser` misclassifies the commonest snap install**, and the defect
-  is open. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu, and
-  the function calls `os.path.realpath` before testing for the `/snap/` prefix,
-  so the browser that most needs the longer DevTools timeout is the one that does
-  not get it. Measured on Ubuntu 24.04. Recorded here because it was previously
-  documented only in a test-module comment, which left E5-4 — the step that will
-  write the first direct test of this function — to choose unaided between
-  asserting a known-wrong answer and repairing production inside a testing step.
-  It should do the former, with the defect named; the repair deserves its own
-  change. §3.1 carries the detail, including the separate Windows behaviour that
-  is **not** a defect.
+- **`_is_snap_browser` misclassified the commonest snap install. CLOSED** — the
+  repair landed as a change of its own, which is what this entry said it
+  deserved. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu and
+  the function resolved the path before testing it for the `/snap/` marker, so
+  the browser that most needs the longer DevTools timeout was the one that never
+  got it. Measured on Ubuntu 24.04, and re-measured against the repaired function
+  on the same host. The marker is now tested on the path as given before the
+  resolved one, behind an `os.name` guard that keeps the (correct) Windows answer
+  from depending on an accident of `realpath`. Both call sites — `_fetch_html`
+  and the pooled slot — have a case per polarity deriving the classification from
+  a path. §3.1 carries the detail.

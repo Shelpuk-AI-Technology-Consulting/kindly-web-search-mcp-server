@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kindly_web_search_mcp_server.scrape.nodriver_worker import (
     _build_chromium_launch_args,
+    _is_snap_browser,
     _resolve_browser_executable_path,
     _resolve_sandbox_enabled,
     _resolve_start_retry_attempts,
@@ -676,3 +677,212 @@ def test_a_base_argument_already_present_is_not_repeated() -> None:
 
     assert args.count("--disable-logging") == 1
     assert args[-1] == "--custom-flag"
+
+
+# --------------------------------------------------------------------------
+# _is_snap_browser
+# --------------------------------------------------------------------------
+
+#: The launcher a stock Ubuntu install puts on ``PATH``. It is a **symlink to**
+#: ``/usr/bin/snap`` -- the snap runtime, not the browser -- which is what makes
+#: this the case worth writing: resolving the path first replaces the only
+#: evidence that the browser is snap-packaged with a target that carries no
+#: marker at all. Measured on Ubuntu 24.04.4:
+#: ``lrwxrwxrwx /snap/bin/chromium -> /usr/bin/snap``.
+UBUNTU_SNAP_LAUNCHER = "/snap/bin/chromium"
+
+#: What :func:`os.path.realpath` returns for :data:`UBUNTU_SNAP_LAUNCHER`. Pinned
+#: rather than derived so the case answers the same on a machine with no snap
+#: installed, and on Windows, where ``realpath`` gives a third answer again.
+UBUNTU_SNAP_LAUNCHER_TARGET = "/usr/bin/snap"
+
+#: An ordinary system browser: no marker in the path, and it resolves to itself.
+SYSTEM_BROWSER = "/usr/bin/chromium"
+
+
+def _realpath_returning(targets: dict[str, str]) -> Callable[..., str]:
+    """Build an :func:`os.path.realpath` stand-in with a fixed answer table.
+
+    Args:
+        targets: Mapping from a path to what ``realpath`` should return for it.
+            A path absent from the mapping resolves to itself, which is what the
+            real call does for a path that is not a symlink.
+
+    Returns:
+        A callable with :func:`os.path.realpath`'s single-argument shape.
+    """
+    def _realpath(path: str, *_args: object, **_kwargs: object) -> str:
+        return targets.get(path, path)
+
+    return _realpath
+
+
+@pytest.fixture
+def posix_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``os.name`` to ``"posix"`` for the duration of one case.
+
+    `_is_snap_browser` has exactly two ambient inputs, and this is the second
+    one: snap is a Linux packaging format, so the function answers ``False`` for
+    every path where ``os.name`` is not ``"posix"``. A case that leaves it to the
+    host asserts one thing on Linux and its opposite on Windows -- which is the
+    failure the cross-platform milestone actually hit, in a case that derived a
+    snap classification from a path shape and expected a constant.
+
+    On Linux this pin is a no-op and is applied anyway, because a pin that only
+    exists where it changes nothing is a pin nobody notices has gone missing.
+
+    Args:
+        monkeypatch: pytest fixture that scopes and reverses the change.
+    """
+    monkeypatch.setattr(os, "name", "posix")
+
+
+def test_the_ubuntu_snap_launcher_is_classified_as_snap(
+    posix_platform: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Classify ``/snap/bin/chromium`` as snap even though it resolves elsewhere
+
+    This is the regression case. The shipped function resolved the path before
+    testing it, so the single commonest way to have a snap Chromium -- the only
+    way Ubuntu has offered since 19.10 -- classified as **non**-snap and was
+    denied the longer DevTools budget the multiplier exists to give it.
+
+    A browser invoked as ``/snap/bin/chromium`` is a snap browser whatever the
+    launcher symlink points at, so the marker is tested on the path as given.
+
+    Args:
+        posix_platform: fixture pinning ``os.name``.
+        monkeypatch: pytest fixture used to pin ``os.path.realpath``.
+    """
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        _realpath_returning({UBUNTU_SNAP_LAUNCHER: UBUNTU_SNAP_LAUNCHER_TARGET}),
+    )
+
+    assert _is_snap_browser(UBUNTU_SNAP_LAUNCHER) is True
+
+
+def test_a_snap_path_with_nothing_to_resolve_is_classified_as_snap(
+    posix_platform: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Classify a ``/snap/`` path that is not a symlink as snap
+
+    The shape the shipped function got right, kept under test because it is the
+    shape every existing test in the tree uses to reach the snap branch: a path
+    under ``/snap/`` that does not exist has no symlink for ``realpath`` to
+    follow, so both the given and the resolved form carry the marker.
+
+    Args:
+        posix_platform: fixture pinning ``os.name``.
+        monkeypatch: pytest fixture used to pin ``os.path.realpath``.
+    """
+    monkeypatch.setattr(os.path, "realpath", _realpath_returning({}))
+
+    assert _is_snap_browser("/snap/bin/chromium-for-tests") is True
+
+
+def test_a_browser_resolving_into_the_snap_tree_is_classified_as_snap(
+    posix_platform: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Classify a marker-free path that resolves into ``/snap/`` as snap
+
+    Resolving is still done, and this is why: a browser reached by an ordinary
+    path can be a snap package underneath, and only the resolved form says so.
+    Deleting the resolved-path test to keep the given-path one would fix the
+    defect above and open this hole in its place, so both halves are asserted.
+
+    Args:
+        posix_platform: fixture pinning ``os.name``.
+        monkeypatch: pytest fixture used to pin ``os.path.realpath``.
+    """
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        _realpath_returning(
+            {SYSTEM_BROWSER: "/snap/chromium/2917/usr/lib/chromium/chrome"}
+        ),
+    )
+
+    assert _is_snap_browser(SYSTEM_BROWSER) is True
+
+
+def test_an_ordinary_system_browser_is_not_classified_as_snap(
+    posix_platform: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leave a distribution-packaged browser unclassified, so it keeps the plain budget
+
+    The negative polarity of the classification. Without it, a function that
+    returned ``True`` unconditionally would satisfy every case above, and the
+    snap multiplier would silently apply to every browser on the machine.
+
+    Args:
+        posix_platform: fixture pinning ``os.name``.
+        monkeypatch: pytest fixture used to pin ``os.path.realpath``.
+    """
+    monkeypatch.setattr(os.path, "realpath", _realpath_returning({}))
+
+    assert _is_snap_browser(SYSTEM_BROWSER) is False
+
+
+def test_no_path_is_classified_as_snap_away_from_posix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    r"""Answer ``False`` for every path where ``os.name`` is not ``"posix"``
+
+    Snap is a Linux packaging format and no Windows machine has one, so this is
+    the correct answer rather than a limitation. It used to fall out of an
+    accident: a path with a single leading slash is not absolute on Windows, so
+    ``realpath`` joins it against the current drive and normalises the
+    separators -- ``/snap/bin/chromium`` becomes ``D:\snap\bin\chromium`` and the
+    marker is erased. Measured against the shipped function on a
+    ``windows-latest`` runner, where the drive happened to be ``D:``.
+
+    Testing the path **as given** is what removes that accident, so the answer
+    now rests on an explicit guard instead. The realpath pin below reproduces the
+    measured Windows answer, so the case fails for the right reason when the
+    guard is deleted rather than passing for the old one.
+
+    Args:
+        monkeypatch: pytest fixture used to pin ``os.name`` and
+            ``os.path.realpath``.
+    """
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        _realpath_returning({UBUNTU_SNAP_LAUNCHER: r"D:\snap\bin\chromium"}),
+    )
+
+    assert _is_snap_browser(UBUNTU_SNAP_LAUNCHER) is False
+
+
+def test_a_path_that_cannot_be_resolved_is_not_classified_as_snap(
+    posix_platform: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report a browser whose path will not resolve as non-snap rather than raising
+
+    ``realpath`` can fail -- an embedded null raises :class:`ValueError`, and a
+    filesystem error raises :class:`OSError`. A classification is not worth
+    aborting a browser launch over, so the failure answers ``False``.
+
+    The input carries no marker of its own, deliberately: a ``/snap/`` path never
+    reaches the resolver at all, so a case using one would pass whatever the
+    ``except`` branch did and could not tell ``return False`` from ``return
+    True``.
+
+    Args:
+        posix_platform: fixture pinning ``os.name``.
+        monkeypatch: pytest fixture used to make ``os.path.realpath`` fail.
+    """
+    def _raising(_path: str, *_args: object, **_kwargs: object) -> str:
+        raise OSError("filesystem is unavailable")
+
+    monkeypatch.setattr(os.path, "realpath", _raising)
+
+    assert _is_snap_browser(SYSTEM_BROWSER) is False

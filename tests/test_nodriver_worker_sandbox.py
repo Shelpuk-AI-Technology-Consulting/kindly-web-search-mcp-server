@@ -106,27 +106,41 @@ READ_ENVIRONMENT_VARIABLES = (
 #: timing of these tests depend on where the developer's Chromium came from.
 BROWSER_PATH = "/usr/bin/chromium-for-tests"
 
-#: A browser path that `_is_snap_browser` classifies as snap-packaged. It is
-#: fabricated rather than the real `/snap/bin/chromium`, and that is worth a
-#: sentence: on Ubuntu `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, and
-#: `_is_snap_browser` calls `os.path.realpath` first -- so it answers **False**
-#: for the single most common way to have a snap Chromium (measured on Ubuntu
-#: 24.04). A non-existent path under `/snap/` has no symlink to follow and is
-#: classified correctly. The production defect that implies is reported, not
-#: fixed here; a test that used the real path would silently assert the
-#: non-snap branch, which is what the previous version of this file did.
+#: A browser path `_is_snap_browser` classifies as snap-packaged. Fabricated
+#: rather than real, and it no longer has to be: the detector used to resolve the
+#: path before testing it for the ``/snap/`` marker, so only a ``/snap/`` path
+#: that does **not** exist -- one with no symlink for ``realpath`` to follow --
+#: reached the snap branch at all. That was an open production defect and is now
+#: fixed; the marker is tested on the path as given. The constant stays
+#: fabricated because it belongs to the two cases below that *inject* the
+#: classification, where the path is a label rather than an input.
 #:
-#: **On Windows nothing classifies as snap, whatever the path.** A path with a single
-#: leading slash is not absolute there, so `os.path.realpath` joins it against the
-#: current working drive and normalises the separators: this value resolves to
-#: ``<drive>:\snap\bin\chromium-for-tests`` and the ``/snap/`` marker is gone --
-#: measured against the shipped function on a `windows-latest` runner, where the
-#: drive happened to be ``D:``. That is correct
-#: behaviour, snap being a Linux packaging format, and it is why the backoff case
-#: below injects the classification instead of deriving it from this constant. The
-#: constant is still what that case hands to the detector, so it still records what
-#: a snap-packaged browser's path looks like.
+#: The real launcher, which used to be the trap, is :data:`SNAP_LAUNCHER_PATH`
+#: and is what the two derived cases use.
+#:
+#: **Nothing classifies as snap away from POSIX, whatever the path.** That was
+#: once an accident of `os.path.realpath` -- a path with a single leading slash
+#: is not absolute on Windows, so it was joined against the current drive and its
+#: separators normalised, erasing the marker (measured against the shipped
+#: function on a `windows-latest` runner, where the drive happened to be ``D:``).
+#: Testing the path as given removed that accident, so an explicit ``os.name``
+#: guard carries the answer instead. It is still the correct answer -- snap is a
+#: Linux packaging format -- which is why every case that *derives* a
+#: classification pins ``os.name`` as well as ``os.path.realpath``.
 SNAP_BROWSER_PATH = "/snap/bin/chromium-for-tests"
+
+#: The launcher a stock Ubuntu install actually provides, and a symlink to
+#: ``/usr/bin/snap`` rather than to a browser (measured on Ubuntu 24.04.4:
+#: ``lrwxrwxrwx /snap/bin/chromium -> /usr/bin/snap``). Ubuntu has shipped
+#: Chromium only as a snap since 19.10, so this is the commonest snap browser
+#: path in existence -- and, until the detector was repaired, the one path that
+#: was certain to be denied the snap allowance.
+SNAP_LAUNCHER_PATH = "/snap/bin/chromium"
+
+#: What ``os.path.realpath`` returns for :data:`SNAP_LAUNCHER_PATH`. Pinned in
+#: the cases that use it rather than looked up, so they answer the same on a
+#: machine with no snap installed.
+SNAP_LAUNCHER_TARGET = "/usr/bin/snap"
 
 #: A ceiling on any single `_fetch_html` call, guarding a hang that makes no
 #: progress -- an await that never resolves. Five seconds is fifty times the
@@ -183,6 +197,28 @@ class StubChromiumProcess:
     def __repr__(self) -> str:
         """Return a form that names the attempt in an assertion message."""
         return f"<StubChromiumProcess pid={self.pid}>"
+
+
+def _realpath_returning(targets: dict[str, str]) -> Any:
+    """Build an :func:`os.path.realpath` stand-in with a fixed answer table.
+
+    `_is_snap_browser` reads ``os.path.realpath``, whose answer depends on the
+    platform and on where the developer's Chromium came from. The two cases that
+    derive a snap classification from a path pin it through this helper so they
+    assert the same constant everywhere.
+
+    Args:
+        targets: Mapping from a path to what ``realpath`` should return for it.
+            A path absent from the mapping resolves to itself, which is what the
+            real call does for an executable that is not a symlink.
+
+    Returns:
+        A callable with :func:`os.path.realpath`'s single-argument shape.
+    """
+    def _realpath(path: str, *_args: object, **_kwargs: object) -> str:
+        return targets.get(path, path)
+
+    return _realpath
 
 
 def make_browser_double(
@@ -794,6 +830,86 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         # 0.5 * 2**0, then 0.5 * 2**1, unmultiplied. The trailing 0.1 is the
         # profile flush, as above.
         self.assertEqual(recorded, [0.5, 1.0, 0.1])
+
+    async def test_snap_launcher_path_lengthens_the_devtools_budget(self) -> None:
+        """Give the Ubuntu snap launcher the multiplied DevTools budget, from its path alone
+
+        The wiring the cross-platform milestone gave up, restored. The two
+        backoff cases above inject the classification through a seam, so between
+        them they prove that *an answer* selects the multiplier -- not that this
+        path produces that answer. This case derives it: it hands `_fetch_html`
+        the real ``/snap/bin/chromium`` and reads back the budget
+        `_wait_for_devtools_ready` was given.
+
+        A snap Chromium is the browser that most needs the longer budget, and
+        before the detector was repaired it was the only one that never got it:
+        `/snap/bin/chromium` is a symlink to ``/usr/bin/snap``, and resolving it
+        first threw away the marker. On the shipped defaults that is 12 s where
+        36 s was intended, and a content fetch that fails on a machine which
+        would otherwise have worked.
+
+        **Two process globals are pinned here, and both are ambient inputs of the
+        function under test rather than conveniences.** `_is_snap_browser` reads
+        ``os.path.realpath`` -- whose answer depends on what the developer's
+        Chromium is, and on the platform -- and ``os.name``, because snap is a
+        Linux packaging format and nothing classifies as snap elsewhere. Pinning
+        both is what lets this case assert one constant on every platform. The
+        alternative, a platform-gated skip, is the skew the baseline ledger
+        exists to keep out; the alternative of leaving them ambient is exactly
+        how a case here once asserted the multiplied series on Linux and failed
+        on Windows.
+        """
+        with (
+            orchestration_harness(
+                environment={
+                    "KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS": "4",
+                    "KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER": "3",
+                }
+            ) as doubles,
+            patch.object(nodriver_worker.os, "name", "posix"),
+            patch.object(
+                nodriver_worker.os.path,
+                "realpath",
+                _realpath_returning({SNAP_LAUNCHER_PATH: SNAP_LAUNCHER_TARGET}),
+            ),
+        ):
+            await fetch_html(browser_executable_path=SNAP_LAUNCHER_PATH)
+
+        # 4 * 3. Two distinct values, so a production change reading the
+        # multiplier where it means the base -- or the reverse -- cannot land on
+        # the same number by coincidence.
+        self.assertEqual(
+            doubles.wait_ready.call_args.kwargs["timeout_seconds"], 12.0
+        )
+
+    async def test_a_system_browser_path_leaves_the_devtools_budget_alone(self) -> None:
+        """Leave the DevTools budget unmultiplied for a distribution-packaged browser
+
+        The negative polarity of the case above, and it is load-bearing for the
+        same reason its backoff counterpart is: a `_fetch_html` that multiplied
+        unconditionally would satisfy the affirmative case alone. The multiplier
+        is configured here and must be ignored because the browser is not snap,
+        not because none was set.
+
+        The same two globals are pinned, and ``realpath`` answers with the path
+        itself -- the way a real lookup answers for an executable that is not a
+        symlink.
+        """
+        with (
+            orchestration_harness(
+                environment={
+                    "KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS": "4",
+                    "KINDLY_NODRIVER_SNAP_BACKOFF_MULTIPLIER": "3",
+                }
+            ) as doubles,
+            patch.object(nodriver_worker.os, "name", "posix"),
+            patch.object(
+                nodriver_worker.os.path, "realpath", _realpath_returning({})
+            ),
+        ):
+            await fetch_html(browser_executable_path=BROWSER_PATH)
+
+        self.assertEqual(doubles.wait_ready.call_args.kwargs["timeout_seconds"], 4.0)
 
     async def test_does_not_retry_a_non_retryable_error(self) -> None:
         """Surface an unrecognised startup failure at once instead of retrying it
