@@ -352,11 +352,35 @@ def _is_retryable_browser_connect_error(exc: BaseException) -> bool:
 
 
 def _is_snap_browser(executable_path: str) -> bool:
+    """Report whether a browser executable is snap-packaged.
+
+    A snap-packaged Chromium is markedly slower to open its DevTools endpoint
+    than a distribution-packaged one, so the caller multiplies both the
+    DevTools-ready timeout and the retry backoff for one. The marker ``/snap/``
+    is matched anywhere in the path, on the path as supplied and then on its
+    resolved form; the reasoning for the ordering, for the POSIX guard, and for
+    matching a substring rather than a prefix is recorded in
+    ``.system_design/TEST_SUITE.md`` §3.1.
+
+    Args:
+        executable_path: The browser executable path, as the caller supplied it
+            or as the executable resolver produced it.
+
+    Returns:
+        ``True`` when the path identifies a snap-packaged browser.
+    """
+    # No snap runtime exists off POSIX, so no path there may classify as one.
+    if os.name != "posix":
+        return False
+    # Before resolving, because the launcher symlink is what destroys the marker.
+    if "/snap/" in executable_path:
+        return True
+    # After, because an ordinary path can be a snap package underneath.
     try:
         resolved = os.path.realpath(executable_path)
     except Exception:
-        resolved = executable_path
-    return resolved.startswith("/snap/") or "/snap/" in resolved
+        return False
+    return "/snap/" in resolved
 
 
 _UA_TEMPLATE = (

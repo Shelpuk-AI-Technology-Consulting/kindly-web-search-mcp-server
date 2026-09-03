@@ -855,11 +855,15 @@ duplicating tests or touching the same files.
   `_resolve_devtools_ready_timeout_seconds`, `_resolve_worker_timeout_seconds`,
   `_resolve_worker_timeout_details`, `_resolve_snap_backoff_multiplier`,
   `_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`,
-  plus `_is_snap_browser` and `_is_retryable_browser_connect_error`. Those last
-  two were named as component-level targets in §3.1 but claimed by no step —
-  found while implementing E1-2, which declined them rather than absorb work no
-  one had scoped. Nothing checks §3.1's target list against step ownership, so
-  the gap would not have surfaced twice.
+  plus `_is_retryable_browser_connect_error`. That one, and `_is_snap_browser`
+  alongside it, were named as component-level targets in §3.1 but claimed by no
+  step — found while implementing E1-2, which declined them rather than absorb
+  work no one had scoped. Nothing checks §3.1's target list against step
+  ownership, so the gap would not have surfaced twice. **`_is_snap_browser` has
+  since left this step**: the production defect §14 recorded against it was
+  repaired in a change of its own, and that change carried the component cases
+  with it into `tests/test_nodriver_worker_launch_resolvers.py`. Nothing is
+  orphaned by the hand-back — it left with its tests, not without them.
   *Verify:* grouped by behaviour. **Numeric env parsing**
   (`_resolve_retry_backoff_seconds`, `_resolve_devtools_ready_timeout_seconds`,
   `_resolve_worker_timeout_seconds`, `_resolve_snap_backoff_multiplier`): unset,
@@ -870,17 +874,14 @@ duplicating tests or touching the same files.
   (`_detect_chrome_version`, `_resolve_user_agent`):
   a stubbed executable reporting a known version, an executable that fails to run,
   and no executable at all — each returning a usable fallback rather than raising.
-  **Classification** (`_is_snap_browser`, `_is_retryable_browser_connect_error`):
-  each driven by its *input* rather than by an injected answer.
-  `_is_retryable_browser_connect_error` gets one exception of each polarity.
-  `_is_snap_browser` gets the path-shape wiring **E1-6 gave up** — a
-  `/snap/`-shaped path classifies as snap and a `/usr/bin/` one does not — with
-  `os.path.realpath` pinned, since that is this function's only ambient input.
-  **Read §3.1 before writing that case**: this function answers *wrongly* on both
-  platforms, for two different measured reasons, and the obvious first assertion
-  turns E4-2's required cross-platform gate red. Characterise the current answer
-  with the defect named in the docstring; do **not** repair production in a
-  testing step.
+  **Classification** (`_is_retryable_browser_connect_error`): driven by its
+  *input* rather than by an injected answer, with one exception of each polarity.
+  `_is_snap_browser` **is no longer this step's** — the path-shape wiring E1-6
+  gave up was restored by the change that repaired the function, which asserts
+  the corrected answer at component level and at both call sites. Two
+  consequences for whoever writes this step: do not add a second set of cases for
+  it, and do not read §3.1's older instruction to characterise a known-wrong
+  answer as still standing — §3.1 is updated.
   **Composite** (`_resolve_worker_timeout_details`): the returned tuple is
   consistent with the individual resolvers it composes.
   No function in the five groups above is also tested by E5-3 or E1-2, and the
@@ -888,7 +889,8 @@ duplicating tests or touching the same files.
   because E5-4 is scoped by *exclusion*, so a function owned here but named in no
   group is orphaned permanently rather than deferred. **E1-6 handed the
   classification group its one retired claim**, and found the list short by two
-  when it went looking for the owner.
+  when it went looking for the owner; the snap-detection fix has since taken one
+  of those two back, tests included.
 - **E5-5.** `html_to_markdown`, `sanitize_markdown`, `extract_content_as_markdown`,
   `_apply_markdown_cap`, `_build_md_suffix_url` over E3-3's fragments.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
@@ -1095,7 +1097,18 @@ duplicating tests or touching the same files.
   the range is ignored; **a slot released twice is not queued twice** — `release`
   rejects or de-duplicates a slot already in the queue, falsified by releasing one
   slot twice and observing two concurrent acquires hand back the same object.
-  Closes the repo's largest untested module.
+  Closes the repo's largest **still** untested module — one call site left it
+  ahead of this step. `tests/test_chromium_pool_slot_start.py` covers
+  `ChromiumSlot._start`'s snap DevTools budget, both polarities, hermetically:
+  it landed with the snap-detection fix because that fix owed both of the
+  detector's call sites a case. **It belongs to this step now.** Extend it rather
+  than opening a second module over the same coroutine, and note what it
+  deliberately leaves — its own docstring lists port selection, profile
+  directories, the slot health probe and the pool's queueing, every one of which
+  is this step's. **Its two existing cases are unmarked and must stay so**: they
+  are hermetic and belong in the fast lane. Every claim this step adds there
+  needs its own `chromium` or `subsystem` marker, or a step written against a
+  locally installed Chromium quietly acquires cases that run everywhere.
 
 ---
 

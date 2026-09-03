@@ -409,6 +409,15 @@ repair injects the classification through a seam instead of deriving it from the
 host's path semantics. The wiring that remains asserted, and the coverage given
 up, are stated in that test's docstring and in `TEST_SUITE.md`.
 
+The probe output above is a measurement of the function as it was shipped on
+2026-09-02 and is left exactly as recorded. The *answer* it reports is still
+production's answer — nothing classifies as snap away from POSIX — but the
+mechanism behind it is not: a later change repaired a separate Ubuntu
+misclassification by testing the `/snap/` marker on the path as given, which
+would have made this path classify as snap, so an explicit `os.name` guard now
+carries the Windows answer. `TEST_SUITE.md` §3.1 has the detail. Nothing in this
+document's figures changes.
+
 **No relocation row was added, and none is needed.** The test was rewritten in
 place under its existing node id, which is the pattern this document says to
 prefer: the id never left the collected set, so nothing left this ledger by

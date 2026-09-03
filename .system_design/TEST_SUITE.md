@@ -91,6 +91,8 @@ specific:
   `_emit_worker_heartbeat`, `_terminate_process_tree`. The 3 stale loader tests
   target this.
 - **All of `scrape/chromium_pool.py`** (372 lines) — no test file references it.
+  *(Since narrowed: `tests/test_chromium_pool_slot_start.py` covers
+  `ChromiumSlot._start`'s snap DevTools budget. The rest of the module stands.)*
 
 Working and not to be disturbed: 15 of 18 tests in
 `test_universal_html_loader.py` cover the Markdown-suffix probe path end to end,
@@ -218,34 +220,85 @@ that never reach it: an environment-variable case that leaves the real lookup in
 place is a case whose result depends on whether the developer has Chromium
 installed.
 
-**`_is_snap_browser` reads the filesystem, and answers wrongly on both platforms
-for two different measured reasons.** Its only ambient input is
-`os.path.realpath`, so pin it —
-`monkeypatch.setattr(os.path, "realpath", …)` — in every case, on the same
-reasoning as `shutil.which` above: a case that leaves the real call in place
-answers differently depending on where the developer's Chromium came from.
+**`_is_snap_browser` has two ambient inputs, and both are pinned in every case
+that derives a classification.** They are `os.path.realpath` —
+`monkeypatch.setattr(os.path, "realpath", …)`, on the same reasoning as
+`shutil.which` above, because a case that leaves the real call in place answers
+differently depending on where the developer's Chromium came from — and
+`os.name`, because the function refuses to classify anything as snap away from
+POSIX. A case that pins only the first asserts one answer on Linux and its
+opposite on Windows.
 
-- **On Windows nothing classifies as snap, whatever the path.** A path with a
-  single leading slash is not absolute there, so `realpath` joins it against the
-  current working drive and normalises the separators; `/snap/bin/chromium`
-  becomes `<drive>:\snap\bin\chromium` and the `/snap/` marker the detector keys
-  on is erased. Measured against the shipped function on a `windows-latest`
-  runner. **This is correct production behaviour** — snap is a Linux packaging
-  format — and must not be "fixed" in the detector by matching separators.
-- **On Ubuntu the commonest snap install classifies as non-snap.** The real
-  `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, which `realpath` follows
-  before the prefix test. That one is an **open production defect**, reported and
-  characterised rather than repaired; see §14.
+**The marker is matched anywhere in the path, not as a prefix**, and that is a
+requirement rather than a spelling. snapd mounts snaps under
+`/var/lib/snapd/snap` and puts `/var/lib/snapd/snap/bin` on `PATH`; `/snap`
+exists only where an administrator creates the symlink by hand, which classic
+confinement needs and nothing else does (ArchWiki, *Snap*). So on Fedora, Arch
+and Debian the launcher is `/var/lib/snapd/snap/bin/chromium` and the marker sits
+mid-path. The shipped function spelled this `resolved.startswith("/snap/") or
+"/snap/" in resolved` — a redundant prefix test beside the substring test that
+subsumed it — so "tidy that back to the prefix" is the refactor the next reader
+reaches for, and it would deny the allowance to every snap browser off Ubuntu.
+Two of §3.1's cases carry a mid-path marker for exactly this reason, one on the
+given path and one on the resolved one; without them that mutation survives the
+whole suite. Measured.
+
+The guard is spelled `os.name != "posix"` and not `sys.platform` or a Linux test,
+on two separate grounds. POSIX rather than Linux: macOS has no snap either, but a
+`/snap/` path there classified as snap before the guard existed and
+misclassifying one costs only a longer timeout — narrowing it would be a
+behaviour change made for tidiness. `os.name` rather than `sys.platform`: the
+convention this repository already records is that only a body touching
+platform-exclusive stdlib needs the `sys.platform` spelling, because mypy narrows
+on it and then declines to check the branch it calls unreachable; this body is
+ordinary and both runs should read it.
+
+The function used to answer *wrongly* on both platforms, for two different
+measured reasons. One was a defect and is fixed; the other was correct and now
+rests on an explicit guard instead of an accident.
+
+- **Nothing classifies as snap away from POSIX, whatever the path.** This is
+  correct production behaviour — snap is a Linux packaging format — and it used
+  to fall out of `realpath`: a path with a single leading slash is not absolute
+  on Windows, so it was joined against the current working drive and its
+  separators normalised, turning `/snap/bin/chromium` into
+  `<drive>:\snap\bin\chromium` and erasing the `/snap/` marker. Measured against
+  the then-shipped function on a `windows-latest` runner. Testing the path **as
+  given** removed that accident, so an `os.name` guard carries the answer now.
+  The instruction that stands is unchanged in substance: do not "fix" this by
+  matching separators.
+- **On Ubuntu the commonest snap install classified as non-snap.** The real
+  `/snap/bin/chromium` is a symlink to `/usr/bin/snap`, which `realpath` followed
+  before the prefix test, so the browser that most needs the longer DevTools
+  budget was the only one that never got it. That was an open production defect,
+  carried across four steps as a characterised known-wrong answer; it is now
+  **fixed** — the marker is tested on the path as given, then on the resolved
+  path. Resolving still earns its place: a browser reached by an ordinary path
+  can be a snap package underneath, and only the resolved form says so.
+
+**The executable path is never `realpath`-resolved before launch, and must not
+be.** `_resolve_browser_executable_path` returns the path as configured or as
+found on `PATH`; only `_is_snap_browser` resolves, and only to answer a question.
+That distinction is load-bearing: `/usr/bin/snap` dispatches on the *name the
+binary was invoked as*, and every `/snap/bin/<app>` is a symlink to it — so
+launching the resolved path starts the snap CLI and prints its help, not
+Chromium. Confirmed on snapd's own forum
+(`forum.snapcraft.io/t/symlinks-and-snap-bin-structure/16532`), where a
+maintainer states the dispatch rule outright. Stated here because the variable
+the launcher reads is called `resolved_browser_executable_path` and this section
+now puts `os.path.realpath` in the reader's mind two hundred lines above it.
 
 E1-6 hit the first of these and repaired the affected test by injecting the
-classification. The path-shape wiring it gave up belongs to **E5-4**, whose entry
-cites this section — the pointer runs both ways deliberately, because the layer
-split sends resolver tests to
+classification. The path-shape wiring it gave up has since been restored at both
+call sites by the fix above, which pins `os.name` and `os.path.realpath` rather
+than injecting an answer, and the component-level cases for `_is_snap_browser`
+landed with it in `tests/test_nodriver_worker_launch_resolvers.py`. **E5-4 no
+longer owns that function**; its classification group keeps
+`_is_retryable_browser_connect_error` alone. The pointer between this section and
+E5-4's entry is kept anyway, because the layer split sends resolver tests to
 `tests/test_nodriver_worker_launch_resolvers.py` while the traps were first
 recorded in `tests/test_nodriver_worker_sandbox.py`, which an E5-4 author has no
-reason to open. E5-4 lands *after* E4-2 makes the cross-platform job required, so
-the obvious first assertion — a `/snap/` path is snap — turns a required gate red
-rather than a local run.
+reason to open.
 
 **The `hasattr(os, "geteuid")` guard is not a testable branch.** Deleting the
 attribute exercises the *condition*, but the call sits inside a
@@ -1472,11 +1525,20 @@ conversion bug.
    block now asserts away.
 
    **The seam's cost was measured and then repaid.** Injecting the answer gives
-   up the wiring from a *path shape* to the classification, which belongs to
-   E5-4 — the step that owns `_is_snap_browser` outright. What it keeps is
+   up the wiring from a *path shape* to the classification. What it keeps is
    asserted explicitly: the detector is consulted, and about the path the caller
    supplied. Measured — with that assertion removed, a mutation asking the
    detector about the wrong path survives; with it, the mutation dies.
+
+   **Superseded in part.** The reasoning above is left as it was recorded, and
+   the two seam cases still stand — but the wiring it gave up has since been
+   restored. The Ubuntu misclassification named in §14 was repaired in a change
+   of its own, and `_is_snap_browser` now reads `os.name` as well as
+   `os.path.realpath`. Pinning **both** is what a case needs to derive a
+   classification from a path and still assert one constant on every platform;
+   pinning only `realpath`, as was possible when this was written, is not enough
+   and is the reason the seam looked unavoidable. Each call site gained a case
+   per polarity on that basis. See §3.1.
 
    **A live mutant on the line being repaired was found and killed.** The
    `if is_snap else 1.0` conditional was asserted by **nothing in the tree**:
@@ -2039,10 +2101,14 @@ would actually have caught this project's worst gap, and the first draft of this
 section did not have it.
 
 By default coverage.py reports only files it *observed being executed*. A module
-no test ever imports is absent from the report entirely — so
-`scrape/chromium_pool.py`, 372 lines with no test file, would contribute nothing
-and drag nothing down. It would be invisible rather than visibly at zero. Setting
-`source_pkgs` is what makes coverage.py report never-executed files.
+a given run never imports is absent from the report entirely — so
+`scrape/chromium_pool.py`, 372 lines, would contribute nothing and drag nothing
+down under any run that does not reach it. It would be invisible rather than
+visibly at zero. Setting `source_pkgs` is what makes coverage.py report
+never-executed files. (That module is no longer wholly untested — the snap
+DevTools budget of `ChromiumSlot._start` is covered — but the guard's control
+uses a standalone probe script that imports one unrelated module, so the
+observable is unaffected.)
 
 Three configuration files, because the jobs genuinely need different behaviour and
 an earlier draft described settings that were not in the file it displayed:
@@ -2157,9 +2223,11 @@ job's own pinned run of the L1/L2 selection; nothing is combined across jobs. Bu
 that single run is reported twice, and the difference is load-bearing.
 
 `source_pkgs` makes the report **whole-package by definition** — that is the point
-of control 1, and it is also a trap. A module the hermetic lane cannot execute,
-such as `chromium_pool.py`, appears with every statement at zero hits. It is not
-absent; it is present and uncovered. So a scope claim cannot be made by wishing:
+of control 1, and it is also a trap. A module the hermetic lane cannot execute
+appears with every statement at zero hits. It is not absent; it is present and
+uncovered. `chromium_pool.py` was the example here and is now only a partial one
+— its slot startup gained a hermetic case with the snap-detection fix, so the
+lane executes the module, though almost all of it stays at zero. So a scope claim cannot be made by wishing:
 without filtering, `diff-cover` sees those zero-hit statements and counts changed
 ones as uncovered, and adding L3-only statements grows the ratchet's denominator
 while the numerator stands still. Ordinary worker or pool development would fail
@@ -2879,14 +2947,14 @@ is nothing to test.
   `_is_snap_browser`), which implies breakage has happened and will recur.
 - **`_split_worker_diagnostics` is dead code** (§4.3), flagged for removal under
   a separate change.
-- **`_is_snap_browser` misclassifies the commonest snap install**, and the defect
-  is open. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu, and
-  the function calls `os.path.realpath` before testing for the `/snap/` prefix,
-  so the browser that most needs the longer DevTools timeout is the one that does
-  not get it. Measured on Ubuntu 24.04. Recorded here because it was previously
-  documented only in a test-module comment, which left E5-4 — the step that will
-  write the first direct test of this function — to choose unaided between
-  asserting a known-wrong answer and repairing production inside a testing step.
-  It should do the former, with the defect named; the repair deserves its own
-  change. §3.1 carries the detail, including the separate Windows behaviour that
-  is **not** a defect.
+- **`_is_snap_browser` misclassified the commonest snap install. CLOSED** — the
+  repair landed as a change of its own, which is what this entry said it
+  deserved. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu and
+  the function resolved the path before testing it for the `/snap/` marker, so
+  the browser that most needs the longer DevTools timeout was the one that never
+  got it. Measured on Ubuntu 24.04, and re-measured against the repaired function
+  on the same host. The marker is now tested on the path as given before the
+  resolved one, behind an `os.name` guard that keeps the (correct) Windows answer
+  from depending on an accident of `realpath`. Both call sites — `_fetch_html`
+  and the pooled slot — have a case per polarity deriving the classification from
+  a path. §3.1 carries the detail.
