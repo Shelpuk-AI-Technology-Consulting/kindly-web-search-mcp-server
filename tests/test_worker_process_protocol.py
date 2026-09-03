@@ -56,10 +56,16 @@ from tests.doubles.worker_process import FakeWorkerProcess, primed_reader
 # cosmetic. That function no longer touches a process at all -- the runner
 # extraction took the spawn, the stream reads and the exit status with it -- so
 # the four loader tests that used to hand `FakeWorkerProcess` to production now
-# double the runner instead. Until the runner's parameter is annotated with
-# `WorkerProcess`, this literal is the *only* thing tying the double's shape to
-# what production reads: nothing else fails if they diverge. That annotation is
-# the very next step in the plan, and this comment is why it should not wait.
+# double the runner instead.
+#
+# This literal is no longer the ONLY thing tying the double's shape to what
+# production reads. It was, between the extraction and the annotation, and
+# nothing failed if the two diverged. `_run_worker_command` now annotates the
+# process it spawns with the Protocol, so the seam cases at the bottom of this
+# module catch a divergence that this literal cannot see: production growing an
+# eighth read. The two check opposite directions and neither is redundant --
+# this one fails when the PROTOCOL gains a member nothing consumes, which no
+# amount of type-checking production would notice.
 CONSUMED_SURFACE: Final = frozenset(
     {"stdout", "stderr", "pid", "returncode", "wait", "kill", "terminate"}
 )

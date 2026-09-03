@@ -850,10 +850,28 @@ conversion bug.
    Only `returncode` actually forces the property choice; the other three
    attribute members are spelled the same way for consistency.
 
-   **`pid` is declared `int`, not `int | None`, while production still guards it**
-   (`if proc.returncode is None and proc.pid is not None`). Harmless today, since
-   `warn_unreachable` is off — but E2-4 annotates that call site, so it decides
-   there: either the guard is dead and goes, or the Protocol member widens.
+   **`pid` is declared `int`, not `int | None`. E2-4 took the first of the two
+   options and deleted the guard**, which used to read `if proc.returncode is
+   None and proc.pid is not None`. Measured twice: typeshed declares
+   `Process.pid: int`, and CPython assigns `self.pid = transport.get_pid()` once
+   in `__init__` and never clears it — a probe printed the same integer before
+   and after `wait()`. With the parameter now typed `WorkerProcess`, the conjunct
+   is dead for every implementer by declaration, not only for the real process.
+
+   Widening the Protocol was the alternative and was rejected: it preserves the
+   text at the cost of making every consumer handle a state that does not exist,
+   and of forcing `str(proc.pid)` to defend against `None`.
+
+   **The guard is pinned positively, not by a grep for the removed conjunct.**
+   That branch runs only on Windows, so nothing in the suite executes it and mypy
+   says nothing about a removed conjunct — which leaves three mutants a grep
+   cannot distinguish: deleting the whole `if` (taskkill fires unconditionally),
+   inverting it to `is not None` (taskkill fires *only* at processes that have
+   already exited, never at the hung one it exists to reap), and dropping the
+   wrong conjunct. The second is worse than the one a grep was written to catch.
+   `test_terminate_process_tree_guards_only_on_the_return_code` names the
+   operator and both operands; all three mutants were run against it and all
+   three fail.
 
    **Three mechanisms are needed, because none of them is sufficient alone.**
    Measured behaviour of `isinstance` against a Protocol:
@@ -948,11 +966,38 @@ conversion bug.
       against the caller's working directory, not the config file's) and every
       harness case asserts no import diagnostic was reported.
 
-      **What E2-1 does not close.** Nothing here connects the Protocol to
-      production's *actual* consumption. An introspection test sees only the
-      Protocol, so padding it with a member nothing reads fails — but production
-      growing an eighth member does not. That direction closes only when E2-4
-      annotates the runner. Recorded rather than implied.
+      **What E2-1 did not close, and E2-4 did.** Nothing in E2-1 connected the
+      Protocol to production's *actual* consumption. An introspection test sees
+      only the Protocol, so padding it with a member nothing reads fails — but
+      production growing an eighth member did not. E2-4 annotated the process
+      `_run_worker_command` spawns, which closes that direction, and proves it
+      with three mutations of a throwaway copy of `src/`: production reading an
+      undeclared member (`attr-defined`), the Protocol losing one the seam reads
+      (`attr-defined`), and the Protocol gaining one no real `Process` has
+      (`assignment`, plus `arg-type` where `_run_pipe_probe` hands its concrete
+      process to `_terminate_process_tree`). Measured before the annotation: all
+      three reported nothing.
+
+      **The copy needs a configuration derived from the committed one, and the
+      reason is measured.** `_run_mypy` pins the child's cwd to the repository
+      root and `mypy_path` is `$MYPY_CONFIG_FILE_DIR/src` — the *repository's* —
+      so naming a copied file on the command line loads only that one file from
+      the copy: with the copy's `types.py` mutated, mypy reported `Success` and
+      `-v` showed it parsing the repository's `types.py`. Anchoring `mypy_path`
+      at the copy fixes it and is sufficient on its own; an absolute import
+      resolves to the copy too, so production's relative import of the Protocol
+      is a second line of defence, not the mechanism. The config is *derived*
+      from `[tool.mypy]` at run time rather than hand-written, because a
+      hand-written one is a second unchecked declaration of the settings — the
+      failure this whole section names. The copy's build excludes
+      `tests/doubles` deliberately: with the double in it the third mutation
+      also breaks `FakeWorkerProcess`'s own `_contract` assignment, which E2-1
+      already checks, and the case could no longer tell its claim from that one.
+
+      The two checks are opposite and neither is redundant. `CONSUMED_SURFACE`
+      fails when the *Protocol* gains a member nothing consumes, which no amount
+      of type-checking production would notice; the annotation fails when
+      *production* drifts, which no introspection test can see.
    3. An explicit **runtime contract test** asserting each attribute exists, each
       method is callable, and each async method returns a coroutine — because
       `runtime_checkable` verifies presence only, not types or arity.
@@ -1342,8 +1387,31 @@ while its configuration-reading cases still pass — so it is recorded here rath
 than left to each job's author. E4-1, E4-3 and E4-5 each define one of the three
 affected jobs.
 
+**`types` must run `mypy` twice, with separate cache directories.** E2-4 fixed a
+pre-existing `attr-defined` on `subprocess.STARTUPINFO` by narrowing
+`_subprocess_launch_options` on `sys.platform` — the only platform check mypy
+understands. The cost, measured: **mypy does not type-check code it considers
+unreachable**, so on a Linux runner a deliberate error inside that Windows-only
+branch is *not* reported, and under `--platform win32` it is. One native
+invocation therefore leaves the branch unchecked on every runner this project
+has. The job runs the committed target natively **and** under `--platform
+win32`; a harness case
+(`test_mypy_accepts_the_committed_target_for_windows`) already does both, so the
+job inherits a proven invocation rather than a new one.
+
+Two consequences to carry, both measured. `--platform` swaps typeshed for the
+*whole* target, not only the module that motivated it, so this is a standing
+constraint on every module later added to `files` and a way for the job to go red
+over code unrelated to the change under review. And `--platform` is
+cache-affecting: sharing one cache between the two invocations makes **every**
+run cold in both directions, permanently, including a developer's plain `mypy`
+(`0.16s / 1.89s / 2.12s / 1.90s` alternating, against `0.17s / 0.17s` separate).
+That would silently reverse the reasoning recorded against `incremental` in
+`pyproject.toml`, so the second invocation gets its own `--cache-dir`.
+
 **`types` is deliberately narrow.** It runs `mypy` over the modules that declare or
-implement the test-double Protocols (§8A step 3), not the whole tree. Repo-wide
+implement the test-double Protocols (§8A step 3), plus the one production module
+that consumes them, not the whole tree. Repo-wide
 type checking on ~6,849 largely unannotated lines is its own project with its own
 justification; this job exists for one purpose — catching the signature drift that
 `runtime_checkable` cannot see — and is scoped to earn its place immediately.
@@ -1735,6 +1803,24 @@ a reader who takes "omitted" to mean "untestable" would draw the wrong
 conclusion about these five. They are testable, and E5-6 owns testing one of
 them — an L1 test on an omitted module, which is already this suite's practice
 (E5-3 targets `chromium_pool.py`, E5-4 `nodriver_worker.py`; both are omitted).
+
+**Widening a parameter to a Protocol does not open a hermetic seam, and E2-4
+did exactly that.** `_emit_worker_heartbeat` and `_terminate_process_tree` now
+take `WorkerProcess` rather than the concrete `asyncio.subprocess.Process`. The
+question was whether that contradicts this classification, since a Protocol
+exists to be satisfied by doubles. It does not: the classification is about a
+*spawn-injection parameter*, which would let a test replace the child and make
+the unhermetic claims hermetic; an annotation is erased at run time, a fake could
+always have been passed positionally, and nothing about the process boundary
+moved. `worker_runner.py` stays in `omit`.
+
+The rule that follows, so the next step does not have to re-derive it:
+**structural and contract claims about those two helpers may use a double;
+behavioural claims about process termination stay `subsystem`.** The module is
+outside the gate, so a hermetic test here earns no coverage while blurring the
+classification. E2-4 declined the hermetic behavioural test its own widening made
+possible for the first time — patching `os.name`, handing in a double, asserting
+the `taskkill` calls — and substituted a structural AST guard on the same branch.
 
 The alternative was combining every lane into the diff gate, and it does not
 survive contact with the arithmetic. A required threshold gate must take
@@ -2216,12 +2302,15 @@ and §10.4 control 1's "every omitted module has non-zero coverage in the
 observational report" rests on them; E7-2 should say whether it absorbs them or
 leaves them, so the claim does not end up with two owners.
 
-**A second consequence: `FakeWorkerProcess` now has no production consumer.**
-Nothing hands it to production between E2-3 and E2-4, so the agreement between
-the double's shape and what production reads is held only by the hand-written
-`CONSUMED_SURFACE` literal in `tests/test_worker_process_protocol.py`. E2-4's
-annotation is what restores a checked link, which is a reason to take E2-4
-promptly rather than a reason to have sequenced it differently.
+**A second consequence, now closed: `FakeWorkerProcess` had no production
+consumer.** Between E2-3 and E2-4 nothing handed it to production, so the
+agreement between the double's shape and what production reads was held only by
+the hand-written `CONSUMED_SURFACE` literal in
+`tests/test_worker_process_protocol.py`. E2-4's annotation restored a checked
+link, which was a reason to take it promptly rather than a reason to have
+sequenced it differently. The literal stays: it is the opposite direction, and
+fails when the *Protocol* gains a member nothing consumes — which type-checking
+production cannot see.
 
 **The from-import ban stands, on a narrower reason than it used to have.** The
 patch resolves through the shared `asyncio` module object, so a

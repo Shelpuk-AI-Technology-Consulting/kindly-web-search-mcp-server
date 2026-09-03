@@ -36,9 +36,51 @@ repository — the import is still wrong, and is documented here because the
 symptom it produces (assertion failures in tests that name neither this module
 nor the import) points nowhere near its cause.
 
-The helpers below moved here verbatim from ``universal_html.py``. They are
-unchanged, deliberately: an extraction that also rewrites what it moves cannot
-be reviewed as an extraction.
+The helpers below arrived here verbatim from ``universal_html.py``, because an
+extraction that also rewrites what it moves cannot be reviewed as an extraction.
+They have since been documented and annotated — the step that annotated the
+seam took the docstrings with it, since it was editing the same signatures and
+no other step owned the gap.
+
+**The process this module spawns is typed** :class:`~kindly_web_search_mcp_server\
+.scrape.types.WorkerProcess`, **and that annotation is a check, not a label.**
+mypy compares the real :class:`asyncio.subprocess.Process` against the Protocol
+at the spawn site, and every read below against the Protocol's seven members —
+so reading an eighth fails, and so does dropping one of the seven from the
+Protocol. Before it, the only thing tying the test double's shape to what this
+module reads was a hand-written literal in the test suite.
+
+Widening :func:`_emit_worker_heartbeat` and :func:`_terminate_process_tree` to
+that Protocol is **not** the hermetic seam the paragraph above refuses. That
+refusal is about a spawn-injection parameter, which would let a test replace the
+child and contradict the classification this module's existence expresses. An
+annotation is erased at run time and always could have been handed a fake;
+nothing about the process boundary moved. The rule that follows from it:
+structural and contract claims about these two helpers may use a double,
+behavioural claims about process termination stay ``subsystem``, because this
+module is outside the coverage gate and a hermetic test here earns nothing while
+blurring the classification.
+
+**Two Windows guards, deliberately spelled differently.** The procedure, so a
+new branch does not have to re-derive it:
+
+* A branch touching stdlib that exists on **one platform only** must be
+  ``sys.platform``-guarded, on whichever side that is — mypy narrows on
+  ``sys.platform`` and never on ``os.name``, so ``os.name`` leaves the
+  platform-exclusive lookup as an ``attr-defined`` error. The run that reads
+  that branch is then the native one for a POSIX-only body, and the
+  ``--platform win32`` one for a Windows-only body; both exist.
+* Otherwise use ``os.name``, which leaves the branch checked on **both** runs.
+  Converting :func:`_terminate_process_tree` "for consistency" would make mypy
+  treat its whole ``taskkill`` path unreachable on Linux and stop checking it —
+  measured with an injected error, reported under ``os.name`` and not under
+  ``sys.platform``.
+
+``getattr``/``hasattr`` is a third spelling already used below. It is for
+optional *attributes* on a module that does exist, and it is not a substitute
+for either guard: it degrades the value to ``Any`` rather than proving anything.
+
+Both spellings are pinned by ``tests/test_worker_runner.py``.
 """
 
 from __future__ import annotations

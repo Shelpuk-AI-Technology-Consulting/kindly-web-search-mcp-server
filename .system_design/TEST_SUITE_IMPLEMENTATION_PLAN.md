@@ -551,13 +551,46 @@ it carries no X-number.
   have been reviewed as an extraction. That leaves the module short of the
   project's "every class, method and function" rule with no step owning the gap.
   This one is annotating those same signatures and is the cheapest place to
-  close it. Two further things bite when
-  `worker_runner.py` joins §10.3's `types` target: `universal_html.py:185`
-  already fails that check today with `Module has no attribute "STARTUPINFO"`
-  (mypy narrows on `sys.platform`, not on the `os.name` guard the code uses), and
-  an untyped third-party import must be silenced at the import site rather than
-  by loosening the harness's import assertion. E2-4 also decides `pid`: the
-  Protocol declares `int` while production still guards `proc.pid is not None`. *Verify:* mypy checks the production signature against the
+  close it.
+
+  **Landed.** The three findings resolved as follows.
+
+  The `STARTUPINFO` defect was real and reproduced at `worker_runner.py:96` (the
+  extraction moved it from `universal_html.py:185`). Fixed at the guard with
+  `sys.platform`, in its own commit ahead of the annotation so the pre-existing
+  red could not read as "the annotation broke the types job". **The cost is that
+  mypy does not type-check code it considers unreachable**, so that branch is now
+  unread on a native run — closed here by a second invocation under `--platform
+  win32`, which E4-5 inherits along with the separate `--cache-dir` it needs.
+  `_terminate_process_tree` deliberately **keeps** `os.name`: measured, an error
+  injected into its Windows branch is reported natively under `os.name` and not
+  under `sys.platform`, so converting it "for consistency" would delete that
+  coverage. Both spellings are pinned, and the procedure is in the module
+  docstring.
+
+  `pid`: the guard is dead and went. Typeshed declares `Process.pid: int` and
+  CPython assigns it once in `__init__` from `transport.get_pid()`, never
+  clearing it — a probe printed the same integer before and after `wait()`. The
+  Protocol keeps `int`. **Pinned positively, not by a grep for the removed
+  conjunct**: that branch is Windows-only, so nothing in the suite executes it
+  and mypy says nothing about a removed conjunct, which leaves three
+  indistinguishable mutants — deleting the whole `if`, inverting it to `is not
+  None` (which disables the tree-kill entirely, and is worse than the mutant a
+  grep was written to catch), and dropping the wrong conjunct. All three were run
+  against the case and all three fail.
+
+  The untyped-third-party clause turned out **not to apply**, measured:
+  `worker_runner.py` imports only stdlib and `..utils.diagnostics`, itself
+  stdlib-only, and the enlarged target reports no import diagnostic.
+
+  Three mutations of a throwaway copy of `src/` prove the annotation is
+  load-bearing; before it, all three reported nothing. The copy's mypy config is
+  **derived from `[tool.mypy]` at run time**, because a hand-written one is a
+  second unchecked declaration of the settings — and because, measured, reusing
+  the committed config loads only the file named on the command line from the
+  copy, leaving both Protocol mutations invisible.
+
+  *Verify:* mypy checks the production signature against the
   Protocol; changing the Protocol without the function fails.
 
 ---
@@ -672,8 +705,22 @@ typo'd selector fails the job.
   `_run_worker_command`, which did not exist until E2-3 and is not annotated
   until E2-4. Created earlier, its target list would omit the one signature it
   exists to check, and the non-vacuity rule below would then prevent adding a
-  target that did not yet exist. *Verify:* the negative-fixture directory is excluded; **`types` is in
+  target that did not yet exist.
+  **E2-4 landed and this job inherits two things from it.** First, it must
+  invoke `mypy` **twice** — natively and under `--platform win32`, each with its
+  own `--cache-dir`. E2-4 narrowed `_subprocess_launch_options` on `sys.platform`
+  to fix a pre-existing `attr-defined` on `subprocess.STARTUPINFO`, and mypy does
+  not type-check code it considers unreachable, so one native invocation leaves
+  that Windows branch unchecked on every runner this project has. A separate
+  cache is not optional: `--platform` is cache-affecting, and one shared cache
+  makes every run cold in both directions, permanently, including a developer's
+  plain `mypy` (measured `0.16/1.89/2.12/1.90s` shared against `0.17/0.17s`
+  separate). Second, the win32 invocation swaps typeshed for the **whole**
+  target, so it is a standing constraint on every module later added to `files`.
+  *Verify:* the negative-fixture directory is excluded; **`types` is in
   `ci-required.needs`**; introducing an `Any` on the Protocol surface makes it red;
+  an error injected into a Windows-only branch makes it red, which the native
+  invocation alone does not;
   and mypy's output names every configured target module, so a target that no
   longer exists fails the job rather than leaving it green with nothing checked.
 - **E4-6.** The image definition — Python, Chromium, system deps, **no application
@@ -907,6 +954,19 @@ duplicating tests or touching the same files.
   not with an extraction. Candidates worth measuring: a process group
   (`start_new_session=True` at spawn, then `os.killpg`), or walking children
   before the kill.
+
+  **Whichever is taken must be guarded on `sys.platform`, not `os.name`.** E2-4
+  put `worker_runner.py` into the `types` target and added a `--platform win32`
+  invocation, and `os.killpg`, `os.getpgid` and `signal.SIGKILL` are all POSIX-only
+  in typeshed. Measured: the natural `os.name != "nt"` spelling is clean natively
+  and produces three `attr-defined` errors under the win32 run — the exact mirror
+  of the `STARTUPINFO` defect E2-4 fixed, in the same function's neighbourhood.
+  Note the asymmetry: a POSIX-only body is read by the **native** run and a
+  Windows-only body by the **win32** run, so `sys.platform` is right for both
+  and `os.name` is right only where the branch touches no platform-exclusive
+  stdlib at all. `worker_runner.py`'s module docstring states the procedure and
+  `tests/test_worker_runner.py` pins both existing spellings; changing
+  `_terminate_process_tree`'s guard means updating `PLATFORM_GUARDS` with it.
 
   **A pre-existing cost this step should decide about, measured by E2-3's review
   and owned by nobody yet.** With diagnostics enabled, every worker run is padded
