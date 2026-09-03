@@ -1022,10 +1022,11 @@ SEAM_MUTATIONS: Final = {
 }
 
 
-def _as_ini_value(value: Any) -> str:
+def _as_ini_value(key: str, value: Any) -> str:
     """Render a value read from ``pyproject.toml`` as mypy expects it in an INI.
 
     Args:
+        key: The option's name, which decides how a list is joined.
         value: A scalar or list taken from the committed ``[tool.mypy]`` table.
 
     Returns:
@@ -1034,7 +1035,12 @@ def _as_ini_value(value: Any) -> str:
     if isinstance(value, bool):
         return "True" if value else "False"
     if isinstance(value, list):
-        return ", ".join(str(item) for item in value)
+        # `exclude` is a single regular expression in INI form -- the array is a
+        # TOML affordance. Comma-joining two entries would produce a valid
+        # regex meaning something else, accepted in silence. Every other
+        # list-valued mypy option really is comma-separated.
+        separator = "|" if key == "exclude" else ", "
+        return separator.join(str(item) for item in value)
     return str(value)
 
 
@@ -1075,7 +1081,7 @@ def _copy_configuration(destination: Path) -> Path:
     for key, value in sorted(committed.items()):
         if key in {"files", "mypy_path", "overrides"}:
             continue
-        lines.append(f"{key} = {_as_ini_value(value)}")
+        lines.append(f"{key} = {_as_ini_value(key, value)}")
     lines.append(f"mypy_path = {destination / 'src'}")
     lines.append(f"files = {target}")
 
@@ -1088,7 +1094,9 @@ def _copy_configuration(destination: Path) -> Path:
                 continue
             lines.append("")
             lines.append(f"[mypy-{module}]")
-            lines.extend(f"{k} = {_as_ini_value(v)}" for k, v in sorted(settings.items()))
+            lines.extend(
+                f"{k} = {_as_ini_value(k, v)}" for k, v in sorted(settings.items())
+            )
 
     config = destination / "mypy.ini"
     config.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1173,7 +1181,22 @@ def test_the_copied_tree_type_checks_cleanly(tmp_path: Path) -> None:
     assert "unused section" not in result.stdout, (
         "The configuration derived from the committed [tool.mypy] carries a "
         "per-module section that binds to nothing in the copy's build, so its "
-        f"settings are inert here and this run is not the committed one.\n{result.stdout}"
+        "settings are inert here and this run is not the committed one.\n"
+        f"{result.stdout}"
+    )
+    # Measured: mypy reports an unrecognised option name, or a value it cannot
+    # parse, as `<config>: [mypy]: ...` and still EXITS 0. So neither the exit
+    # status above nor the unused-section guard -- which itself depends on
+    # `warn_unused_configs` having been carried across correctly -- can see a
+    # setting this derivation renders wrongly.
+    #
+    # Measured a second time, because the obvious spelling of this assertion is
+    # itself a guard that can never fire: those diagnostics go to STDERR, while
+    # every other assertion in this module reads stdout.
+    assert ": [mypy]" not in result.stderr, (
+        "The derived configuration produced a config diagnostic, so a key from "
+        "the committed [tool.mypy] did not survive `_as_ini_value` and the copy "
+        f"is not running the committed settings.\n{result.stderr}"
     )
 
 

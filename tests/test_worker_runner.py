@@ -482,21 +482,35 @@ def _windows_branch_of(function_name: str) -> ast.If:
     source = Path(worker_runner.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source, filename=worker_runner.__file__)
     function = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function_name
+        ),
+        None,
     )
-    return next(
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Compare)
-        and isinstance(node.test.left, ast.Attribute)
-        and node.test.left.attr == "name"
-        and isinstance(node.test.left.value, ast.Name)
-        and node.test.left.value.id == "os"
+    assert function is not None, f"{function_name} has moved or been renamed."
+
+    branch = next(
+        (
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Attribute)
+            and node.test.left.attr == "name"
+            and isinstance(node.test.left.value, ast.Name)
+            and node.test.left.value.id == "os"
+        ),
+        None,
     )
+    assert branch is not None, (
+        f"{function_name} has no `os.name` branch. Converting it to "
+        "`sys.platform` would make mypy treat the whole branch unreachable on "
+        "Linux and stop checking it -- see PLATFORM_GUARDS."
+    )
+    return branch
 
 
 def test_terminate_process_tree_guards_only_on_the_return_code() -> None:
@@ -607,3 +621,13 @@ def test_every_moved_symbol_is_documented() -> None:
         "The project's rule is every class, method and function."
     )
     assert ast.get_docstring(tree), "worker_runner.py has lost its module docstring."
+
+    # Both this case and the ownership case above iterate the tuple, so without
+    # this a fifteenth module-level symbol -- undocumented -- is invisible to
+    # both, and the rule silently stops reaching the module it is scoped to.
+    extra = sorted(set(defined) - set(PROCESS_MANAGEMENT_SURFACE))
+    assert not extra, (
+        f"worker_runner.py defines {extra} outside PROCESS_MANAGEMENT_SURFACE, "
+        "so neither the ownership case nor the docstring rule reaches them. Add "
+        "them to the tuple."
+    )

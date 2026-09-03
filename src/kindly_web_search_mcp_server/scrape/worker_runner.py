@@ -110,7 +110,7 @@ from .types import WorkerProcess
 
 @dataclass
 class _StdoutAccumulator:
-    """Mutable state for one draining of a child's standard output.
+    """Mutable state for one draining of a child's standard output
 
     Passed to :func:`_read_stdout_stream`, which owns it for the life of a run
     and mutates it in place, so the caller can read the partial result after a
@@ -120,8 +120,8 @@ class _StdoutAccumulator:
         buffer: Raw bytes received so far, decoded only once the child exits.
         bytes_read: Total bytes seen, which is *not* ``len(buffer)`` for the
             stderr twin and is kept symmetrical here.
-        last_emit_time: Monotonic time of the last progress record, or ``0.0``
-            before the first one.
+        last_emit_time: Monotonic time of the last progress record, or of the
+            call that seeded the clock; ``0.0`` before either.
         last_emit_bytes: ``bytes_read`` at that record, used to rate-limit
             progress by volume as well as by elapsed time.
     """
@@ -134,7 +134,7 @@ class _StdoutAccumulator:
 
 @dataclass
 class _StderrAccumulator:
-    """Mutable state for one draining of a child's standard error.
+    """Mutable state for one draining of a child's standard error
 
     Standard error carries two interleaved things: ``KINDLY_DIAG`` frames the
     worker emits deliberately, and whatever else it or its browser writes. They
@@ -145,7 +145,8 @@ class _StderrAccumulator:
         buffer: Text received but not yet split into complete lines.
         tail: The most recent non-frame output, capped at the caller's limit.
         bytes_read: Total bytes seen, before decoding.
-        last_emit_time: Monotonic time of the last progress record.
+        last_emit_time: Monotonic time of the last progress record, or of the
+            call that seeded the clock.
         last_emit_bytes: ``bytes_read`` at that record.
         worker_entries: Decoded ``KINDLY_DIAG`` frames, merged into the caller's
             diagnostics once the run finishes.
@@ -304,8 +305,9 @@ def _maybe_emit_stream_progress(
         last_emit_bytes: ``bytes_read`` at the previous record.
 
     Returns:
-        The time and byte count to carry forward — unchanged when nothing was
-        emitted, so the caller can assign the pair back unconditionally.
+        The time and byte count to carry forward, which the caller assigns back
+        unconditionally. Unchanged when nothing was emitted, except on the very
+        first call, which emits nothing but seeds the clock.
     """
     if diagnostics is None:
         return last_emit_time, last_emit_bytes
@@ -635,21 +637,27 @@ async def _emit_worker_heartbeat(
 async def _terminate_process_tree(proc: WorkerProcess) -> None:
     """Kill a child that has overrun, and on Windows its descendants too
 
-    **The name overstates what happens on POSIX, and that is a known defect
-    rather than a shorthand.** The two branches do different things:
+    **The name overstates what this does on *both* platforms, and that is a
+    known defect rather than a shorthand.**
 
-    * On Windows, ``taskkill /T /F`` walks the tree, so the browser the worker
-      started dies with it.
-    * Everywhere else this sends a signal to the **direct child only**. Its
-      descendants are reparented and survive. Confirmed with a probe: after the
-      call, ``child alive=False grandchild alive=True PPid: 1``.
+    * Off Windows it signals the **direct child only**. Descendants are
+      reparented and survive — probed: after the call, ``child alive=False
+      grandchild alive=True PPid: 1``.
+    * On Windows the first thing tried is ``proc.terminate()``, which CPython
+      implements as ``TerminateProcess`` (and where ``kill`` is an *alias* for
+      ``terminate``). That is immediate, unconditional, and also kills the named
+      process only — Windows has no primitive for killing a tree.
+      ``taskkill /T /F``, which does walk the tree, is reached only if the child
+      is **still alive 1.5 s later**, and ``TerminateProcess`` makes that
+      unlikely. So in the ordinary case descendants survive here too.
 
-    In production that grandchild is Chromium, so a timed-out worker leaves a
-    browser and its profile directory behind on Linux and not on Windows. The
-    fix belongs to the worker-lifecycle step, whose verify clause already
-    requires that a killed parent leave no orphan; a process group at spawn plus
-    a group kill is the candidate. It is not fixed here because changing process
-    termination is a behaviour change, and this step annotates signatures.
+    In production that descendant is Chromium, so a timed-out worker leaves a
+    browser and its profile directory behind, on **either** platform. The fix
+    belongs to the worker-lifecycle step, whose verify clause already requires
+    that a killed parent leave no orphan; a process group at spawn plus a group
+    kill is the POSIX candidate, and a Win32 job object the Windows one. It is
+    not fixed here because changing process termination is a behaviour change,
+    and this step annotates signatures.
 
     Every failure is suppressed throughout. The process may exit between any two
     statements, and racing it is not an error worth propagating to a caller who

@@ -933,23 +933,38 @@ duplicating tests or touching the same files.
   and are listed in the reviewer's guard registry, so "retire the node ids"
   applied to the file rather than to the four cases would take the boundary with
   them.
-  **`_terminate_process_tree` does not kill a tree on POSIX. Confirmed
+  **`_terminate_process_tree` does not kill a tree on EITHER platform. Confirmed
   defect — this step's "killed parent leaves no orphan" bullet already owns it,
-  and should be written knowing it starts red.** The non-Windows branch is
-  `proc.kill()` + `await proc.wait()`, and `Process.kill()` signals the direct
-  child only. The Windows branch walks the tree explicitly with
-  `taskkill /T /F /PID`, so the two platforms do different things under one
-  name. Measured on Linux against a child that had spawned a grandchild:
+  and should be written knowing it starts red on both.** The non-Windows branch
+  is `proc.kill()` + `await proc.wait()`, and `Process.kill()` signals the direct
+  child only. Measured on Linux against a child that had spawned a grandchild:
 
   ```
   before: child alive=True   grandchild alive=True
   after : child alive=False  grandchild alive=True  PPid: 1  -> ORPHANED
   ```
 
-  In production the grandchild is Chromium, and a SIGKILLed worker runs no
-  cleanup of its own — so a timed-out worker leaves a browser behind on Linux
-  and does not on Windows. Raised by the automatic reviewer on E2-3, which moved
-  the function verbatim and did not change it. Fixing it is a behaviour change to
+  **The Windows half of this entry was wrong until E2-4's code review, and the
+  correction widens this step's scope.** It said the Windows branch walks the
+  tree, because it *contains* `taskkill /T /F /PID`. It does not reach it in the
+  ordinary case. The branch calls `proc.terminate()` first, waits 1.5 s, and only
+  runs `taskkill` `if proc.returncode is None`. On Windows CPython implements
+  `terminate()` as `_winapi.TerminateProcess` — and defines `kill = terminate` —
+  which is immediate, unconditional, and kills the **named process only**;
+  Windows has no primitive for killing a tree. So the child is dead well inside
+  1.5 s, the guard is false, and the tree-walking fallback never runs.
+
+  In production that descendant is Chromium, and a killed worker runs no cleanup
+  of its own — so a timed-out worker leaves a browser and its profile directory
+  behind on **both** platforms. Raised on POSIX by the automatic reviewer on
+  E2-3, which moved the function verbatim and did not change it; corrected for
+  Windows by the code review of E2-4, which had to describe the function
+  accurately to document it. **Consequence for this step: the fix needs two
+  mechanisms, not one.** A process group plus `os.killpg` covers POSIX; Windows
+  needs a Win32 job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, or the
+  `taskkill /T` call promoted ahead of `terminate()` rather than left as its
+  fallback. A verify clause that checks orphans on Linux alone will pass while
+  half the defect stands. Fixing it is a behaviour change to
   process termination and belongs with the lifecycle battery that can prove it,
   not with an extraction. Candidates worth measuring: a process group
   (`start_new_session=True` at spawn, then `os.killpg`), or walking children
