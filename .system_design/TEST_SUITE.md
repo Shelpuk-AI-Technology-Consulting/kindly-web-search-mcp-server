@@ -592,7 +592,7 @@ step does not ship, and today's code has no process group, job object or
 `tests/fixture_servers/searxng_contract.py`, a stdlib-only HTTP server started in the
 test process on an ephemeral loopback port. It is the cross-process stubbing
 seam §6.1 depends on, and `tests/test_searxng_contract_server.py` is its
-calibration.
+calibration — eighteen cases, seventeen of which drive a real socket.
 
 **A new directory, not `tests/doubles/`.** `pyproject.toml` lists
 `tests/doubles` in the type-check job's `files`, so a module placed there joins
@@ -622,6 +622,13 @@ exposes no `kindly_web_search_mcp_server`, so that path does not endanger §6.1'
 wheel-resolution assertion. The `package` job must reach the fixture this way and
 must **not** copy the `sys.path.insert(… / "src")` line that
 `tests/test_searxng_contract_server.py` carries for its own provider cases.
+
+**That is necessary and not sufficient**, and the gap is not this step's to
+close: `tests/conftest.py` inserts `<checkout>/src` at `sys.path[0]`
+*unconditionally* for anything collected under `tests/`, so the job's own test
+module inherits it whether or not it writes the line itself. §6.1 and §10.3
+record that conflict and its two candidate resolutions, and E8-1 owns it. A
+reader who takes the paragraph above as "the path is clean" will be wrong.
 
 **Readiness is structural, so nothing here handshakes.**
 `socketserver.TCPServer.__init__` calls `server_bind` and then `server_activate`,
@@ -671,8 +678,15 @@ real thing stopped producing. And the `format` check runs *before* the query
 check, so a disabled format is `403` even on a request that also has no query.
 
 The rows below are **driven**, not described: the guard parses this table and
-issues each request against a live instance, so a row nobody implemented and an
-implementation nobody documented both turn CI red.
+issues each request against a live instance, so a row nobody implemented, and a
+documented answer that later changed, both turn CI red. It also pins the row
+*count*, because pinning each member without pinning the set lets a deleted row
+shrink the sweep to green — measured, and it reported 16 passed.
+
+What it does **not** catch, also measured: a route with no row at all. Adding an
+undocumented `/healthz` returning 200 left the module green. The guard compares
+the fixture against the table row by row and cannot see a behaviour the table
+never mentions, so a new route has to be documented deliberately.
 
 | Request | Status | Content type | Why |
 |---|---|---|---|
@@ -749,6 +763,18 @@ That is the observation §6.1's provider-selection claim needs: an empty result
 list looks identical whether SearXNG served it or whether nothing was called at
 all, and the diagnostics frame alone says which provider was *selected*, not
 that the call happened.
+
+**The per-test timeout has to be applied twice here, by two mechanisms.** §5.4's
+bound is not satisfied for the three cases that drive production by the ceiling
+the direct cases pass to `urllib`. `search_searxng` reads
+`SEARXNG_TIMEOUT_SECONDS` and hands the result to `client.get(timeout=…)`; with
+that variable cleared — which the hermetic sweep below requires — the value is an
+explicit `None`, and an explicit `None` **overrides** `AsyncClient(timeout=30)`
+rather than deferring to it. Measured on httpx 0.28.1 against a handler sleeping
+20 s: the client default raised `ReadTimeout` at 3.09 s; the explicit `None` was
+still running when the probe gave up. Those three cases therefore wrap the await
+in `asyncio.timeout`. Falsified: with the fixture handler wedged for 30 s, they
+fail in 31 s total instead of hanging the suite.
 
 **The provider and router cases run with the environment cleared, not with a
 delete-list.** `patch.dict(os.environ, {"SEARXNG_BASE_URL": …}, clear=True)`.

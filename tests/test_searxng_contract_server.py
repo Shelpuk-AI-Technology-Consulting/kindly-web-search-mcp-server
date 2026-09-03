@@ -31,6 +31,7 @@ connection opened before ``serve_forever()`` was ever called was answered 200.
 from __future__ import annotations
 
 import ast
+import asyncio
 import contextlib
 import io
 import json
@@ -39,6 +40,7 @@ import re
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
@@ -67,14 +69,27 @@ from tests.test_pytest_configuration import _section_body
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: The fixture module, addressed by path for the import guard, which reads its
-#: syntax tree rather than the imported module's namespace.
-FIXTURE_SERVER = REPO_ROOT / "tests" / "fixture_servers" / "searxng_contract.py"
+#: The fixture package, addressed by path for the import guard, which reads
+#: syntax trees rather than the imported modules' namespaces. The whole package
+#: and not just one module in it: the job that consumes this imports
+#: ``tests.fixture_servers.searxng_contract``, which runs ``__init__.py`` too.
+FIXTURE_SERVER_PACKAGE = REPO_ROOT / "tests" / "fixture_servers"
 
-#: Ceiling on every HTTP call these cases make. Section 5.4 requires a per-test
-#: bound; expressed on the call rather than on the case so a wedged fixture
-#: fails at the request that wedged, naming it, instead of at a whole-case
-#: deadline that names nothing.
+#: Ceiling on every request these cases make. Section 5.4 requires a per-test
+#: bound; expressed per call rather than per case so a wedged fixture fails at
+#: the request that wedged, naming it, instead of at a whole-case deadline that
+#: names nothing.
+#:
+#: **It has to be applied twice, by two different mechanisms.** The cases that
+#: drive the fixture directly pass it to ``urllib``. The three that drive
+#: production cannot: ``search_searxng`` reads ``SEARXNG_TIMEOUT_SECONDS`` and
+#: passes the result to ``client.get(timeout=...)``, and with that variable
+#: cleared -- which the hermetic sweep below requires -- the value is an
+#: explicit ``None``, which **overrides** ``AsyncClient(timeout=30)`` rather than
+#: deferring to it. Measured on httpx 0.28.1 against a handler sleeping 20 s: the
+#: client default raised ``ReadTimeout`` at 3.09 s, the explicit ``None`` was
+#: still running when the probe gave up. So those three wrap the await in
+#: ``asyncio.timeout`` instead.
 HTTP_TIMEOUT_SECONDS = 10.0
 
 #: The result set most cases serve. Two entries rather than one, because a
@@ -207,6 +222,11 @@ def test_a_failure_inside_the_block_still_releases_the_port() -> None:
 #: later section's table or block the day one is added.
 DESIGN_SECTION_HEADING = "### 5.2b The SearXNG-contract fixture server — built in E3-2"
 
+#: How many rows the design document's contract table must carry. Pinned so that
+#: deleting a row fails here rather than quietly shrinking the sweep to green --
+#: the house rule is to pin the set as well as each member.
+DOCUMENTED_REQUEST_COUNT = 5
+
 
 def _design_section() -> str:
     """Return the body of the design document's section for this fixture.
@@ -215,6 +235,12 @@ def _design_section() -> str:
         Every line of section 5.2b, fenced blocks included.
     """
     text = (REPO_ROOT / ".system_design" / "TEST_SUITE.md").read_text(encoding="utf-8")
+    # Checked before delegating: `_section_body` locates the heading with
+    # `list.index`, whose `ValueError` names the string but not what it was for.
+    assert DESIGN_SECTION_HEADING in text.splitlines(), (
+        f"{DESIGN_SECTION_HEADING!r} is not a heading in TEST_SUITE.md; the "
+        "guards below read the fixture's contract out of that section"
+    )
     return _section_body(text, DESIGN_SECTION_HEADING)
 
 
@@ -244,7 +270,14 @@ def _documented_requests() -> list[tuple[str, int, str]]:
         _design_section(),
         re.MULTILINE,
     )
-    assert rows, f"no request rows parsed out of {DESIGN_SECTION_HEADING}"
+    # The COUNT, not just non-emptiness. Measured: with only `assert rows`,
+    # deleting the `/elsewhere` row from the design document left this module
+    # reporting 16 passed -- the sweep silently shrank instead of failing, which
+    # is precisely the cheap escape the reviewer rule file names for this guard.
+    assert len(rows) == DOCUMENTED_REQUEST_COUNT, (
+        f"parsed {len(rows)} request rows out of {DESIGN_SECTION_HEADING}, "
+        f"expected {DOCUMENTED_REQUEST_COUNT}"
+    )
     return [(target, int(status), content_type) for target, status, content_type in rows]
 
 
@@ -257,8 +290,14 @@ def test_every_documented_request_gets_its_documented_status(
 
     The table is the specification of what this instance answers, and driving it
     is what stops it becoming decoration: a row nobody implemented fails here,
-    and so does an implementation nobody documented, because the guard would then
-    be asserting a row that is not in the table.
+    and so does a documented answer that later changed.
+
+    **What it does not catch, measured:** a route with no row at all. Adding an
+    undocumented ``/healthz`` returning 200 left this module reporting 17 passed.
+    The guard compares the fixture against the table row by row; it cannot see a
+    behaviour the table never mentions. Said plainly here because the earlier
+    wording claimed otherwise, and a reader who believed it would skip
+    documenting the next route they added.
 
     The rejection rows are the ones that matter. A fixture that answered JSON to
     every request would be *more permissive than a real instance*, and a caller
@@ -309,7 +348,8 @@ def test_the_served_response_matches_the_documented_specimen() -> None:
     )
     with running_searxng_instance([configured]) as instance:
         status, body = _get(
-            f"{instance.base_url}/search?q={specimen['query']}&format=json"
+            f"{instance.base_url}/search"
+            f"?q={urllib.parse.quote(specimen['query'])}&format=json"
         )
 
     assert status == 200
@@ -361,6 +401,18 @@ def test_it_records_the_searches_it_answered() -> None:
     empty result list looks the same whether this instance served it or whether
     nothing was called at all. The recorded request is the observation that
     tells those apart, and §6.1's selection claim rests on it.
+
+    **One mutant survives here, and it is triaged rather than left silent.** The
+    handler records *before* it writes any response byte, which is what makes
+    "the client got a response" imply "the request is in the log". Moving the
+    call after the write leaves this module reporting 17 passed -- measured, 5
+    runs out of 5. The window between a client's last read and a handler thread's
+    next statement is too narrow for a synchronous case to land in, and closing
+    it deterministically would need a fixture knob whose only user is this test.
+    So the ordering is held by the comment on ``do_GET`` and by §5.2b, not by an
+    assertion, and the reason is written here rather than discovered again. The
+    lock around the append is undriven for the same reason: no case here issues
+    two concurrent requests.
     """
     with running_searxng_instance(SAMPLE_RESULTS) as instance:
         _get(f"{instance.base_url}/search?q=kindly&format=json")
@@ -370,6 +422,26 @@ def test_it_records_the_searches_it_answered() -> None:
     assert recorded[0]["path"] == "/search"
     assert recorded[0]["params"]["q"] == "kindly"
     assert recorded[0]["params"]["format"] == "json"
+
+
+@pytest.mark.subsystem
+def test_a_search_with_no_query_returns_searxngs_own_error_body() -> None:
+    """Pin the rejection body, which the status alone does not reach
+
+    The design document's contract table records this row's body as
+    ``{"error": "No query"}``, and until this case existed that sentence was
+    prose nothing checked -- the table-driven guard asserts the status and the
+    content type, so a `400` carrying any other JSON satisfied it.
+
+    The body is upstream's, not this project's: ``index_error`` produces it, and
+    it is JSON only because the request asked for JSON. A caller that parsed the
+    error would break on a fixture that invented its own shape.
+    """
+    with running_searxng_instance(SAMPLE_RESULTS) as instance:
+        status, body = _get(f"{instance.base_url}/search?q=&format=json")
+
+    assert status == 400
+    assert json.loads(body) == {"error": "No query"}
 
 
 def test_the_fixture_server_imports_only_the_standard_library() -> None:
@@ -385,22 +457,26 @@ def test_the_fixture_server_imports_only_the_standard_library() -> None:
     Asserted over the module's syntax tree rather than by importing it, so a
     branch that never executes is covered too.
     """
-    tree = ast.parse(FIXTURE_SERVER.read_text(encoding="utf-8"))
+    modules = sorted(FIXTURE_SERVER_PACKAGE.glob("*.py"))
+    assert modules, f"no modules found under {FIXTURE_SERVER_PACKAGE}"
+
     roots: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            # A relative import inside `tests.fixture_servers` would resolve, and would
-            # reach whatever that package grows later; the point is to keep the
-            # module's dependencies visible in one list.
-            assert node.level == 0, "the fixture server must not import relatively"
-            if node.module:
-                roots.add(node.module.split(".")[0])
+    for module in modules:
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                # A relative import inside `tests.fixture_servers` would resolve,
+                # and would reach whatever that package grows later; the point is
+                # to keep the dependencies visible in one list.
+                assert node.level == 0, f"{module.name} must not import relatively"
+                if node.module:
+                    roots.add(node.module.split(".")[0])
 
     assert roots, "the import sweep found nothing, so it is asserting nothing"
     outside = sorted(roots - set(sys.stdlib_module_names))
-    assert not outside, f"the fixture server imports non-stdlib modules: {outside}"
+    assert not outside, f"the fixture package imports non-stdlib modules: {outside}"
 
 
 #: Result ceiling every provider call here passes. Comfortably above
@@ -453,7 +529,8 @@ async def test_the_provider_parses_the_fixtures_results_over_a_real_socket() -> 
     """
     with running_searxng_instance(SAMPLE_RESULTS) as instance:
         with _only_searxng_configured(instance.base_url):
-            results = await search_searxng("kindly", num_results=NUM_RESULTS)
+            async with asyncio.timeout(HTTP_TIMEOUT_SECONDS):
+                results = await search_searxng("kindly", num_results=NUM_RESULTS)
         recorded = list(instance.received_requests)
 
     assert [result.title for result in results] == [r.title for r in SAMPLE_RESULTS]
@@ -490,9 +567,10 @@ async def test_the_router_selects_searxng_when_only_its_url_is_configured() -> N
             ]
             assert not leftovers, f"a higher-priority provider is still configured: {leftovers}"
 
-            results = await search_web(
-                "kindly", num_results=NUM_RESULTS, diagnostics=diagnostics
-            )
+            async with asyncio.timeout(HTTP_TIMEOUT_SECONDS):
+                results = await search_web(
+                    "kindly", num_results=NUM_RESULTS, diagnostics=diagnostics
+                )
         recorded = list(instance.received_requests)
 
     selections = [
@@ -520,7 +598,8 @@ async def test_a_zero_result_instance_reaches_the_router_caller_as_an_empty_list
     """
     with running_searxng_instance() as instance:
         with _only_searxng_configured(instance.base_url):
-            results = await search_web("kindly", num_results=NUM_RESULTS)
+            async with asyncio.timeout(HTTP_TIMEOUT_SECONDS):
+                results = await search_web("kindly", num_results=NUM_RESULTS)
         recorded = list(instance.received_requests)
 
     assert results == []

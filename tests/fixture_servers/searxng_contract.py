@@ -145,7 +145,11 @@ class SearxngResult:
             "parsed_url": list(parsed),
             "template": "default.html",
             "positions": [position],
-            "score": float(position),
+            # `weight / position` upstream (`results.py::calculate_score`), and
+            # `get_ordered_results` sorts descending -- so a real instance never
+            # returns results whose score *ascends*. `float(position)` would have
+            # inverted that, in a module whose whole claim is transcription.
+            "score": 1.0 / position,
             "category": "general",
             "publishedDate": None,
             # The four fields a web result never populates and always carries.
@@ -400,7 +404,15 @@ def running_searxng_instance(
         name="searxng-contract-server",
         daemon=True,
     )
-    thread.start()
+    # The socket is already bound and listening by the time the constructor
+    # returned, so a `Thread.start()` that raises would strand it. The sibling
+    # fixture step's review found this exact shape in a process spawn.
+    try:
+        thread.start()
+    except BaseException:
+        server.server_close()
+        raise
+
     try:
         yield server
     # In `finally`, because the leak only ever matters on the run that was

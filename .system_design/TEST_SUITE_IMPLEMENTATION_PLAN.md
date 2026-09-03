@@ -630,7 +630,7 @@ it carries no X-number.
   `SEARXNG_BASE_URL` pointed at it and higher-priority provider variables cleared,
   `search_web` selects SearXNG; zero-result mode returns `[]`.
 
-  **Landed.** `tests/fixture_servers/searxng_contract.py` plus seventeen cases in
+  **Landed.** `tests/fixture_servers/searxng_contract.py` plus eighteen cases in
   `tests/test_searxng_contract_server.py`; the interface, its rationale and its
   known limits are §5.2b. Three things the build changed about the surrounding
   plan. **The readiness handshake is satisfied by construction here, not by
