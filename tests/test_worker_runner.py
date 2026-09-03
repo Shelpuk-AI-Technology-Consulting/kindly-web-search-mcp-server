@@ -240,6 +240,28 @@ def test_worker_runner_does_not_from_import_the_spawn_primitive() -> None:
     )
 
 
+# Everything the extraction moved out of `universal_html.py`. A list, not a spot
+# check: the move is only worth its diff if the whole block travelled. Shared by
+# the two cases below so the set has one definition -- a second enumeration is
+# the drift this list exists to prevent.
+PROCESS_MANAGEMENT_SURFACE = (
+    "_run_worker_command",
+    "_run_pipe_probe",
+    "_read_probe_stream",
+    "_read_stdout_stream",
+    "_read_stderr_stream",
+    "_consume_stderr_line",
+    "_finalize_stderr_state",
+    "_append_tail_text",
+    "_maybe_emit_stream_progress",
+    "_emit_worker_heartbeat",
+    "_terminate_process_tree",
+    "_subprocess_launch_options",
+    "_StdoutAccumulator",
+    "_StderrAccumulator",
+)
+
+
 def test_worker_runner_owns_the_process_management_surface() -> None:
     """Name what moved, so a partial move back is a failure rather than a drift
 
@@ -248,29 +270,14 @@ def test_worker_runner_owns_the_process_management_surface() -> None:
     unhermetic code back inside the gated module without any single assertion
     above noticing.
     """
-    expected = (
-        "_run_worker_command",
-        "_run_pipe_probe",
-        "_read_probe_stream",
-        "_read_stdout_stream",
-        "_read_stderr_stream",
-        "_consume_stderr_line",
-        "_finalize_stderr_state",
-        "_append_tail_text",
-        "_maybe_emit_stream_progress",
-        "_emit_worker_heartbeat",
-        "_terminate_process_tree",
-        "_subprocess_launch_options",
-        "_StdoutAccumulator",
-        "_StderrAccumulator",
-    )
-
-    missing = [name for name in expected if not hasattr(worker_runner, name)]
+    missing = [
+        name for name in PROCESS_MANAGEMENT_SURFACE if not hasattr(worker_runner, name)
+    ]
     assert not missing, f"worker_runner.py is missing {missing}"
 
     strays = [
         name
-        for name in expected
+        for name in PROCESS_MANAGEMENT_SURFACE
         if getattr(getattr(universal_html, name, None), "__module__", None)
         == universal_html.__name__
     ]
@@ -461,3 +468,142 @@ def test_each_platform_guard_uses_the_spelling_its_checking_needs(
         f"{function_name} reads `{forbidden}`, which is the wrong spelling for "
         "it. See PLATFORM_GUARDS above."
     )
+
+
+def _windows_branch_of(function_name: str) -> ast.If:
+    """Locate the ``os.name == "nt"`` branch inside a function in the runner.
+
+    Args:
+        function_name: The function to search.
+
+    Returns:
+        The ``if`` node guarding that function's Windows-only body.
+    """
+    source = Path(worker_runner.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=worker_runner.__file__)
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == function_name
+    )
+    return next(
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Attribute)
+        and node.test.left.attr == "name"
+        and isinstance(node.test.left.value, ast.Name)
+        and node.test.left.value.id == "os"
+    )
+
+
+def test_terminate_process_tree_guards_only_on_the_return_code() -> None:
+    """Pin the tree-kill guard to exactly `proc.returncode is None`
+
+    The guard used to read `proc.returncode is None and proc.pid is not None`.
+    The second conjunct was dead — `WorkerProcess.pid` is declared `int`, and
+    measured on CPython, `asyncio.subprocess.Process` assigns `self.pid =
+    transport.get_pid()` once in `__init__` and never clears it: a probe printed
+    the same integer before and after `wait()`.
+
+    Asserting its *absence* would have been the weak test. This branch runs only
+    on Windows, so nothing in this suite executes it, and mypy says nothing about
+    a removed conjunct — which leaves three mutants a grep cannot tell apart:
+
+    * deleting the whole `if` — `taskkill` then fires unconditionally;
+    * inverting it to `is not None` — `taskkill` fires only at processes that
+      have already exited, and never at the hung one it exists to reap;
+    * dropping the wrong conjunct, leaving `proc.pid is not None`.
+
+    So the test is positive and names the operator and both operands. All three
+    mutants fail it.
+    """
+    branch = _windows_branch_of("_terminate_process_tree")
+
+    guards = [
+        node
+        for node in ast.walk(branch)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(inner, ast.Attribute)
+            and inner.attr == "returncode"
+            and isinstance(inner.value, ast.Name)
+            and inner.value.id == "proc"
+            for inner in ast.walk(node.test)
+        )
+    ]
+    assert len(guards) == 1, (
+        f"Expected exactly one guard on `proc.returncode` inside "
+        f"_terminate_process_tree's Windows branch, found {len(guards)}. The "
+        "branch's other conditions test `killer`, not `proc`."
+    )
+
+    test = guards[0].test
+    assert isinstance(test, ast.Compare), (
+        "The tree-kill guard is no longer a single comparison. A `BoolOp` here "
+        "means a conjunct came back -- the `proc.pid is not None` half was "
+        "removed because WorkerProcess.pid is declared `int` and can never be "
+        "None."
+    )
+    assert len(test.ops) == 1 and isinstance(test.ops[0], ast.Is), (
+        "The tree-kill guard no longer tests `is None`. Inverted to `is not "
+        "None` it fires taskkill only at processes that have already exited, "
+        "which disables the tree-kill entirely and passes every other check in "
+        "this suite."
+    )
+    assert (
+        isinstance(test.left, ast.Attribute)
+        and test.left.attr == "returncode"
+        and isinstance(test.left.value, ast.Name)
+        and test.left.value.id == "proc"
+    ), "The tree-kill guard no longer tests `proc.returncode` on the left."
+    assert len(test.comparators) == 1 and isinstance(
+        test.comparators[0], ast.Constant
+    ), "The tree-kill guard no longer compares against a constant."
+    assert test.comparators[0].value is None, (
+        "The tree-kill guard no longer compares `proc.returncode` against None."
+    )
+
+
+def test_every_moved_symbol_is_documented() -> None:
+    """Hold the module to the project's every-symbol docstring rule
+
+    Thirteen of these fourteen arrived undocumented. They moved verbatim out of
+    `universal_html.py`, where they had none either, because an extraction that
+    also rewrites what it moves cannot be reviewed as an extraction — so the gap
+    was carried, deliberately, into the step that annotates the same signatures.
+
+    Scoped to the moved surface rather than to `src/`: the rest of the tree has
+    the same gap, closing it is no current step's business, and a repo-wide guard
+    would be red on arrival and get muted.
+
+    Read off `ast`, not `__doc__`. Two of these are dataclasses, and
+    `@dataclass` synthesises a `__doc__` from the field list when none is
+    written, so an attribute check reports both as documented when neither is.
+    """
+    source = Path(worker_runner.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=worker_runner.__file__)
+    defined = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+    missing = [name for name in PROCESS_MANAGEMENT_SURFACE if name not in defined]
+    assert not missing, (
+        f"{missing} are named in PROCESS_MANAGEMENT_SURFACE but not defined at "
+        "module scope in worker_runner.py."
+    )
+
+    undocumented = [
+        name
+        for name in PROCESS_MANAGEMENT_SURFACE
+        if not (ast.get_docstring(defined[name]) or "").strip()
+    ]
+    assert not undocumented, (
+        f"These symbols in worker_runner.py carry no docstring: {undocumented}. "
+        "The project's rule is every class, method and function."
+    )
+    assert ast.get_docstring(tree), "worker_runner.py has lost its module docstring."

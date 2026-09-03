@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -490,24 +491,6 @@ def test_production_annotates_the_spawned_process_with_the_protocol() -> None:
         "a literal, not a check."
     )
 
-    # A relative import, deliberately: the mutation cases below type-check a
-    # COPY of the tree, and an absolute import would resolve back to the
-    # repository's own Protocol, leaving both `types.py` mutations invisible.
-    relative = any(
-        isinstance(node, ast.ImportFrom)
-        and node.level == 1
-        and node.module == "types"
-        and any(alias.name == "WorkerProcess" for alias in node.names)
-        for node in ast.walk(tree)
-    )
-    assert relative, (
-        "worker_runner.py does not import WorkerProcess relatively "
-        "(`from .types import WorkerProcess`). An absolute import resolves "
-        "against mypy's search path, so a mutated copy of the Protocol would be "
-        "silently ignored and test_mypy_rejects_each_seam_mutation would go "
-        "green on the repository's own unmutated types.py."
-    )
-
 
 # --------------------------------------------------------------------------
 # The mypy configuration
@@ -727,6 +710,42 @@ def test_mypy_accepts_the_typed_double_surface() -> None:
 
 
 @pytest.mark.subsystem
+def test_mypy_accepts_the_committed_target_for_windows(tmp_path: Path) -> None:
+    """Type-check the Windows-only branches a native run declares unreachable.
+
+    This is the cost of narrowing ``_subprocess_launch_options`` on
+    ``sys.platform`` rather than silencing the ``STARTUPINFO`` lookup, and it is
+    paid here rather than left for the type-check job to discover. Measured:
+    mypy does not check code it considers unreachable, so on a Linux runner a
+    deliberate ``str``-into-``int`` error inside that function's Windows branch
+    is not reported, and under ``--platform win32`` it is. Without this case
+    that branch is unchecked on every runner this project currently has.
+
+    Note what it does *not* cover: ``_terminate_process_tree``'s Windows branch
+    guards on ``os.name``, which mypy cannot narrow, so the native run reads it
+    and this run adds nothing there. That asymmetry is deliberate and is pinned
+    by ``test_each_platform_guard_uses_the_spelling_its_checking_needs``.
+
+    Args:
+        tmp_path: Home for this run's cache. ``--platform`` is cache-affecting,
+            so sharing ``.mypy_cache`` with the native runs makes every run cold
+            in both directions -- permanently, including a developer's plain
+            ``mypy``. Measured: 0.16s / 1.89s / 2.12s / 1.90s alternating on a
+            shared cache, against 0.17s / 0.17s on separate ones. That would
+            silently reverse the reasoning recorded against ``incremental`` in
+            ``pyproject.toml``. A ``tmp_path`` leaves nothing untracked behind.
+    """
+    result = _run_mypy("--platform", "win32", "--cache-dir", str(tmp_path / "cache"))
+
+    _assert_resolved(result)
+    assert result.returncode == 0, (
+        "mypy rejected the committed target under --platform win32. The Windows "
+        "branch of _subprocess_launch_options is unreachable on a native run, "
+        f"so this is the only case that reads it.\n{result.stdout}"
+    )
+
+
+@pytest.mark.subsystem
 def test_ordinary_target_reports_no_unused_configuration_sections() -> None:
     """Prove every per-module section actually binds to a file mypy processes.
 
@@ -915,73 +934,129 @@ def test_the_any_fixture_is_clean_without_its_inline_directive(tmp_path: Path) -
 # and the mutations below are what prove it closed.
 # --------------------------------------------------------------------------
 
-# Each mutation is one exact substring swap applied to a throwaway copy of
-# `src/`. The (old, new) pair doubles as its own applied-check: a swap matching
-# nothing leaves the source identical, and the case says so rather than blaming
-# the seam for a clean run.
-SEAM_MUTATIONS: Final = {
-    "production_reads_a_member_the_protocol_never_declares": (
-        "worker_runner.py",
-        "    stdout_state: _StdoutAccumulator | None = None",
-        "    _undeclared = proc.stdin\n"
-        "    stdout_state: _StdoutAccumulator | None = None",
-        "attr-defined",
-    ),
-    "the_protocol_drops_a_member_production_reads": (
-        "types.py",
-        "    def stdout(self) -> asyncio.StreamReader | None:",
-        "    def stdout_renamed(self) -> asyncio.StreamReader | None:",
-        "attr-defined",
-    ),
-    "the_protocol_grows_a_member_a_real_process_lacks": (
-        "types.py",
-        "    @property\n    def stdout(self)",
+
+def _read_a_member_the_protocol_never_declares(source: str) -> str:
+    """Make the seam read ``proc.stdin``, which the Protocol does not declare.
+
+    Args:
+        source: ``worker_runner.py``'s text.
+
+    Returns:
+        The mutated text.
+    """
+    anchor = "    stdout_state: _StdoutAccumulator | None = None"
+    return source.replace(anchor, f"    _undeclared = proc.stdin\n{anchor}", 1)
+
+
+def _drop_a_member_the_seam_reads(source: str) -> str:
+    """Delete ``stdout`` from the Protocol outright.
+
+    A deletion, not a rename. Renaming does two things at once -- the Protocol
+    loses a member the seam reads *and* gains one no real process has -- which is
+    the next mutation's drift, with its diagnostics. Measured: the rename
+    reports four errors and is indistinguishable from that case; the deletion
+    reports one.
+
+    Sliced between two signature anchors rather than swapped as one literal, so
+    the case is not coupled to the member's docstring prose.
+
+    Args:
+        source: ``types.py``'s text.
+
+    Returns:
+        The mutated text.
+    """
+    start = source.index("    @property\n    def stdout(self)")
+    end = source.index("    @property\n    def stderr(self)")
+    return source[:start] + source[end:]
+
+
+def _add_a_member_no_real_process_has(source: str) -> str:
+    """Grow the Protocol by a member ``asyncio.subprocess.Process`` cannot supply.
+
+    Args:
+        source: ``types.py``'s text.
+
+    Returns:
+        The mutated text.
+    """
+    anchor = "    @property\n    def stdout(self)"
+    addition = (
         "    @property\n"
         "    def absent_from_a_real_process(self) -> int:\n"
         '        """Declared by nobody, so a real process cannot satisfy it."""\n'
         "        ...\n"
         "\n"
-        "    @property\n"
-        "    def stdout(self)",
-        "assignment",
+    )
+    return source.replace(anchor, addition + anchor, 1)
+
+
+# Each entry: the file it edits, how it edits it, and the EXACT set of error
+# codes it must provoke. Exact rather than membership, because the sets are what
+# prove the three mutations do different work: the first two report one code
+# from one site, the third also reports `arg-type` where `_run_pipe_probe` hands
+# its concrete process to `_terminate_process_tree`. A mutation quietly
+# collapsing onto another's diagnostics is the failure this pins.
+SEAM_MUTATIONS: Final = {
+    "production_reads_a_member_the_protocol_never_declares": (
+        "worker_runner.py",
+        _read_a_member_the_protocol_never_declares,
+        frozenset({"attr-defined"}),
+    ),
+    "the_protocol_drops_a_member_production_reads": (
+        "types.py",
+        _drop_a_member_the_seam_reads,
+        frozenset({"attr-defined"}),
+    ),
+    "the_protocol_grows_a_member_a_real_process_lacks": (
+        "types.py",
+        _add_a_member_no_real_process_has,
+        frozenset({"arg-type", "assignment"}),
     ),
 }
 
 
-def _run_mypy_on_copy(destination: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Type-check a copied ``worker_runner.py`` against the copy's own Protocol.
+def _as_ini_value(value: Any) -> str:
+    """Render a value read from ``pyproject.toml`` as mypy expects it in an INI.
 
-    The committed configuration cannot be reused, and this is measured rather
-    than assumed. ``_run_mypy`` pins the child's ``cwd`` to the repository root
-    and ``pyproject.toml`` sets ``mypy_path = "$MYPY_CONFIG_FILE_DIR/src"`` --
-    the *repository's* ``src``. Under that configuration only the file named on
-    the command line comes from the copy: with the copy's ``types.py`` mutated,
-    mypy reported ``Success`` and ``-v`` showed it parsing the repository's
-    ``types.py``. So the copy gets its own config with an absolute ``mypy_path``,
-    and production imports the Protocol relatively, which cannot resolve outside
-    its own package.
+    Args:
+        value: A scalar or list taken from the committed ``[tool.mypy]`` table.
 
-    The build deliberately contains this module and its followed imports only,
-    not ``tests/doubles``. With the double in it, the third mutation also breaks
-    ``FakeWorkerProcess``'s own ``_contract`` assignment -- machinery the earlier
-    step already ships -- and the case could no longer tell its claim from that
-    one. Measured: 5 errors across 2 files with the double in, 3 in 1 file
-    without it.
+    Returns:
+        The INI spelling.
+    """
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
+def _copy_configuration(destination: Path) -> Path:
+    """Derive the copy's mypy configuration from the committed one.
+
+    Written rather than hand-authored on purpose. A hand-authored config is a
+    second, unchecked declaration of the type-check settings: the committed
+    table could later gain a setting that changes what the seam check means --
+    ``strict``, or extending ``disallow_any_expr`` to this module -- and these
+    cases would go on exercising a configuration nobody ships, staying green.
+    That is the failure this module opens by naming: a literal is not a check.
+
+    Everything is carried over except ``files`` and ``mypy_path``, which must
+    point at the copy, and the per-module overrides for modules outside the
+    copy's build. ``tests/doubles`` is deliberately not in that build: with the
+    double present the third mutation also breaks ``FakeWorkerProcess``'s own
+    ``_contract`` assignment -- a check the Protocol harness already ships --
+    and the case could no longer tell its own claim from that one. Measured: 5
+    errors across 2 files with it, 3 in 1 file without.
 
     Args:
         destination: Directory holding the copied tree.
-        *args: Extra flags appended to the invocation.
 
     Returns:
-        The completed child mypy run.
+        The written config file's path.
     """
-    config = destination / "mypy.ini"
-    config.write_text(
-        "[mypy]\n"
-        "python_version = 3.13\n"
-        f"mypy_path = {destination / 'src'}\n",
-        encoding="utf-8",
-    )
+    committed = _mypy_configuration()
     target = (
         destination
         / "src"
@@ -989,16 +1064,29 @@ def _run_mypy_on_copy(destination: Path, *args: str) -> subprocess.CompletedProc
         / "scrape"
         / "worker_runner.py"
     )
-    return _run_mypy(
-        "--config-file",
-        str(config),
-        # A cache shared with the repository's runs would answer from the
-        # unmutated tree.
-        "--cache-dir",
-        str(destination / "cache"),
-        *args,
-        str(target),
-    )
+
+    lines = ["[mypy]"]
+    for key, value in sorted(committed.items()):
+        if key in {"files", "mypy_path", "overrides"}:
+            continue
+        lines.append(f"{key} = {_as_ini_value(value)}")
+    lines.append(f"mypy_path = {destination / 'src'}")
+    lines.append(f"files = {target}")
+
+    for override in committed.get("overrides", []):
+        settings = {k: v for k, v in override.items() if k != "module"}
+        for module in override["module"]:
+            # An override for a module outside this build would match nothing,
+            # and `warn_unused_configs` -- carried over above -- would report it.
+            if not module.startswith("kindly_web_search_mcp_server."):
+                continue
+            lines.append("")
+            lines.append(f"[mypy-{module}]")
+            lines.extend(f"{k} = {_as_ini_value(v)}" for k, v in sorted(settings.items()))
+
+    config = destination / "mypy.ini"
+    config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return config
 
 
 def _copy_source_tree(destination: Path) -> Path:
@@ -1015,15 +1103,53 @@ def _copy_source_tree(destination: Path) -> Path:
     return copied
 
 
+def _run_mypy_on_copy(destination: Path) -> subprocess.CompletedProcess[str]:
+    """Type-check the copied runner against the copy's own Protocol.
+
+    The committed configuration cannot simply be reused, and that is measured
+    rather than assumed. ``_run_mypy`` pins the child's ``cwd`` to the
+    repository root and the committed ``mypy_path`` is
+    ``$MYPY_CONFIG_FILE_DIR/src`` -- the *repository's*. Under it, only the file
+    named on the command line comes from the copy: with the copy's ``types.py``
+    mutated, mypy reported ``Success`` and ``-v`` showed it parsing the
+    repository's ``types.py``. Anchoring ``mypy_path`` at the copy is what fixes
+    that, and it is sufficient on its own -- measured, an absolute import
+    resolves to the copy too, so production's relative import of the Protocol is
+    a second line of defence and not the mechanism.
+
+    Args:
+        destination: Directory holding the copied tree.
+
+    Returns:
+        The completed child mypy run.
+    """
+    return _run_mypy(
+        "--config-file",
+        str(_copy_configuration(destination)),
+        # A cache shared with the repository's own runs would answer from the
+        # unmutated tree.
+        "--cache-dir",
+        str(destination / "cache"),
+    )
+
+
 @pytest.mark.subsystem
 def test_the_copied_tree_type_checks_cleanly(tmp_path: Path) -> None:
     """Control for the mutation cases: prove an unmutated copy is clean.
 
-    Its job is narrower than it looks. It is *not* what proves the copy is on
+    Its job is narrower than it looks. It is not what proves the copy is on
     mypy's path -- the two ``types.py`` mutations are, since they report nothing
-    at all if mypy read the repository's Protocol instead. What this excludes is
-    the other direction: a copy broken for some unrelated reason, under which
-    every mutation case would "detect" an error that was there all along.
+    at all if mypy reads the repository's Protocol instead, and the remaining
+    mutation asserts the reported path itself. What this excludes is the other
+    direction: a copy broken for some unrelated reason, under which every
+    mutation case would "detect" an error that was there all along.
+
+    Each case builds its own copy, so this control speaks for the machinery, not
+    for one shared tree that later cases inherit.
+
+    The unused-section assertion is what proves the *derived* configuration
+    actually binds: the copied override is keyed on a module that must be in the
+    build, and mypy reports the section as unused if it is not.
 
     Args:
         tmp_path: Destination for the copied tree.
@@ -1038,12 +1164,19 @@ def test_the_copied_tree_type_checks_cleanly(tmp_path: Path) -> None:
         "below cannot attribute their errors to the mutation rather than to the "
         f"copy.\n{result.stdout}"
     )
+    assert "unused section" not in result.stdout, (
+        "The configuration derived from the committed [tool.mypy] carries a "
+        "per-module section that binds to nothing in the copy's build, so its "
+        f"settings are inert here and this run is not the committed one.\n{result.stdout}"
+    )
 
 
 @pytest.mark.subsystem
 @pytest.mark.parametrize(("label", "mutation"), sorted(SEAM_MUTATIONS.items()))
 def test_mypy_rejects_each_seam_mutation(
-    label: str, mutation: tuple[str, str, str, str], tmp_path: Path
+    label: str,
+    mutation: tuple[str, Callable[[str], str], frozenset[str]],
+    tmp_path: Path,
 ) -> None:
     """Prove the annotation makes production's consumption a checked claim.
 
@@ -1052,30 +1185,28 @@ def test_mypy_rejects_each_seam_mutation(
     reads, and the Protocol growing one a real ``asyncio.subprocess.Process``
     cannot supply.
 
-    The error *code* is asserted, never the exit status: mypy exits non-zero for
-    a syntax error, an unresolved import or a crash just as readily. Membership,
-    never "the first" or "the only" error -- the third mutation also reports
-    ``arg-type`` at the two ``_run_pipe_probe`` call sites, which is correct
-    output and not a defect. And the reported path must fall inside the copy: a
-    diagnostic against the repository would mean the mutation was never read.
+    Error *codes* are asserted, never the exit status: mypy exits non-zero for a
+    syntax error, an unresolved import or a crash just as readily. And the
+    reported path must fall inside the copy -- a diagnostic against the
+    repository would mean the mutation was never read.
 
     Args:
         label: The drift being simulated.
-        mutation: File name, the exact text replaced, its replacement, and the
-            diagnostic that drift must provoke.
+        mutation: File to edit, the edit, and the exact codes it must provoke.
         tmp_path: Destination for the copied tree.
     """
-    filename, old, new, expected_code = mutation
+    filename, mutate, expected_codes = mutation
     copied = _copy_source_tree(tmp_path)
     target = copied / "kindly_web_search_mcp_server" / "scrape" / filename
     source = target.read_text(encoding="utf-8")
-    mutated = source.replace(old, new, 1)
+    mutated = mutate(source)
 
-    # A swap matching nothing leaves a clean tree, and a case asserting an error
-    # would then fail with a message blaming the seam for a stale anchor.
+    # A mutation that matched nothing leaves a clean tree, and a case asserting
+    # an error would then fail with a message blaming the seam for a stale
+    # anchor.
     assert mutated != source, (
-        f"The text this mutation replaces has moved in {filename}: {old!r}. The "
-        "case cannot simulate the drift it names until the anchor is updated."
+        f"Mutation {label!r} changed nothing in {filename}, so its anchor has "
+        "moved. The case cannot simulate the drift it names until that is fixed."
     )
     target.write_text(mutated, encoding="utf-8")
 
@@ -1083,14 +1214,15 @@ def test_mypy_rejects_each_seam_mutation(
 
     _assert_resolved(result)
     reported = set(ERROR_CODE_PATTERN.findall(result.stdout))
-    assert expected_code in reported, (
-        f"Mutation {label!r} was not rejected with [{expected_code}]; mypy "
-        f"reported {sorted(reported) or 'nothing'}. With the seam annotated "
-        "this drift must fail the type check -- if it does not, production and "
-        f"the Protocol can diverge with the suite green.\n{result.stdout}"
+    assert reported == set(expected_codes), (
+        f"Mutation {label!r} was expected to report exactly "
+        f"{sorted(expected_codes)}; mypy reported {sorted(reported) or 'nothing'}. "
+        "With the seam annotated this drift must fail the type check -- if it "
+        "reports nothing, production and the Protocol can diverge with the "
+        "suite green; if it reports a different set, this mutation has "
+        f"collapsed onto another's drift.\n{result.stdout}"
     )
     assert str(tmp_path) in result.stdout, (
         "mypy reported no diagnostic inside the copied tree, so it checked the "
         f"repository's own sources and the mutation was never read.\n{result.stdout}"
     )
-

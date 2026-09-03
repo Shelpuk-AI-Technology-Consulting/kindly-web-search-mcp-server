@@ -58,11 +58,32 @@ from ..utils.diagnostics import (
     Diagnostics,
     truncate_text,
 )
+
+# Relative, matching this module's other intra-package import above. It is
+# NOT what lets the seam's mutation harness check a copied Protocol -- that
+# is the copy-anchored `mypy_path`; measured, an absolute import resolves to
+# the copy too.
 from .types import WorkerProcess
 
 
 @dataclass
 class _StdoutAccumulator:
+    """Mutable state for one draining of a child's standard output.
+
+    Passed to :func:`_read_stdout_stream`, which owns it for the life of a run
+    and mutates it in place, so the caller can read the partial result after a
+    timeout cancels the reader.
+
+    Attributes:
+        buffer: Raw bytes received so far, decoded only once the child exits.
+        bytes_read: Total bytes seen, which is *not* ``len(buffer)`` for the
+            stderr twin and is kept symmetrical here.
+        last_emit_time: Monotonic time of the last progress record, or ``0.0``
+            before the first one.
+        last_emit_bytes: ``bytes_read`` at that record, used to rate-limit
+            progress by volume as well as by elapsed time.
+    """
+
     buffer: bytearray = field(default_factory=bytearray)
     bytes_read: int = 0
     last_emit_time: float = 0.0
@@ -71,6 +92,25 @@ class _StdoutAccumulator:
 
 @dataclass
 class _StderrAccumulator:
+    """Mutable state for one draining of a child's standard error.
+
+    Standard error carries two interleaved things: ``KINDLY_DIAG`` frames the
+    worker emits deliberately, and whatever else it or its browser writes. They
+    are separated as lines arrive rather than afterwards, so a run that times out
+    still yields the frames received before the deadline.
+
+    Attributes:
+        buffer: Text received but not yet split into complete lines.
+        tail: The most recent non-frame output, capped at the caller's limit.
+        bytes_read: Total bytes seen, before decoding.
+        last_emit_time: Monotonic time of the last progress record.
+        last_emit_bytes: ``bytes_read`` at that record.
+        worker_entries: Decoded ``KINDLY_DIAG`` frames, merged into the caller's
+            diagnostics once the run finishes.
+        parse_errors: Up to three samples of frames that would not decode, kept
+            so a malformed worker is diagnosable without unbounded logging.
+    """
+
     buffer: str = ""
     tail: str = ""
     bytes_read: int = 0
@@ -90,6 +130,16 @@ PIPE_PROBE_SAMPLE_LIMIT = 400
 
 
 def _subprocess_launch_options() -> dict[str, Any]:
+    """Build the platform-specific keyword arguments for spawning a child
+
+    On Windows a console application spawned from a GUI-less parent flashes a
+    console window and joins the parent's process group, so a Ctrl-C intended
+    for the parent reaches the child as well. Both are suppressed here.
+
+    Returns:
+        Keyword arguments for :func:`asyncio.create_subprocess_exec`. Empty on
+        every non-Windows platform, where none of this applies.
+    """
     # `sys.platform`, not `os.name`: mypy narrows on the former only, and
     # `subprocess.STARTUPINFO` below is win32-only in typeshed.
     if sys.platform != "win32":
@@ -105,6 +155,20 @@ def _subprocess_launch_options() -> dict[str, Any]:
 
 
 def _append_tail_text(existing: str, addition: str, *, limit: int) -> str:
+    """Append to a bounded tail, discarding from the front when it overflows
+
+    Keeps the *most recent* text rather than the first, because the end of a
+    failing child's stderr is what names the failure.
+
+    Args:
+        existing: The tail so far.
+        addition: Text to append. An empty string is returned unchanged rather
+            than triggering a needless copy.
+        limit: Maximum characters to retain.
+
+    Returns:
+        The combined text, truncated from the left to ``limit`` characters.
+    """
     if not addition:
         return existing
     combined = existing + addition
@@ -116,6 +180,20 @@ def _append_tail_text(existing: str, addition: str, *, limit: int) -> str:
 def _consume_stderr_line(
     state: _StderrAccumulator, line: str, *, tail_limit: int
 ) -> None:
+    """Route one complete line of a child's stderr into ``state``
+
+    A line prefixed ``KINDLY_DIAG `` is a structured frame the worker emitted on
+    purpose; anything else is ordinary output and joins the tail. A frame that
+    will not decode, or that decodes to something other than an object, is
+    sampled rather than raised: a malformed frame must not cost the caller the
+    run, and must not let a chatty child flood memory either, so at most three
+    samples are kept.
+
+    Args:
+        state: Accumulator mutated in place.
+        line: One line, already stripped of its terminator.
+        tail_limit: Maximum characters to retain in ``state.tail``.
+    """
     if line == "":
         return
     if line.startswith("KINDLY_DIAG "):
@@ -138,6 +216,16 @@ def _consume_stderr_line(
 
 
 def _finalize_stderr_state(state: _StderrAccumulator, *, tail_limit: int) -> None:
+    """Consume a trailing partial line left after the stream closed
+
+    A child that exits without a final newline leaves its last line in the
+    buffer, where the reader's newline loop never sees it. That line is often
+    the most interesting one, so it is flushed through the same routing.
+
+    Args:
+        state: Accumulator mutated in place.
+        tail_limit: Maximum characters to retain in ``state.tail``.
+    """
     if not state.buffer:
         return
     line = state.buffer.rstrip("\r")
@@ -154,6 +242,29 @@ def _maybe_emit_stream_progress(
     last_emit_time: float,
     last_emit_bytes: int,
 ) -> tuple[float, int]:
+    """Emit a stream-progress record, but only if enough has changed
+
+    A record per read chunk would bury the diagnostics stream on a large page,
+    so one is emitted only once the interval **or** the byte threshold is
+    crossed. Either, not both: a slow trickle must still show progress, and a
+    fast flood must not wait out the clock to report it.
+
+    The clock is seeded on first use rather than at construction, so a stream
+    that stays silent for a minute before its first byte does not emit a record
+    the instant it wakes.
+
+    Args:
+        diagnostics: Sink, or ``None`` to do nothing.
+        stream: ``"stdout"`` or ``"stderr"``, recorded on the entry.
+        bytes_read: Total bytes drained from this stream so far.
+        started: Monotonic time the run began, for the elapsed figure.
+        last_emit_time: Monotonic time of the previous record.
+        last_emit_bytes: ``bytes_read`` at the previous record.
+
+    Returns:
+        The time and byte count to carry forward — unchanged when nothing was
+        emitted, so the caller can assign the pair back unconditionally.
+    """
     if diagnostics is None:
         return last_emit_time, last_emit_bytes
     now = time.monotonic()
@@ -180,6 +291,20 @@ async def _read_probe_stream(
     *,
     byte_limit: int,
 ) -> tuple[bytes, int, float | None]:
+    """Drain a probe stream to EOF, keeping only its first ``byte_limit`` bytes
+
+    Reading continues past the limit rather than stopping at it: the point is to
+    measure how much the pipe delivered and how quickly, and abandoning the read
+    early would block the child on a full pipe and confound the measurement.
+
+    Args:
+        stream: The stream, or ``None`` when the child was spawned without one.
+        byte_limit: Maximum bytes to retain for the sample.
+
+    Returns:
+        The retained sample, the total number of bytes read, and the monotonic
+        time the first byte arrived — ``None`` if nothing ever did.
+    """
     if stream is None:
         return b"", 0, None
     buffer = bytearray()
@@ -204,6 +329,25 @@ async def _run_pipe_probe(
     env: dict[str, str],
     diagnostics: Diagnostics,
 ) -> None:
+    """Measure whether pipes work on this host, before blaming a real worker
+
+    Spawns a short-lived interpreter that writes a known payload to both
+    streams, then records how much came back and how fast. When a worker hangs,
+    this distinguishes "the browser never started" from "this host's pipes do
+    not deliver", which are diagnosed in completely different places.
+
+    It reports rather than raises: a failed probe is a diagnostic finding about
+    the host, not a reason to fail the caller's fetch. Every exit path emits
+    exactly one record, and a probe that overruns has its process tree killed
+    before this returns.
+
+    Args:
+        executable: Interpreter to run. The only argv this module composes, and
+            it carries no caller data — a fixed four elements around a literal.
+        env: Environment for the probe child.
+        diagnostics: Sink for the result. Required, not optional: a probe whose
+            findings go nowhere has no reason to run.
+    """
     probe_payload = (
         "import sys; "
         f"data='x'*{PIPE_PROBE_OUTPUT_BYTES}; "
@@ -330,6 +474,19 @@ async def _read_stdout_stream(
     diagnostics: Diagnostics | None,
     started: float,
 ) -> None:
+    """Drain a child's standard output into ``state`` until it closes
+
+    Bytes are accumulated undecoded and decoded once at the end, because a
+    multi-byte character split across two reads would otherwise be corrupted at
+    the seam.
+
+    Args:
+        stream: The stream, or ``None`` when no pipe was requested.
+        state: Accumulator mutated in place, so a cancelled read still leaves
+            the caller whatever arrived.
+        diagnostics: Sink for progress records, or ``None``.
+        started: Monotonic time the run began, for elapsed figures.
+    """
     if stream is None:
         return
     while True:
@@ -356,6 +513,20 @@ async def _read_stderr_stream(
     started: float,
     tail_limit: int,
 ) -> None:
+    """Drain a child's standard error into ``state``, splitting it into lines
+
+    Unlike stdout this decodes as it goes, because the frames it carries are
+    line-oriented and must be available before the child exits. Undecodable
+    bytes are replaced rather than raised: stderr is diagnostic output, and
+    losing a run to a stray byte in it would be the wrong trade.
+
+    Args:
+        stream: The stream, or ``None`` when no pipe was requested.
+        state: Accumulator mutated in place.
+        diagnostics: Sink for progress records, or ``None``.
+        started: Monotonic time the run began, for elapsed figures.
+        tail_limit: Maximum characters to retain in ``state.tail``.
+    """
     if stream is None:
         return
     while True:
@@ -390,6 +561,20 @@ async def _emit_worker_heartbeat(
     diagnostics: Diagnostics | None,
     started: float,
 ) -> None:
+    """Emit a record every few seconds while the child is still running
+
+    Without this a slow fetch is indistinguishable from a hung one in the
+    diagnostics stream. Costs nothing when diagnostics are off, and returns
+    immediately in that case rather than sleeping in a loop nobody reads.
+
+    Args:
+        proc: The running child. Only ``returncode`` is read, and its optional
+            half is what this loop is spelled against.
+        stdout_state: Accumulator, read for its byte count.
+        stderr_state: Accumulator, read for its byte count.
+        diagnostics: Sink, or ``None`` to return at once.
+        started: Monotonic time the run began, for elapsed figures.
+    """
     if diagnostics is None:
         return
     while proc.returncode is None:
@@ -406,6 +591,31 @@ async def _emit_worker_heartbeat(
 
 
 async def _terminate_process_tree(proc: WorkerProcess) -> None:
+    """Kill a child that has overrun, and on Windows its descendants too
+
+    **The name overstates what happens on POSIX, and that is a known defect
+    rather than a shorthand.** The two branches do different things:
+
+    * On Windows, ``taskkill /T /F`` walks the tree, so the browser the worker
+      started dies with it.
+    * Everywhere else this sends a signal to the **direct child only**. Its
+      descendants are reparented and survive. Confirmed with a probe: after the
+      call, ``child alive=False grandchild alive=True PPid: 1``.
+
+    In production that grandchild is Chromium, so a timed-out worker leaves a
+    browser and its profile directory behind on Linux and not on Windows. The
+    fix belongs to the worker-lifecycle step, whose verify clause already
+    requires that a killed parent leave no orphan; a process group at spawn plus
+    a group kill is the candidate. It is not fixed here because changing process
+    termination is a behaviour change, and this step annotates signatures.
+
+    Every failure is suppressed throughout. The process may exit between any two
+    statements, and racing it is not an error worth propagating to a caller who
+    is already handling a timeout.
+
+    Args:
+        proc: The child to kill. Returns immediately if it has already exited.
+    """
     if proc.returncode is not None:
         return
 
@@ -414,7 +624,7 @@ async def _terminate_process_tree(proc: WorkerProcess) -> None:
             proc.terminate()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(proc.wait(), timeout=1.5)
-        if proc.returncode is None and proc.pid is not None:
+        if proc.returncode is None:
             with contextlib.suppress(Exception):
                 killer = await asyncio.create_subprocess_exec(
                     "taskkill",
