@@ -123,6 +123,10 @@ def _pinned_detector(realpath_targets: dict[str, str]) -> Any:
     Autospecced like the other doubles here, so a production change calling the
     detector with the wrong arity raises rather than being quietly accepted.
 
+    **`tests/test_nodriver_worker_sandbox.py::make_pinned_detector` is the same
+    nine lines**, for the other call site. Deliberately not shared -- see that
+    one's docstring for why. If you change which inputs are pinned, change both.
+
     Args:
         realpath_targets: What ``os.path.realpath`` should answer, by path. A
             path absent from the mapping resolves to itself, which is what the

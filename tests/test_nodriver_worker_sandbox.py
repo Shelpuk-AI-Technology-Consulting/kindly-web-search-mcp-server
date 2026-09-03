@@ -221,6 +221,13 @@ def make_pinned_detector(realpath_targets: dict[str, str]) -> Any:
     rather than being quietly accepted, and the case can assert which path it was
     asked about.
 
+    **`tests/test_chromium_pool_slot_start.py::_pinned_detector` is the same nine
+    lines**, for the pool's copy of this call site. They are deliberately not
+    shared: what differs between them is the reasoning, which is each module's
+    own, and the only home for a shared double here is `tests/doubles/`, a package
+    scoped to the worker Protocol harness and inside the type gate's declared
+    surface. If you change which inputs are pinned, change both.
+
     Args:
         realpath_targets: What ``os.path.realpath`` should answer, by path. A
             path absent from the mapping resolves to itself, which is what the
