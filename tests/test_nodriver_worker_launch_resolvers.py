@@ -699,6 +699,19 @@ UBUNTU_SNAP_LAUNCHER_TARGET = "/usr/bin/snap"
 #: An ordinary system browser: no marker in the path, and it resolves to itself.
 SYSTEM_BROWSER = "/usr/bin/chromium"
 
+#: The same launcher on a distribution that is **not** Ubuntu. snapd mounts snaps
+#: under ``/var/lib/snapd/snap`` and puts ``/var/lib/snapd/snap/bin`` on ``PATH``;
+#: ``/snap`` exists there only if an administrator creates the symlink by hand,
+#: which classic confinement requires and nothing else does (ArchWiki, *Snap*).
+#:
+#: It is here because it is the only shape that distinguishes the marker rule the
+#: detector implements -- ``"/snap/" in path`` -- from the ``startswith("/snap/")``
+#: the shipped function used and that a later reader will be tempted to restore.
+#: Every other path in this module carries the marker at position 0, so without
+#: this constant that mutation survives the whole suite while quietly denying the
+#: snap allowance to every snap browser on Fedora, Arch and Debian.
+SNAPD_MOUNT_LAUNCHER = "/var/lib/snapd/snap/bin/chromium"
+
 
 def _realpath_returning(targets: dict[str, str]) -> Callable[..., str]:
     """Build an :func:`os.path.realpath` stand-in with a fixed answer table.
@@ -784,6 +797,37 @@ def test_a_snap_path_with_nothing_to_resolve_is_classified_as_snap(
     assert _is_snap_browser("/snap/bin/chromium-for-tests") is True
 
 
+def test_a_launcher_under_the_snapd_mount_point_is_classified_as_snap(
+    posix_platform: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Classify the same launcher as snap where snapd mounts outside ``/snap``
+
+    The case above is the Ubuntu shape, where the marker happens to sit at the
+    start of the path. Off Ubuntu it does not: snapd mounts under
+    ``/var/lib/snapd/snap`` and ``/snap`` is a hand-made symlink that only
+    classic confinement needs. The launcher is a symlink to ``/usr/bin/snap``
+    there too, so the same defect applies -- and the same repair, only if the
+    marker is matched anywhere in the path rather than at its start.
+
+    Without this case ``"/snap/" in executable_path`` can be narrowed to
+    ``executable_path.startswith("/snap/")`` -- the spelling the shipped function
+    used -- with the whole suite still green, reintroducing this bug for every
+    snap browser on Fedora, Arch and Debian. Measured.
+
+    Args:
+        posix_platform: fixture pinning ``os.name``.
+        monkeypatch: pytest fixture used to pin ``os.path.realpath``.
+    """
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        _realpath_returning({SNAPD_MOUNT_LAUNCHER: UBUNTU_SNAP_LAUNCHER_TARGET}),
+    )
+
+    assert _is_snap_browser(SNAPD_MOUNT_LAUNCHER) is True
+
+
 def test_a_browser_resolving_into_the_snap_tree_is_classified_as_snap(
     posix_platform: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -795,6 +839,13 @@ def test_a_browser_resolving_into_the_snap_tree_is_classified_as_snap(
     Deleting the resolved-path test to keep the given-path one would fix the
     defect above and open this hole in its place, so both halves are asserted.
 
+    The target deliberately carries the marker **mid-path**, under snapd's own
+    mount point rather than under ``/snap``. It is the more representative real
+    answer off Ubuntu, and it is what stops ``"/snap/" in resolved`` being
+    narrowed back to ``resolved.startswith("/snap/")`` -- the spelling the shipped
+    function used, which survives every prefix-shaped case. See
+    :data:`SNAPD_MOUNT_LAUNCHER`.
+
     Args:
         posix_platform: fixture pinning ``os.name``.
         monkeypatch: pytest fixture used to pin ``os.path.realpath``.
@@ -803,7 +854,7 @@ def test_a_browser_resolving_into_the_snap_tree_is_classified_as_snap(
         os.path,
         "realpath",
         _realpath_returning(
-            {SYSTEM_BROWSER: "/snap/chromium/2917/usr/lib/chromium/chrome"}
+            {SYSTEM_BROWSER: "/var/lib/snapd/snap/chromium/2917/usr/lib/chromium/chrome"}
         ),
     )
 
@@ -846,6 +897,13 @@ def test_no_path_is_classified_as_snap_away_from_posix(
     now rests on an explicit guard instead. The realpath pin below reproduces the
     measured Windows answer, so the case fails for the right reason when the
     guard is deleted rather than passing for the old one.
+
+    **One equivalent mutant, triaged here rather than chased.** Rewriting the
+    guard as ``if os.name == "nt": return False`` survives this case and the whole
+    suite. It is equivalent on any interpreter that can run this package:
+    CPython sets ``os.name`` to ``"posix"`` or ``"nt"`` and to nothing else, so
+    the two spellings partition the same inputs. Measured. No test should be
+    written for it.
 
     Args:
         monkeypatch: pytest fixture used to pin ``os.name`` and
@@ -897,27 +955,50 @@ def test_a_snap_path_is_still_classified_as_snap_when_it_cannot_be_resolved(
     assert _is_snap_browser(UBUNTU_SNAP_LAUNCHER) is True
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(OSError("filesystem is unavailable"), id="filesystem-error"),
+        pytest.param(
+            ValueError("embedded null character in path"), id="embedded-null"
+        ),
+    ],
+)
 def test_a_path_that_cannot_be_resolved_is_not_classified_as_snap(
     posix_platform: None,
     monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
 ) -> None:
     """Report a browser whose path will not resolve as non-snap rather than raising
 
-    ``realpath`` can fail -- an embedded null raises :class:`ValueError`, and a
-    filesystem error raises :class:`OSError`. A classification is not worth
-    aborting a browser launch over, so the failure answers ``False``.
+    ``realpath`` can fail two ways, and both are driven here rather than named
+    and left: a filesystem error raises :class:`OSError`, and an embedded null
+    raises :class:`ValueError` (measured --
+    ``os.path.realpath("/usr/bin/chromium\x00")`` reports *lstat: embedded null
+    character in path*). A classification is not worth aborting a browser launch
+    over, so either failure answers ``False``.
+
+    Driving both is what keeps the ``except Exception:`` clause honest. Narrowing
+    it to ``except OSError:`` -- which this repository's own ``ruff`` run
+    actively suggests, reporting ``BLE001`` on that very line -- survives an
+    ``OSError``-only case and turns the null path into an uncaught raise out of a
+    browser launch. Neither failure is reachable from production input today
+    (the path comes from the environment or from `shutil.which`, and neither can
+    carry a null), which is why this is a parametrized pair rather than a wider
+    harness.
 
     The input carries no marker of its own, deliberately: a ``/snap/`` path never
     reaches the resolver at all, so a case using one would pass whatever the
     ``except`` branch did and could not tell ``return False`` from ``return
-    True``.
+    True``. The case above pins that ordering separately.
 
     Args:
         posix_platform: fixture pinning ``os.name``.
         monkeypatch: pytest fixture used to make ``os.path.realpath`` fail.
+        failure: The exception ``os.path.realpath`` raises for this row.
     """
     def _raising(_path: str, *_args: object, **_kwargs: object) -> str:
-        raise OSError("filesystem is unavailable")
+        raise failure
 
     monkeypatch.setattr(os.path, "realpath", _raising)
 

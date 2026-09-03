@@ -725,17 +725,25 @@ class TestNodriverWorkerSandbox(unittest.IsolatedAsyncioTestCase):
         exponent, dropping the multiplier, and dropping both.
 
         **The snap classification is injected here, not derived from the path,
-        and that is a platform repair rather than a convenience.**
-        `_is_snap_browser` calls `os.path.realpath`, whose result is
-        platform-dependent: Windows rewrites the separators and prepends a drive
-        letter, so ``/snap/bin/...`` resolves to ``D:\snap\bin\...`` and the
-        ``/snap/`` marker the detector keys on cannot survive. Measured against
-        the shipped function on a `windows-latest` runner. **No path whatsoever
-        classifies as snap there**, so a case deriving the answer from a path
-        asserts the multiplied series on POSIX and the un-multiplied one on
-        Windows -- this one did, and failed there with ``[0.5, 1.0, 0.1]``.
-        Production is right and is left alone: snap is a Linux packaging format
-        and does not exist on Windows.
+        and that is a platform repair rather than a convenience.** When this was
+        written, `_is_snap_browser` answered from `os.path.realpath` alone, whose
+        result is platform-dependent: Windows rewrites the separators and
+        prepends a drive letter, so ``/snap/bin/...`` resolved to
+        ``D:\snap\bin\...`` and the ``/snap/`` marker the detector keys on could
+        not survive. Measured against the function as it shipped then, on a
+        `windows-latest` runner. **No path whatsoever classifies as snap there**,
+        so a case deriving the answer from a path asserted the multiplied series
+        on POSIX and the un-multiplied one on Windows -- this one did, and failed
+        there with ``[0.5, 1.0, 0.1]``. Production is right and is left alone:
+        snap is a Linux packaging format and does not exist on Windows.
+
+        **That mechanism is gone; the answer is not.** The detector now tests the
+        marker on the path as given, which the resolver can no longer erase, and
+        an explicit ``os.name`` guard carries the Windows answer instead -- so on
+        Windows the function returns before `os.path.realpath` is called at all.
+        The injection here still earns its place: it keeps this case's subject
+        the backoff arithmetic rather than the classification, and the derived
+        cases below cover the wiring it gives up.
 
         What the seam gives up is the wiring from a *path shape* to the answer.
         That wiring has since been restored, in the two cases below this pair

@@ -356,7 +356,11 @@ def _is_snap_browser(executable_path: str) -> bool:
 
     A snap-packaged Chromium is markedly slower to open its DevTools endpoint
     than a distribution-packaged one, so the caller multiplies both the
-    DevTools-ready timeout and the retry backoff for one.
+    DevTools-ready timeout and the retry backoff for one. The marker ``/snap/``
+    is matched anywhere in the path, on the path as supplied and then on its
+    resolved form; the reasoning for the ordering, for the POSIX guard, and for
+    matching a substring rather than a prefix is recorded in
+    ``.system_design/TEST_SUITE.md`` §3.1.
 
     Args:
         executable_path: The browser executable path, as the caller supplied it
@@ -365,25 +369,13 @@ def _is_snap_browser(executable_path: str) -> bool:
     Returns:
         ``True`` when the path identifies a snap-packaged browser.
     """
-    # Snap is a Linux packaging format. On Windows a single leading slash is not
-    # absolute, so the marker below would match a path that no snap runtime
-    # could ever have produced; refuse the whole question there instead.
-    # POSIX rather than Linux deliberately: macOS has no snap either, but it
-    # answered the marker before this guard existed and a misclassification there
-    # only lengthens a timeout, so narrowing it would be a behaviour change made
-    # for tidiness. `os.name`, not `sys.platform`, because the body is ordinary
-    # stdlib and both mypy runs should read it.
+    # No snap runtime exists off POSIX, so no path there may classify as one.
     if os.name != "posix":
         return False
-    # The marker is tested on the path AS GIVEN first, and that ordering is the
-    # point: `/snap/bin/chromium` -- the only way Ubuntu has shipped Chromium
-    # since 19.10 -- is a symlink to `/usr/bin/snap`, so resolving first replaces
-    # the evidence with a target that carries no marker at all.
+    # Before resolving, because the launcher symlink is what destroys the marker.
     if "/snap/" in executable_path:
         return True
-    # Resolving still earns its place: a browser reached by an ordinary path can
-    # be a snap package underneath, and only the resolved form says so. A path
-    # that will not resolve is reported non-snap rather than aborting a launch.
+    # After, because an ordinary path can be a snap package underneath.
     try:
         resolved = os.path.realpath(executable_path)
     except Exception:

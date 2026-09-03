@@ -229,6 +229,20 @@ differently depending on where the developer's Chromium came from — and
 POSIX. A case that pins only the first asserts one answer on Linux and its
 opposite on Windows.
 
+**The marker is matched anywhere in the path, not as a prefix**, and that is a
+requirement rather than a spelling. snapd mounts snaps under
+`/var/lib/snapd/snap` and puts `/var/lib/snapd/snap/bin` on `PATH`; `/snap`
+exists only where an administrator creates the symlink by hand, which classic
+confinement needs and nothing else does (ArchWiki, *Snap*). So on Fedora, Arch
+and Debian the launcher is `/var/lib/snapd/snap/bin/chromium` and the marker sits
+mid-path. The shipped function spelled this `resolved.startswith("/snap/") or
+"/snap/" in resolved` — a redundant prefix test beside the substring test that
+subsumed it — so "tidy that back to the prefix" is the refactor the next reader
+reaches for, and it would deny the allowance to every snap browser off Ubuntu.
+Two of §3.1's cases carry a mid-path marker for exactly this reason, one on the
+given path and one on the resolved one; without them that mutation survives the
+whole suite. Measured.
+
 The guard is spelled `os.name != "posix"` and not `sys.platform` or a Linux test,
 on two separate grounds. POSIX rather than Linux: macOS has no snap either, but a
 `/snap/` path there classified as snap before the guard existed and
@@ -2209,9 +2223,11 @@ job's own pinned run of the L1/L2 selection; nothing is combined across jobs. Bu
 that single run is reported twice, and the difference is load-bearing.
 
 `source_pkgs` makes the report **whole-package by definition** — that is the point
-of control 1, and it is also a trap. A module the hermetic lane cannot execute,
-such as `chromium_pool.py`, appears with every statement at zero hits. It is not
-absent; it is present and uncovered. So a scope claim cannot be made by wishing:
+of control 1, and it is also a trap. A module the hermetic lane cannot execute
+appears with every statement at zero hits. It is not absent; it is present and
+uncovered. `chromium_pool.py` was the example here and is now only a partial one
+— its slot startup gained a hermetic case with the snap-detection fix, so the
+lane executes the module, though almost all of it stays at zero. So a scope claim cannot be made by wishing:
 without filtering, `diff-cover` sees those zero-hit statements and counts changed
 ones as uncovered, and adding L3-only statements grows the ratchet's denominator
 while the numerator stands still. Ordinary worker or pool development would fail

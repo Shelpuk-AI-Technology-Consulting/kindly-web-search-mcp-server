@@ -1105,7 +1105,10 @@ duplicating tests or touching the same files.
   than opening a second module over the same coroutine, and note what it
   deliberately leaves — its own docstring lists port selection, profile
   directories, the slot health probe and the pool's queueing, every one of which
-  is this step's.
+  is this step's. **Its two existing cases are unmarked and must stay so**: they
+  are hermetic and belong in the fast lane. Every claim this step adds there
+  needs its own `chromium` or `subsystem` marker, or a step written against a
+  locally installed Chromium quietly acquires cases that run everywhere.
 
 ---
 
