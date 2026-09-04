@@ -89,9 +89,11 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -634,30 +636,245 @@ async def _emit_worker_heartbeat(
         await asyncio.sleep(STREAM_HEARTBEAT_INTERVAL_SECONDS)
 
 
+def _parse_parent_pid(stat_text: str) -> int | None:
+    """Read a process's parent pid out of one ``/proc/<pid>/stat`` line
+
+    The second field of that line is the executable name in brackets, and the
+    kernel neither escapes nor rejects spaces or a closing bracket inside it.
+    Splitting the line on whitespace therefore reads some other field entirely
+    and returns a plausible small integer rather than an error — a number this
+    module would go on to treat as a process it may ``SIGKILL``, and as a
+    process group it may signal. Everything after the **last** bracket is read
+    for that reason.
+
+    Args:
+        stat_text: One line of a ``/proc/<pid>/stat`` file.
+
+    Returns:
+        The parent pid, or ``None`` if the line carries no readable one. A
+        truncated or empty line is ordinary rather than exceptional here: the
+        process may exit between the directory listing and the read.
+    """
+    _, bracket, rest = stat_text.rpartition(")")
+    if not bracket:
+        return None
+    # After `comm` the fields are `state ppid pgrp ...`, so the parent is the
+    # second.
+    fields = rest.split()
+    if len(fields) < 2:
+        return None
+    try:
+        return int(fields[1])
+    except ValueError:
+        return None
+
+
+def _read_parent_map() -> dict[int, int]:
+    """Snapshot every visible process's parent, from ``/proc``
+
+    Reading every ``stat`` file is O(all processes) where
+    ``/proc/<pid>/task/<tid>/children`` would be O(descendants). The latter is
+    deliberately not used: enumerating a process's children through it means
+    first enumerating that process's *threads*, which weakens the atomicity of
+    the snapshot across the iteration, and it is a narrower interface than
+    ``stat``. The scan is a few hundred small reads and happens only when a
+    fetch is already being torn down.
+
+    **Synchronous file I/O only, with no ``await`` anywhere.** This runs inside
+    :func:`_run_worker_command`'s ``except asyncio.CancelledError`` handler,
+    where a second cancellation arriving at an ``await`` would raise before
+    anything had been killed — returning the exact leak this function exists to
+    close, on the exact path it targets. That is also why no ``ps`` subprocess
+    fallback exists for platforms without ``/proc``: there, this returns nothing
+    and the worker is still killed by pid, which is the behaviour that shipped
+    before.
+
+    Returns:
+        Each visible pid mapped to its parent's pid. Empty when ``/proc`` cannot
+        be read at all, which is every non-Linux platform.
+    """
+    parent_map: dict[int, int] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return parent_map
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        # One unreadable entry costs its own row and nothing else: processes are
+        # exiting underneath this loop by definition, and abandoning the scan
+        # over one of them could abandon the browser.
+        try:
+            with open(f"/proc/{entry}/stat", encoding="utf-8", errors="replace") as handle:
+                stat_text = handle.readline()
+        except OSError:
+            continue
+        parent_pid = _parse_parent_pid(stat_text)
+        if parent_pid is not None:
+            parent_map[int(entry)] = parent_pid
+    return parent_map
+
+
+def _collect_descendants(parent_map: Mapping[int, int], root: int) -> list[int]:
+    """List every transitive descendant of ``root``
+
+    Transitive, not just children: in production the worker's child is Chromium
+    and Chromium's children are its renderers, so a walk that stopped at the
+    first generation would reproduce the defect one level deeper.
+
+    Args:
+        parent_map: Each pid mapped to its parent's pid, from
+            :func:`_read_parent_map`.
+        root: The process whose descendants are wanted. It is never included.
+
+    Returns:
+        The descendants, in no particular order.
+    """
+    children: dict[int, list[int]] = {}
+    for pid, parent_pid in parent_map.items():
+        children.setdefault(parent_pid, []).append(pid)
+
+    # `seen` is not an optimisation. The map is assembled from many files that
+    # were not read atomically while pids were being recycled, so it can contain
+    # a cycle -- and a hang here would stall the cancellation handler silently.
+    descendants: list[int] = []
+    seen = {root}
+    queue = list(children.get(root, ()))
+    while queue:
+        pid = queue.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        descendants.append(pid)
+        queue.extend(children.get(pid, ()))
+    return descendants
+
+
+def _signal_descendants(
+    descendants: Sequence[int],
+    *,
+    own_pid: int,
+    own_group: int,
+    signal_number: int,
+    getpgid: Callable[[int], int],
+    killpg: Callable[[int, int], None],
+    kill: Callable[[int, int], None],
+) -> None:
+    """Signal a worker's descendants, by process group and then individually
+
+    Two passes, and both are needed.
+
+    The **group** pass is what reaches a browser cheaply: Chromium is launched
+    with ``start_new_session`` on POSIX, so it leads its own group and one call
+    takes it together with every renderer it started, including renderers
+    spawned after the walk that produced ``descendants``.
+
+    The **per-pid** pass is the general claim the group pass optimises. A
+    descendant that did not call ``setsid`` is in the *caller's* group, which
+    the exclusion below skips, so nothing else reaches it.
+
+    **The own-group exclusion is not defensive.** The worker is spawned with no
+    ``start_new_session`` (see :func:`_subprocess_launch_options`), so it shares
+    the server's process group and so does any descendant that did not detach.
+    Without the exclusion this reaches ``killpg(<the server's own group>)`` on an
+    ordinary cancelled fetch and takes the server down with the browser. The
+    matching exclusions on ``own_pid`` and pid 1 guard the same class of
+    mistake: a walk rooted at the worker cannot reach either unless the snapshot
+    contained a cycle or a recycled pid, both of which are admitted.
+
+    Every signal is dependency-injected so this can be driven with no process in
+    existence. That is not a general seam for this module — it is specific to
+    the one function whose obvious mutation, if run against a real process tree,
+    kills the test session and its shell and produces no report at all.
+
+    Args:
+        descendants: Pids to signal, from :func:`_collect_descendants`.
+        own_pid: The calling process, which must never be signalled.
+        own_group: The calling process's group, which must never be signalled.
+        signal_number: Signal to send. Production sends ``SIGKILL``; by the time
+            this runs the caller has already given up on the worker.
+        getpgid: Resolves a pid's process group; ``os.getpgid`` in production.
+        killpg: Signals a process group; ``os.killpg`` in production.
+        kill: Signals a process; ``os.kill`` in production.
+    """
+    # Groups first, and deduplicated: every renderer of one browser resolves to
+    # the same group, and one call covers them all.
+    groups: list[int] = []
+    for pid in descendants:
+        if pid == own_pid or pid == 1:
+            continue
+        try:
+            group = getpgid(pid)
+        except OSError:
+            continue
+        if group in (own_group, 0) or group in groups:
+            continue
+        groups.append(group)
+    for group in groups:
+        with contextlib.suppress(OSError):
+            killpg(group, signal_number)
+
+    # Then individually, which is what reaches a descendant whose group was
+    # excluded -- the ordinary case for anything that did not detach itself.
+    for pid in descendants:
+        if pid == own_pid or pid == 1:
+            continue
+        with contextlib.suppress(OSError):
+            kill(pid, signal_number)
+
+
 async def _terminate_process_tree(proc: WorkerProcess) -> None:
-    """Kill a child that has overrun, and on Windows its descendants too
+    """Kill a worker that has overrun, and every process it started
 
-    **The name overstates what this does on *both* platforms, and that is a
-    known defect rather than a shorthand.**
+    **Order is the whole design: enumerate first, signal second.** A process's
+    children are reparented to ``init`` the instant it dies, so a walk performed
+    after the kill finds nothing and the descendants become unattributable
+    strays. In production those descendants are a headless Chromium and its
+    renderers.
 
-    * Off Windows it signals the **direct child only**. Descendants are
-      reparented and survive — probed: after the call, ``child alive=False
-      grandchild alive=True PPid: 1``.
-    * On Windows the first thing tried is ``proc.terminate()``, which CPython
-      implements as ``TerminateProcess`` (and where ``kill`` is an *alias* for
-      ``terminate``). That is immediate, unconditional, and also kills the named
-      process only — Windows has no primitive for killing a tree.
-      ``taskkill /T /F``, which does walk the tree, is reached only if the child
-      is **still alive 1.5 s later**, and ``TerminateProcess`` makes that
-      unlikely. So in the ordinary case descendants survive here too.
+    Off Windows:
 
-    In production that descendant is Chromium, so a timed-out worker leaves a
-    browser and its profile directory behind, on **either** platform. The fix
-    belongs to the worker-lifecycle step, whose verify clause already requires
-    that a killed parent leave no orphan; a process group at spawn plus a group
-    kill is the POSIX candidate, and a Win32 job object the Windows one. It is
-    not fixed here because changing process termination is a behaviour change,
-    and this step annotates signatures.
+    1. Snapshot the worker's transitive descendants from ``/proc``
+       (:func:`_read_parent_map`, :func:`_collect_descendants`).
+    2. ``killpg`` each distinct group among them, then ``kill`` each of them
+       individually — see :func:`_signal_descendants` for why both passes are
+       needed and which exclusions are load-bearing.
+    3. Kill the worker **by pid**, never by group.
+
+    On Windows ``taskkill /T /F`` runs **first**. It is the only thing on the
+    platform that walks a tree: CPython implements ``Process.terminate`` as
+    ``TerminateProcess`` and aliases ``kill`` to it, which is immediate,
+    unconditional, and reaches the named process only. The fallback is keyed on
+    ``proc.returncode`` — *did our own worker die* — and deliberately **not** on
+    ``taskkill``'s exit status, which is 128 whenever any member of the tree had
+    already exited, an ordinary outcome for a browser whose renderers churn.
+
+    **Two rejected alternatives, both of which read as obviously correct.**
+
+    * *A process group at the worker's spawn* (``start_new_session=True``, then
+      ``os.killpg`` of the worker's group). It does not reach the browser:
+      :func:`~kindly_web_search_mcp_server.scrape.nodriver_worker._launch_chromium`
+      already starts Chromium with ``start_new_session`` on POSIX, so the
+      browser leads a session of its own and is in no group the worker belongs
+      to. Measured. Worse, written against today's spawn it is *destructive*:
+      :func:`_subprocess_launch_options` returns no such option, so the worker
+      shares the **server's** process group and that call signals the server.
+      It also costs something — detaching the worker would stop a group
+      ``SIGINT`` reaching it, and the worker's ``KeyboardInterrupt`` path is
+      what runs its own browser teardown and profile cleanup today.
+    * *A Win32 job object* with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``. It is
+      the platform's real equivalent of a process group, and it needs ``ctypes``
+      against ``kernel32`` plus a handle held for the worker's whole lifetime —
+      a spawn-side change to a module with no hermetic seam, on a platform with
+      no standing test lane. ``taskkill`` was already here and needed only to be
+      tried first.
+
+    **Known limits, so silence is not mistaken for success.** This function
+    reports nothing. Where ``/proc`` does not exist the walk yields nothing and
+    behaviour degrades to killing the worker alone; and a Windows process stuck
+    in unprocessed I/O defeats ``taskkill /F`` and ``TerminateProcess`` alike,
+    after which this returns having killed nothing. Both are invisible until it
+    gains a diagnostics sink.
 
     Every failure is suppressed throughout. The process may exit between any two
     statements, and racing it is not an error worth propagating to a caller who
@@ -669,33 +886,52 @@ async def _terminate_process_tree(proc: WorkerProcess) -> None:
     if proc.returncode is not None:
         return
 
-    if os.name == "nt":
+    # `sys.platform`, not `os.name`: `os.killpg`, `os.getpgid` and
+    # `signal.SIGKILL` below are POSIX-only in typeshed, and mypy narrows on
+    # this spelling alone. The cost is that the Windows body stops being checked
+    # natively, which is what the `--platform win32` invocation is for.
+    if sys.platform == "win32":
+        # First, not last. This is the platform's only tree walk; leaving it as
+        # a fallback behind `terminate()` -- which always succeeds -- is what
+        # made the Windows half of this function a no-op for descendants.
         with contextlib.suppress(Exception):
-            proc.terminate()
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/T",
+                "/F",
+                "/PID",
+                str(proc.pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(killer.wait(), timeout=2.0)
+            if killer.returncode is None:
+                with contextlib.suppress(Exception):
+                    killer.kill()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(proc.wait(), timeout=1.5)
+        # Keyed on our own worker, never on `taskkill`'s exit code: 128 means
+        # "something in the tree had already gone", not "the tree survived".
         if proc.returncode is None:
             with contextlib.suppress(Exception):
-                killer = await asyncio.create_subprocess_exec(
-                    "taskkill",
-                    "/T",
-                    "/F",
-                    "/PID",
-                    str(proc.pid),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(killer.wait(), timeout=2.0)
-                if killer.returncode is None:
-                    with contextlib.suppress(Exception):
-                        killer.kill()
-                if killer.returncode not in (0, None):
-                    with contextlib.suppress(Exception):
-                        proc.kill()
+                proc.terminate()
         with contextlib.suppress(Exception):
             await proc.wait()
         return
+
+    # Before any signal. After `proc.kill()` these pids are children of `init`
+    # and no walk can attribute them to this worker again.
+    descendants = _collect_descendants(_read_parent_map(), proc.pid)
+    _signal_descendants(
+        descendants,
+        own_pid=os.getpid(),
+        own_group=os.getpgid(0),
+        signal_number=signal.SIGKILL,
+        getpgid=os.getpgid,
+        killpg=os.killpg,
+        kill=os.kill,
+    )
 
     with contextlib.suppress(Exception):
         proc.kill()
