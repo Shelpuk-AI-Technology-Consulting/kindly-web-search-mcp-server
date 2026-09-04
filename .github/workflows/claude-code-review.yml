@@ -150,6 +150,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # ⚠️ **This number does not move, but the sentence justifying it was written
+  # against a cap that was never enforced.** "Well below `timeout-minutes`" meant well
+  # below 60; the runner actually killed at 15, so 8 minutes was over half of the real
+  # budget and two attempts could never have fitted inside it at all. The runner move
+  # below is what makes the comparison true rather than aspirational. 480000 is
+  # unchanged, and `test_the_api_timeout_is_bounded_well_below_the_job_cap` checks the
+  # ratio against a cap that now exists.
+  #
   # Reserved for the CLI's own read-timeout budget -- the only call a runner
   # makes that is bounded by this number is the Claude CLI itself. Kitty owns
   # its own timeouts in `egress.json`; the Configure step has no budget worth
@@ -246,21 +254,55 @@ jobs:
     # runner in every group a repository can see -- was never claimed either. Nothing
     # claimed it, so that set was empty.
     #
-    # ⚠️ **AN UNREACHABLE LABEL IS SILENT, AND THAT IS THE THING TO REMEMBER HERE.** It
-    # is true of this runner too: if `ubuntu-slim` is not a label this organisation
-    # actually offers, this job queues for ever exactly as the self-hosted one did, and
-    # nothing anywhere says so. `ubuntu-slim` is NOT one of GitHub's standard public
-    # labels (`ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`) -- it is an
-    # organisation-configured runner, so its availability is a property of the org and
-    # cannot be checked from inside this file.
+    # ⚠️ **AN UNREACHABLE LABEL IS SILENT, AND THAT IS STILL THE THING TO REMEMBER
+    # HERE.** A job asking for a label nothing offers queues for ever exactly as the
+    # self-hosted one did, and nothing anywhere says so. `ubuntu-latest` is one of
+    # GitHub's standard public labels and is always available, which is the one property
+    # that cannot be taken away by a settings change somewhere else.
     #
-    # **If this job is queued and never starts, the label is the first thing to
-    # suspect, and `ubuntu-latest` is the one-word fallback that is always available.**
+    # 🔴 **`ubuntu-slim` -> `ubuntu-latest`, and the reason is a HARD PLATFORM CEILING
+    # rather than a preference.** This job ran on `ubuntu-slim` and declared
+    # `timeout-minutes: 60` below. Those two lines were contradictory and nothing said
+    # so. `ubuntu-slim` is a SINGLE-CPU runner, and GitHub's runner reference states the
+    # limit in one sentence: *"The job timeout for single-CPU runners is 15 minutes. If a
+    # job reaches this limit, the job is terminated and fails."* It is a property of the
+    # platform and **cannot be raised from configuration**, so the 60 below was a fiction
+    # for as long as it sat here.
     #
-    # ⚠️ A slim image is also the one most likely to be missing `unzip`, which the
-    # action shells out to. That is what the preflight step below exists for, and it is
-    # now load-bearing rather than defensive -- see its own comment.
-    runs-on: ubuntu-slim
+    # ⚠️ **An earlier version of this comment said the opposite, and that error is what
+    # cost the time.** It claimed `ubuntu-slim` is NOT one of GitHub's standard public
+    # labels and that the org configures it, so its availability could not be checked
+    # from inside this file. Both halves are wrong: the label appears in GitHub's
+    # *"Standard GitHub-hosted runners for public repositories"* table, free and
+    # unlimited on public repositories, and every job on it reported
+    # `runner_group_name: "GitHub Actions"`. Believing the org owned it is why a
+    # documented platform limit was hunted for in organisation settings.
+    #
+    # 🔴 **Measured on this repository before the move, per ATTEMPT rather than per run,
+    # since a re-run adds an attempt to the same run id.** Across 49 successful attempts:
+    # median 543s (9m03s), p90 818s, **maximum success 868s -- 14m28s, thirty-two seconds
+    # inside the ceiling**, with 11 of 49 past twelve minutes. **Five attempts were
+    # killed at 15m0s** over three days on five different pull requests, each annotated
+    # *"The job has exceeded the maximum execution time of 15m0s"*, on a merge-gating
+    # check. This job's normal distribution ran into the ceiling; it was not an unlucky
+    # tail.
+    #
+    # ⚠️ **Declaring an honest 15 would have fixed nothing**, which is worth saying
+    # because it is the cheaper-looking option. The platform already kills at that
+    # instant, so an honest 15 buys a truthful file and no working review -- and the
+    # two-attempt retry this job is built around cannot fit under a 15-minute ceiling at
+    # ANY cap when one median attempt alone is nine minutes.
+    #
+    # `ubuntu-latest` carries 4 CPUs against slim's 1 and the ordinary 6-hour ceiling, so
+    # the cap below becomes enforceable for the first time and the distribution should
+    # shorten as well. `ci.yml` deliberately KEEPS `ubuntu-slim`: two jobs whose slowest
+    # observed run is 207s are exactly the lightweight workload that label is for. The
+    # two workflows therefore no longer share one label, which is a real cost -- see
+    # `ci.yml`, where it is recorded on both jobs.
+    #
+    # ⚠️ The pairing of this label with the cap below is now checked by
+    # `DeclaredJobCapIsEnforceableTests`, so neither line can move without the other.
+    runs-on: ubuntu-latest
     # 🔴 **22 -> 25, and the STEP cap below is deleted (upstream).** This review died at
     # exactly 20m12s against a 20-minute step cap. a sibling repository runs the same
     # model at the same `--effort max` and, at the time, the same turn budget -- 150,
@@ -318,6 +360,17 @@ jobs:
     # that is too TIGHT is the `fatal` misdirection described above -- a wrong
     # instruction, not merely a wrong verdict. So this stays generous until there is a
     # measured distribution from this repository to replace it with.
+    #
+    # 🔴 **60 DID NOT MOVE, and that is the point of the runner change above.** Every
+    # figure in this block was derived against a cap that the runner never honoured: the
+    # enforced ceiling was 15 the whole time, so the 20 -> 22 -> 25 -> 45 -> 60 sequence
+    # was arithmetic about a number nothing read. The arithmetic was right and is kept;
+    # what was wrong was the machine it was written for. On `ubuntu-latest` the platform
+    # ceiling is 6 hours, so this is the first version of this line that means anything.
+    #
+    # ⚠️ Do not "tidy" this back down to fit a slim runner. The pairing is checked --
+    # `DeclaredJobCapIsEnforceableTests` fails if this number reaches a runner's ceiling
+    # -- so a change to either line must state what it did with the other.
     timeout-minutes: 60
     # 🔴 **Same-repository, non-draft pull requests only, and on a PUBLIC repository
     # that is a SECURITY CONTROL rather than a convenience.** In the reference
@@ -846,11 +899,21 @@ jobs:
         # invariant -- a future job that needs a tool and forgets to probe for it fails only
         # when placement is unlucky, and the re-run passes.
         #
-        # 🔴 **MORE load-bearing on `ubuntu-slim`, not less.** The measurement above is from a
-        # heterogeneous self-hosted fleet, where the package was present on one machine and
-        # absent on another. A SLIM image is a different and more predictable version of the
-        # same risk: being slim is precisely a claim that it carries fewer packages than the
-        # full `ubuntu-latest`, and `unzip` is exactly the sort of thing trimmed from one.
+        # 🔴 **The slim-image justification that stood here is FALSIFIED and is corrected
+        # rather than deleted.** It read that the step was more load-bearing on
+        # `ubuntu-slim`, not less, because a slim image carries fewer packages and `unzip`
+        # is the sort of thing trimmed from one. That was true while this job ran there; it
+        # no longer does, and this job is the preflight's only caller. `ubuntu-latest`
+        # carries `unzip` -- the measurement two paragraphs up says so in as many words --
+        # so the step is a no-op here today.
+        #
+        # ⚠️ **It is kept, and the reason it is kept is the one that never depended on the
+        # image.** `unzip` is invoked inside a third-party action two levels down and is
+        # named nowhere in this repository, so no scan of `run:` blocks can find it; the
+        # only thing that catches it is probing for the capabilities this job's ACTIONS
+        # need. That was always the real argument. The slim claim was a second, weaker one
+        # that has now expired, and removing the step because the weaker argument expired
+        # would delete the stronger one with it.
         #
         # ⚠️ It should self-heal here rather than fail: a GitHub-hosted runner gives the job
         # passwordless sudo, so the script installs the package and emits a WARNING. Read
@@ -1272,8 +1335,27 @@ jobs:
 
       - name: Resolve outcome
         id: outcome
+        # 🔴 **`always()`, because without it a cancelled job skips this step and the
+        # run reports the opposite of the truth.** With the implicit `success()` this
+        # step used to carry, a job cap kill left `Write run summary` -- which does
+        # carry `always()` -- to fall back to `${RESULT:-fatal}` and announce that the
+        # workflow was misconfigured and re-running would not help. Measured on five
+        # killed jobs. The correct action after a cap kill is precisely to re-run, so
+        # that was a wrong INSTRUCTION rather than merely a wrong verdict.
+        #
+        # ⚠️ A **bare** `always()` is safe here, though elsewhere in this file it is
+        # deliberately avoided: a bare `always()` also fires when the job died before
+        # the checkout. This step reads no repository file and shells out to nothing --
+        # it computes from step outputs, which are empty rather than missing.
+        if: always()
         shell: bash
         env:
+          # 🔴 **`job.status`, not `cancelled()`.** GitHub's expression reference states
+          # that status check functions are usable "as expressions in `if` conditionals",
+          # and that "outside `if` conditionals, you can use `job.status` to access the
+          # job status". A `cancelled()` here is outside an `if:` and is not supported.
+          # Its three values are `success`, `failure` and `cancelled`.
+          JOB_STATUS: ${{ job.status }}
           # The second attempt's verdict when one ran, the first's otherwise.
           # `||` in a GitHub expression yields the right-hand side when the left
           # is an empty string, and a step that was skipped has empty outputs --
@@ -1318,7 +1400,30 @@ jobs:
 
           PROVIDER=""
 
-          if [ "${STATUS:-}" = "ok" ]; then
+          # The job's own status is read FIRST, because it outranks anything an
+          # attempt reported. `${JOB_STATUS:-}`, not a bare read: this block runs
+          # under `set -euo pipefail`, and the variable is absent on every call the
+          # test harness made before this ladder existed.
+          if [ "${JOB_STATUS:-}" = "cancelled" ]; then
+            # 🔴 A cancellation outranks an `ok` status, and the ordering is the
+            # whole point. This step runs BEFORE `Build review payload` and `Post
+            # review`, so `STATUS=ok` means "an attempt produced a review", never
+            # "a review was posted" -- and under cancellation those two steps are
+            # skipped. Resolving `ok` here would report a review that demonstrably
+            # never reached the pull request.
+            #
+            # Two causes share this branch because both want the same response:
+            # the job cap fired, or a newer push superseded the run.
+            RESULT=cancelled
+          elif [ "${JOB_STATUS:-}" = "failure" ]; then
+            # ⚠️ Unchanged behaviour, stated rather than left to fall through. A
+            # step failed outright, which is what `${RESULT:-fatal}` already
+            # produced when this step was skipped. Deliberate: whether a cap kill
+            # presents here as `cancelled` or as `failure` is a runtime detail of
+            # GitHub's, so routing `failure` to today's answer means a wrong guess
+            # can only leave current behaviour standing, never invent a success.
+            RESULT=fatal
+          elif [ "${STATUS:-}" = "ok" ]; then
             RESULT=ok
             PROVIDER="${NAME}"
           elif [ "${STATUS:-}" = "fatal" ]; then
@@ -1351,7 +1456,9 @@ jobs:
           echo "result=${RESULT}" >> "$GITHUB_OUTPUT"
           echo "provider=${PROVIDER}" >> "$GITHUB_OUTPUT"
           echo "attempts=${ATTEMPTS}" >> "$GITHUB_OUTPUT"
-          echo "Resolved: ${RESULT} after ${ATTEMPTS} attempt(s) (attempted: ${TIERS:-none})${PROVIDER:+, produced by ${PROVIDER}}"
+          # `job_status=` is echoed so the next cancellation RECORDS which value
+          # GitHub presented, instead of leaving the question to be re-derived.
+          echo "Resolved: ${RESULT} after ${ATTEMPTS} attempt(s) (attempted: ${TIERS:-none})${PROVIDER:+, produced by ${PROVIDER}}, job_status=${JOB_STATUS:-<unset>}"
 
       - name: Build review payload
         if: steps.outcome.outputs.result == 'ok'
@@ -1564,6 +1671,26 @@ jobs:
       # Both failure paths say so on the pull request. Nobody should have to open
       # the Actions tab to find out that no review happened.
 
+      # 🔴 **These three keep their implicit `success()` DELIBERATELY, and the reason
+      # is the concurrency group at the top of this file.** `cancel-in-progress: true`
+      # cancels an in-flight review on every new push, so a superseded cancellation is
+      # routine -- one per rapid push sequence. Giving these `always()` would post a
+      # failure comment and emit an `::error::` annotation on every one of them, which
+      # is exactly the noise that concurrency group exists to prevent. `Resolve
+      # outcome` above got `always()`; these did not, and that asymmetry IS the
+      # decision rather than an oversight.
+      #
+      # ⚠️ **Accepted residual:** a job cap kill therefore has no pull-request-visible
+      # surface. It had none before this change either -- all three were skipped. What
+      # changed is that the run summary stopped telling the reader the workflow was
+      # broken and re-running would not help.
+      #
+      # ⚠️ **A coupling that is easy to miss.** `Resolve outcome` can now emit
+      # `cancelled`, and `build_failure_notice.py` keeps a closed `exhausted | fatal`
+      # vocabulary that would reject it with argparse exit 2. That is unreachable only
+      # while these steps stay on `success()`. `OutcomeChainCancellationWiringTests` is
+      # what keeps it unreachable; do not add `always()` here without extending that
+      # script's vocabulary first.
       - name: Build failure notice
         if: steps.outcome.outputs.result != 'ok'
         shell: bash

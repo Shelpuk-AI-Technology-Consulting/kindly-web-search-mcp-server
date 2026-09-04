@@ -735,7 +735,19 @@ from that selection**; a job whose selector silently stops matching is otherwise
 green while running nothing. Each job's acceptance includes: a deliberately
 typo'd selector fails the job.
 
-- **E4-1.** §10.3's complete trigger list; one job selecting
+- **E4-1.** **Extend the runner-ceiling table before this lands, or the branch is
+  red.** A CI defect fixed on 2026-09-04 added `DeclaredJobCapIsEnforceableTests`
+  to `.github/review/tests/test_review_scripts.py`: it pairs every job's
+  `runs-on` against a table of platform job ceilings and fails on a cap at or
+  above one, an unrecorded label, a missing `timeout-minutes`, or a `runs-on` it
+  cannot resolve. This step's matrix job spells its runner `${{ matrix.os }}`,
+  which resolves to no entry and therefore fails — deliberately, so the ceiling
+  for a matrix runner is decided when the matrix is written. The guard's message
+  names the table. The provoking defect: the `review` job declared
+  `timeout-minutes: 60` on `ubuntu-slim`, whose ceiling is 15 and cannot be
+  raised from configuration, and was killed mid-run five times on a merge-gating
+  check while every offline check stayed green. §10.3 carries the rule.
+  §10.3's complete trigger list; one job selecting
   `--ignore=tests/package -m "not live and not chromium and not package"` on both
   platforms — deliberately **including** `subsystem`, per TEST_SUITE §8B; and
   `ci-required` with `if: always()` asserting every dependency is `success`.

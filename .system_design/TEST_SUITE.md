@@ -1798,6 +1798,43 @@ on:
 
 Add `ready_for_review` if draft PRs are filtered out.
 
+**A declared `timeout-minutes` is only real if the runner will honour it.**
+Added 2026-09-04, after the `review` job in `.github/workflows/claude-code-review.yml`
+declared `timeout-minutes: 60` on `ubuntu-slim` and was killed mid-run five times
+on a merge-gating check. `ubuntu-slim` is a **single-CPU** GitHub-hosted runner,
+and GitHub's runner reference states the constraint in one sentence: *"The job
+timeout for single-CPU runners is 15 minutes. If a job reaches this limit, the
+job is terminated and fails."* It is a platform property and **cannot be raised
+from configuration**, so a larger number is not a larger budget — it is a fiction
+that nothing reports until a job dies at a limit no file in the repository
+mentions. Ordinary GitHub-hosted labels are 6 hours; self-hosted runners are
+5 days.
+
+Two consequences for the jobs in this table:
+
+1. **Every job declares a `timeout-minutes` strictly below its runner's ceiling.**
+   Strictly, not at-or-below: a cap equal to the ceiling means the file and the
+   platform kill at the same instant, so the declared number could never produce a
+   diagnosis of its own. This is checked by
+   `DeclaredJobCapIsEnforceableTests` in `.github/review/tests/test_review_scripts.py`,
+   which pairs each job's `runs-on` against a table of platform ceilings and fails
+   on a cap at or above one, an unrecorded label, a missing cap, or a `runs-on`
+   it cannot resolve. That guard fails rather than skips on a shape it does not
+   understand, which is deliberate: a guard that skips what it does not
+   understand is a guard that quietly stops checking.
+2. **A matrix runner must carry a recorded ceiling before it can be named.**
+   `fast` and `subsystem` above run on Windows + Linux, whose canonical spelling
+   is `runs-on: ${{ matrix.os }}`. That resolves to no entry in the ceiling table
+   and will fail the guard on E4-1's first commit, by design — the ceiling for a
+   matrix runner is a decision worth making when the matrix is written rather
+   than discovered later, when the check has gone hollow. E4-1 extends the table;
+   the failure message names it.
+
+A **caller job** — one that only declares `uses:` to call a reusable workflow, as
+§1.3 of the implementation plan requires `ci.yml`'s jobs to become — legally
+declares neither `runs-on` nor `timeout-minutes` and is exempt from both, by name
+in the guard rather than by falling through a condition.
+
 **One stable required check.** Requiring every matrix-generated check by name is
 brittle: adding a Python or `mcp` axis renames the checks and silently drops the
 old names from branch protection. `ci-required` runs no tests, declares `needs`
@@ -1817,6 +1854,8 @@ ci-required:
   if: ${{ always() }}          # without this the job is skipped, not failed
   needs: [fast, fast-extras, subsystem, chromium, package, types, coverage]
   runs-on: ubuntu-latest
+  timeout-minutes: 10          # every job declares one, strictly below its
+                               # runner's ceiling -- see the paragraph above
   steps:
     - name: Fail unless every dependency succeeded
       if: >-

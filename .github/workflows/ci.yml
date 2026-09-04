@@ -29,6 +29,15 @@ name: CI
 # minutes with no error, no annotation and no timeout. **An unreachable runner label
 # is completely silent** -- if either job here is queued and never starts, suspect
 # the label first; `ubuntu-latest` is the always-available fallback.
+#
+# 🔴 **`ubuntu-slim` IS a standard GitHub-hosted public label, and it carries a hard
+# 15-minute job ceiling.** GitHub's runner reference: *"The job timeout for single-CPU
+# runners is 15 minutes. If a job reaches this limit, the job is terminated and
+# fails."* It cannot be raised from configuration, so any `timeout-minutes` at or above
+# 15 on this label is a fiction. Both jobs below declared 20 and nobody ever saw it,
+# because they finish in well under a minute -- but the review workflow declared 60 on
+# the same label and was killed mid-run five times on a merge-gating check before
+# anyone paired the two lines. `DeclaredJobCapIsEnforceableTests` pairs them now.
 
 on:
   pull_request:
@@ -38,18 +47,31 @@ on:
 
 jobs:
   review-scripts:
-    # The Claude review system's own tests -- 482 of them, covering the rule
+    # The Claude review system's own tests -- 502 of them, covering the rule
     # selector, the result classifier, the failure notices, the prompt redactor,
     # the findings schema and the workflow's own wiring.
     #
     # Pure Python and subprocesses, no service container, no pip install at all --
     # the suite runs in about a second.
     #
-    # Same runner as the review workflow, so both of this repository's workflows
-    # depend on exactly ONE label being available. Two jobs that queue for different
-    # reasons is the shape that wastes an afternoon.
+    # 🔴 **No longer the same runner as the review workflow, and that is a real cost
+    # paid deliberately.** These two jobs and that one used to depend on exactly ONE
+    # label being available, which is a genuinely good property: two jobs that queue
+    # for different reasons is the shape that wastes an afternoon. The review job had
+    # to leave, because its median run is nine minutes against this label's 15-minute
+    # ceiling and it was being killed. It kept the label that always exists
+    # (`ubuntu-latest`), so the pair is now "always available" and "always available",
+    # not one of each.
+    #
+    # These jobs stay because they are exactly what `ubuntu-slim` is documented for --
+    # lightweight, short-running automation. Measured over 40 successful runs: min 22s,
+    # median 35s, **max 207s**.
     runs-on: ubuntu-slim
-    timeout-minutes: 20
+    # 20 was never enforceable on this label; the platform ceiling is 15. 10 is under
+    # the ceiling -- so the declared cap can actually fire, and produce a diagnosis of
+    # its own instead of the platform killing the job at the same instant -- and still
+    # ~2.9x the measured maximum above.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -96,10 +118,13 @@ jobs:
     # there is no pull request to ask about, and a gate that failed when it could
     # not check would turn a manual run into a red check for no reason.
     if: github.event_name == 'pull_request'
-    # One Python script and one `gh` call. Same runner as the job above, for the
-    # same one-label reason.
+    # One Python script and one `gh` call. Same runner as the job above, and the
+    # one-label reasoning there now applies to this pair rather than to all three
+    # jobs in the repository. Measured over 40 successful runs: min 19s, median 29s,
+    # **max 184s**.
     runs-on: ubuntu-slim
-    timeout-minutes: 20
+    # Under the label's 15-minute platform ceiling, for the reason given above.
+    timeout-minutes: 10
     # 🔴 Declared, not inherited. This file has no workflow-level `permissions:`,
     # so a job inherits the organisation default -- and a **read** default grants
     # `contents` and `packages` while leaving `pull-requests` at `none`. Without

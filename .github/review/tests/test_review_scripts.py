@@ -56,6 +56,150 @@ import post_review  # noqa: E402
 import select_rules  # noqa: E402
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "claude-code-review.yml"
+WORKFLOW_DIR = Path(__file__).resolve().parents[2] / "workflows"
+
+#: Platform job ceiling, in minutes, for every runner label this repository is
+#: prepared to name. **These are GitHub's numbers, not this repository's**, which
+#: is why they sit in one table with a source rather than beside each job.
+#:
+#: 🔴 `ubuntu-slim` is a SINGLE-CPU runner, and GitHub's runner reference states
+#: the constraint in one sentence: *"The job timeout for single-CPU runners is 15
+#: minutes. If a job reaches this limit, the job is terminated and fails."* It is
+#: a property of the platform and **cannot be overridden from configuration**, so
+#: a `timeout-minutes:` above it is not a longer budget -- it is a fiction that
+#: nothing reports until a job is killed mid-run.
+#:
+#: 🔴 **That is not hypothetical; it is why this table exists.** The review job
+#: declared `timeout-minutes: 60` on `ubuntu-slim`. Five attempts were killed at
+#: 15m0s over three days on five different pull requests -- job ids 99916228958,
+#: 100274991357, 100287032371, 100714288570 and 100725754347 -- each annotated
+#: *"The job has exceeded the maximum execution time of 15m0s"*, on a
+#: merge-gating check, while every offline check in this file stayed green.
+#: Nothing anywhere paired the two lines, and
+#: `test_the_review_has_no_step_cap_and_a_job_cap_that_clears_the_measurement`
+#: actively required a cap the named runner could never honour.
+#:
+#: 360 is the ordinary GitHub-hosted ceiling (6 hours). 7200 is the self-hosted
+#: one (5 days); the self-hosted labels are kept so a move back does not have to
+#: fight this table, exactly as `KNOWN_RUNNERS` kept them.
+RUNNER_JOB_CEILING_MINUTES = {
+    "ubuntu-slim": 15,
+    "ubuntu-latest": 360,
+    "ubuntu-24.04": 360,
+    "ubuntu-22.04": 360,
+    "[self-hosted, cap-main, noble]": 7200,
+    "[self-hosted, cap-light, noble]": 7200,
+    "[self-hosted, cap-nano, noble]": 7200,
+    "[self-hosted, cap-pico, noble]": 7200,
+}
+
+#: Every job this repository runs, as ``(workflow file name, job id)``.
+#:
+#: 🔴 **Pinned as a SET, not merely swept.** A sweep that finds nothing passes,
+#: and a sweep that silently stops seeing a job passes too -- so a per-job
+#: comparison cannot tell a green run from a hollow one. The set is what notices
+#: a job added without a cap, a job deleted, and a file whose jobs stopped
+#: parsing.
+EXPECTED_JOBS = {
+    ("ci.yml", "review-scripts"),
+    ("ci.yml", "review_replies"),
+    ("claude-code-review.yml", "review"),
+}
+
+#: The workflow files themselves, pinned for the same reason one level up: the
+#: sweep globs rather than enumerates, so a file added later is checked -- and
+#: this set is what fails if one is added, renamed or deleted without a thought.
+EXPECTED_WORKFLOW_FILES = {"ci.yml", "claude-code-review.yml"}
+
+
+def _workflow_files():
+    """Return every workflow file, by glob rather than by enumeration.
+
+    Both extensions, because GitHub accepts either and a `.yaml` file added
+    later must not slip past a `.yml`-only sweep.
+
+    Returns:
+        The paths, sorted by name.
+    """
+
+    found = list(WORKFLOW_DIR.glob("*.yml")) + list(WORKFLOW_DIR.glob("*.yaml"))
+    return sorted(found, key=lambda p: p.name)
+
+
+def _jobs_section(text: str) -> str:
+    """Return the body of the top-level ``jobs:`` mapping.
+
+    🔴 **Bounded rather than swept whole, and that bound is the point.**
+    ``on:``, ``env:``, ``permissions:`` and ``concurrency:`` are all top-level
+    keys with two-space children, so an unbounded sweep for ``^  <name>:`` reads
+    ``pull_request:`` as a job and then reports it has no runner.
+
+    Args:
+        text: The whole workflow file.
+
+    Returns:
+        Everything after ``jobs:`` up to the next top-level key.
+
+    Raises:
+        AssertionError: The file declares no ``jobs:`` block at all.
+    """
+
+    opening = re.search(r"^jobs:[ \t]*$", text, re.M)
+    assert opening is not None, "workflow declares no `jobs:` block"
+    tail = text[opening.end() :]
+    following = re.search(r"^[A-Za-z]", tail, re.M)
+    return tail[: following.start()] if following else tail
+
+
+def _declared_jobs(path):
+    """Parse one workflow file's jobs into what the ceiling check needs.
+
+    Matched with a regex rather than parsed with PyYAML, for the reason the rest
+    of this file gives: the suite runs on a bare interpreter with no dependency
+    install, and importing a third-party module here would make these the only
+    tests that cannot run in their own CI job.
+
+    ⚠️ **Both keys are anchored at exactly four spaces.** A step-level
+    ``timeout-minutes`` sits at eight and must never be read as a job cap, and a
+    ``runs-on:`` inside a comment must never be read at all.
+
+    Args:
+        path: The workflow file.
+
+    Returns:
+        One dict per job with ``file``, ``job``, ``runner``, ``timeout`` and
+        ``caller``. ``runner`` and ``timeout`` are ``None`` when the key is
+        absent *or* spelled in a form this parser does not resolve -- the caller
+        fails on ``None`` rather than skipping, so an unresolvable shape is
+        loud.
+    """
+
+    section = _jobs_section(path.read_text(encoding="utf-8"))
+    marks = [
+        (m.group(1), m.start())
+        for m in re.finditer(r"^  ([A-Za-z_][A-Za-z0-9_-]*):[ \t]*$", section, re.M)
+    ]
+
+    jobs = []
+    for index, (name, start) in enumerate(marks):
+        end = marks[index + 1][1] if index + 1 < len(marks) else len(section)
+        body = section[start:end]
+        runner = re.findall(r"^ {4}runs-on:[ \t]*(\S.*?)[ \t]*$", body, re.M)
+        timeout = re.findall(r"^ {4}timeout-minutes:[ \t]*(\d+)[ \t]*$", body, re.M)
+        jobs.append(
+            {
+                "file": path.name,
+                "job": name,
+                "runner": runner[0] if len(runner) == 1 else None,
+                "timeout": int(timeout[0]) if len(timeout) == 1 else None,
+                # A reusable-workflow call legally declares neither key, so it is
+                # exempted BY NAME rather than by falling through a condition --
+                # the difference between an exemption and a hole.
+                "caller": bool(re.search(r"^ {4}uses:[ \t]*\S", body, re.M)),
+            }
+        )
+    return jobs
+
 REVIEW_DIR = Path(__file__).resolve().parents[1]
 PROMPT = REVIEW_DIR / "REVIEW_PROMPT.md"
 GUIDE = REVIEW_DIR / "REVIEW_GUIDE.md"
@@ -3372,7 +3516,9 @@ def _find_bash() -> str | None:
 BASH = _find_bash()
 
 
-def resolve_outcome(*, status="", available="true", first_status=None, retry_status=""):
+def resolve_outcome(
+    *, status="", available="true", first_status=None, retry_status="", job_status=""
+):
     """Execute the real `Resolve outcome` step and return its outputs.
 
     Module-level rather than a method, because two test classes need it: the
@@ -3385,6 +3531,10 @@ def resolve_outcome(*, status="", available="true", first_status=None, retry_sta
         first_status: Attempt 1's own status. Defaults to ``status``, which is
             what a single-attempt run looks like.
         retry_status: Attempt 2's status, empty when no retry ran.
+        job_status: The `job.status` the step is handed. Defaults to empty,
+            which is what every call written before the cancellation ladder
+            existed passes -- the step reads `${JOB_STATUS:-}` under
+            `set -euo pipefail` precisely so those calls keep working.
 
     Returns:
         The parsed ``$GITHUB_OUTPUT`` as a dict.
@@ -3407,6 +3557,14 @@ def resolve_outcome(*, status="", available="true", first_status=None, retry_sta
             RETRY_STATUS=retry_status,
             GITHUB_OUTPUT=out.as_posix(),
         )
+        # 🔴 **Set only when given, never as an empty default.** An earlier draft
+        # passed `JOB_STATUS=""` always, which left the variable SET on every
+        # call -- so `set -u` had nothing to fire on and the mutation replacing
+        # `${JOB_STATUS:-}` with a bare `$JOB_STATUS` survived the whole
+        # battery. Omitting it is what makes the unset path a real case rather
+        # than a name.
+        if job_status:
+            env["JOB_STATUS"] = job_status
         proc = subprocess.run(
             [BASH, "-c", script], env=env, capture_output=True, text=True
         )
@@ -4081,25 +4239,32 @@ class TestWorkflowConfiguration(unittest.TestCase):
             len(set(budgets)), 1, f"budgets disagree: {sorted(set(budgets))}"
         )
 
-    #: Runner labels this repository is prepared to name. Two families, both
-    #: deliberate:
+    #: Runner labels this repository is prepared to name, **derived from
+    #: :data:`RUNNER_JOB_CEILING_MINUTES` rather than listed again here**.
     #:
-    #: * the GitHub-hosted labels it uses today -- `ubuntu-slim` is the
-    #:   organisation-configured one, the rest are GitHub's own always-available
-    #:   labels and are the fallback when an org label is not offered;
-    #: * the self-hosted capability form the upstream repository uses, kept so a
-    #:   move back does not have to fight this test.
+    #: 🔴 **It was listed twice, and the two records disagreed about what the
+    #: labels mean.** This tuple's comment said `ubuntu-slim` was the one the
+    #: organisation configures and the rest were GitHub's own always-available
+    #: labels. All of them are GitHub's own; `ubuntu-slim` appears in the same
+    #: *"Standard GitHub-hosted runners for public repositories"* table as
+    #: `ubuntu-latest`, and what actually distinguishes it is a 15-minute
+    #: platform job ceiling that no setting can raise. Deriving from the ceiling
+    #: table makes a label unnameable until somebody has recorded what limit it
+    #: carries, which is the fact that mattered and was missing.
+    #:
+    #: ⚠️ **No set-equality assertion accompanies this, deliberately.** Derived
+    #: sets are equal by construction, and a test asserting that would pass
+    #: whatever either side said. The single source is the mechanism; an
+    #: assertion about it would be decoration.
     #:
     #: 🔴 **Spelled out rather than written as `\S+`, and that is the whole point of
     #: the test.** An unknown runner label does not fail loudly on GitHub: the job
     #: QUEUES FOR EVER, with no error, no annotation and no timeout. A pattern
     #: accepting any word would pass a typo straight through into that silence.
-    KNOWN_RUNNERS = (
-        r"ubuntu-slim",
-        r"ubuntu-latest",
-        r"ubuntu-24\.04",
-        r"ubuntu-22\.04",
-        r"\[self-hosted, cap-(?:main|light|nano|pico), noble\]",
+    #: The self-hosted capability labels stay in the ceiling table so a move back
+    #: does not have to fight this test.
+    KNOWN_RUNNERS = tuple(
+        re.escape(label) for label in sorted(RUNNER_JOB_CEILING_MINUTES)
     )
 
     def test_the_review_job_names_a_known_runner_as_a_literal(self):
@@ -4120,9 +4285,19 @@ class TestWorkflowConfiguration(unittest.TestCase):
 
         ⚠️ **What this test CANNOT check, said plainly so a green run is not
         over-read:** whether the label it accepts is actually offered to this
-        repository. `ubuntu-slim` is organisation-configured, so its availability is a
-        property of the org, invisible from inside the repository. This test proves the
-        label is one somebody wrote down on purpose — never that a machine will answer.
+        repository. This test proves the label is one somebody wrote down on purpose —
+        never that a machine will answer.
+
+        🔴 **An earlier version of this paragraph gave the wrong reason**, and the
+        wrong reason is what cost the time. It said `ubuntu-slim` was configured by
+        the organisation, so its availability was a property of the org and invisible
+        from here. It is a standard GitHub-hosted public label, listed in the same
+        table as `ubuntu-latest`. The caveat above survives the correction — no
+        offline check can promise a runner answers — but the *reason* was an invented
+        one, and it sent a documented 15-minute platform ceiling to be hunted for in
+        organisation settings. What separates these labels is their job ceiling, which
+        `DeclaredJobCapIsEnforceableTests` now checks against the cap each job
+        declares.
 
         ⚠️ Matched with a regex rather than parsed, deliberately: this suite runs on a
         bare interpreter with **no dependency install**, so importing PyYAML here would
@@ -5854,10 +6029,14 @@ class ReviewRepliesWiringTests(unittest.TestCase):
     # and post nothing to the pull request: a worse outcome than the wasted spend
     # it was meant to prevent.
     #
-    # Doing it properly needs a third run outcome that `Resolve outcome` produces
-    # and `build_run_summary.py` renders, which is its own change. The `ci.yml`
-    # gate already makes the state unmergeable, which is the requirement that
-    # matters; this was the cost optimisation.
+    # 🔴 **That third run outcome now EXISTS, and this note is corrected rather
+    # than left standing.** The job-cap fix gave `Resolve outcome` an `always()`
+    # and a `job.status` ladder, and `build_run_summary.py` renders a `cancelled`
+    # verdict -- so the mechanism this paragraph said would be "its own change"
+    # has been built, for a different reason. What is still missing is only the
+    # new outcome VALUE for this case and the decision to spend a run on it. The
+    # `ci.yml` gate already makes the state unmergeable, which is the requirement
+    # that matters; this was the cost optimisation.
 
     def test_the_complete_copy_is_written_and_kept(self):
         """🔴 AC16a — `.gitignore` and the artifact upload both name
@@ -10937,6 +11116,454 @@ class NoticeInvocationsAreAcceptedByTheScriptTests(unittest.TestCase):
 
             self.assertIn("Automatic code review failed", out.read_text("utf-8"))
 
+
+class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
+    """A `timeout-minutes:` its runner will not honour is a fiction, not a budget.
+
+    🔴 **This class exists because the repository shipped exactly that for three
+    days, with every check green.** The review job declared 60 minutes on
+    `ubuntu-slim`, whose platform ceiling is 15 and cannot be raised from
+    configuration. Five attempts were killed mid-run on a merge-gating check --
+    see :data:`RUNNER_JOB_CEILING_MINUTES` for the job ids and the annotation
+    they all carry. Two lines four hundred apart in one file contradicted each
+    other and **nothing in this suite paired them**, because every existing check
+    read one line or the other and never both.
+
+    ⚠️ **The failure mode is what makes it worth a guard rather than a comment.**
+    Nothing warns when a workflow declares an unreachable cap: it validates, it
+    runs, and it is killed at a number the file does not mention, with an
+    annotation naming a limit no file in the repository declares. An operator
+    reading the workflow finds 60 and looks anywhere but at the runner.
+
+    ⚠️ **Every check here fails rather than skips on a shape it cannot resolve.**
+    A guard that skips what it does not understand is a guard that quietly stops
+    checking, and this one is being written precisely because a check went hollow
+    without saying so.
+    """
+
+    def _jobs(self):
+        """Return every job in every workflow file, parsed."""
+
+        return [job for path in _workflow_files() for job in _declared_jobs(path)]
+
+    def test_the_workflow_files_are_the_ones_recorded(self):
+        """Globbed, not enumerated -- and then compared against the record.
+
+        The sweep must find files nobody listed, or a workflow added later lands
+        unguarded. The record is what makes a sweep that found *nothing* fail
+        instead of passing with an empty loop.
+        """
+
+        self.assertEqual(
+            {path.name for path in _workflow_files()},
+            EXPECTED_WORKFLOW_FILES,
+            "the set of workflow files moved; every job in a new file needs a "
+            "runner ceiling recorded before it can be checked",
+        )
+
+    def test_the_jobs_are_the_ones_recorded(self):
+        """Pin the SET, not only each member.
+
+        A per-job assertion answers "does this pair agree?" and none of them
+        notices a job that stopped parsing, a job deleted, or a fourth job
+        nobody guarded. Those three are indistinguishable from success without
+        this.
+        """
+
+        self.assertEqual(
+            {(job["file"], job["job"]) for job in self._jobs()},
+            EXPECTED_JOBS,
+            "the set of jobs moved; a job whose `runs-on:` stopped parsing "
+            "disappears from this set rather than failing a check below",
+        )
+
+    def test_every_job_names_a_runner_whose_ceiling_is_recorded(self):
+        """An unrecorded label cannot be checked, so it is refused.
+
+        ⚠️ **This is the clause the CI epic will hit first, deliberately.** A
+        matrix job spells its runner `${{ matrix.os }}`, which resolves to no
+        entry here and fails with the message below rather than being waved
+        through. The ceiling for a matrix runner is a decision worth making when
+        the matrix is written; discovering later that the check went hollow is
+        the expensive order.
+        """
+
+        for job in self._jobs():
+            if job["caller"]:
+                continue
+            with self.subTest(file=job["file"], job=job["job"]):
+                self.assertIsNotNone(
+                    job["runner"],
+                    "declares no `runs-on:` this parser can resolve -- a block "
+                    "sequence, a flow list or a matrix expression reaches here "
+                    "as unresolved, and is refused rather than skipped",
+                )
+                self.assertIn(
+                    job["runner"],
+                    RUNNER_JOB_CEILING_MINUTES,
+                    f"names runner {job['runner']!r}, whose platform job "
+                    "ceiling is not recorded; add it to "
+                    "RUNNER_JOB_CEILING_MINUTES with its documented limit",
+                )
+
+    def test_every_job_declares_a_cap(self):
+        """A job with no cap escapes the ceiling check entirely.
+
+        Not a style rule: an uncapped job is checked against nothing, so
+        omitting the key is the one edit that makes the check below vacuous
+        while leaving it green.
+        """
+
+        for job in self._jobs():
+            if job["caller"]:
+                continue
+            with self.subTest(file=job["file"], job=job["job"]):
+                self.assertIsNotNone(
+                    job["timeout"],
+                    "declares no job-level `timeout-minutes:`, so nothing pairs "
+                    "it against its runner's ceiling",
+                )
+
+    def test_no_job_declares_a_cap_its_runner_will_not_honour(self):
+        """The claim this class is for.
+
+        🔴 **Strictly below the ceiling, not at or below.** A cap equal to the
+        ceiling means the file and the platform kill the job at the same
+        instant, so the declared number could never produce a diagnosis of its
+        own -- which is the whole reason to declare one. Equality is the shape
+        that looks correct and buys nothing.
+        """
+
+        for job in self._jobs():
+            if job["caller"] or job["timeout"] is None:
+                continue
+            ceiling = RUNNER_JOB_CEILING_MINUTES.get(job["runner"])
+            if ceiling is None:
+                continue
+            with self.subTest(file=job["file"], job=job["job"]):
+                self.assertLess(
+                    job["timeout"],
+                    ceiling,
+                    f"declares timeout-minutes: {job['timeout']} on runner "
+                    f"{job['runner']!r}, whose platform ceiling is {ceiling} "
+                    "minutes and cannot be raised from configuration; the "
+                    "declared number is a fiction and the job dies at the "
+                    "ceiling with an annotation naming a limit this repository "
+                    "does not declare anywhere",
+                )
+
+
+class NoDocumentMisdescribesTheSlimRunnerTests(unittest.TestCase):
+    """`ubuntu-slim` is one of GitHub's standard public labels. Four files said otherwise.
+
+    🔴 **Believing the label was granted by the organisation is why a platform
+    limit was attributed to an org setting and never looked up.** The workflow's
+    own comment denied that the label is one of GitHub's standard public ones and
+    called it something the org configures, whose availability could not be
+    checked from inside the file; the same sentence appeared twice in this suite
+    and once in the review README. All four are false. The label is listed in
+    GitHub's *"Standard GitHub-hosted runners for public repositories"* table,
+    every job on it reports `runner_group_name: "GitHub Actions"`, and its
+    15-minute job ceiling is a documented platform limit rather than a setting
+    anyone here can raise.
+
+    ⚠️ **The claim is PARAPHRASED above and never quoted**, following the
+    convention this repository already uses for retired phrasings: this guard
+    reads every file under `.github/` line by line, so quoting the sentence would
+    reintroduce it as far as the check can tell. The pattern below is the only
+    literal, and it does not match its own source.
+
+    ⚠️ **A guard rather than the grep that found them, because this file already
+    records the partial-fix regression.** The identical sentence about
+    self-hosted runners was corrected in `rules/ci.md` and survived in the
+    parallel block in the workflow; the automated review caught it on the next
+    round. A one-time grep is an act, not an invariant.
+
+    Walked rather than enumerated, for the same reason the leak guard walks: an
+    enumerated list guards the files somebody thought of, and the next document
+    added lands unguarded while the guard still passes.
+    """
+
+    #: Both spellings, since the tree writes British English and the next author
+    #: may not. Nothing else in this repository is described this way, so the
+    #: phrase alone is the offence -- no proximity window is needed, and a
+    #: window is what made an earlier draft of this guard report its own source.
+    CLAIM = re.compile(r"organi[sz]ation-configured")
+
+    #: Suppress a deliberate match with this marker on the line, exactly as the
+    #: leak guard does.
+    MARKER = "noqa: runner-claim"
+
+    def test_no_file_under_dot_github_misdescribes_the_label(self):
+        root = Path(__file__).resolve().parents[2]
+        offences = []
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                # A binary file cannot carry a reviewable claim, and failing on
+                # one would make this guard about file types.
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if self.MARKER in line:
+                    continue
+                if self.CLAIM.search(line):
+                    offences.append(
+                        f"{path.relative_to(root.parent).as_posix()}:{lineno}: "
+                        f"{line.strip()[:100]}"
+                    )
+
+        self.assertFalse(
+            offences,
+            "`ubuntu-slim` is a STANDARD GitHub-hosted public label, and its "
+            "15-minute job ceiling is a platform limit rather than anything the "
+            "organisation sets. Rewrite each of these rather than deleting the "
+            "sentence, so the reasoning survives:\n  " + "\n  ".join(offences),
+        )
+
+class CancelledRunIsNotAMisconfigurationTests(unittest.TestCase):
+    """A run that was cut short must not be reported as a broken workflow.
+
+    🔴 **This is the surface a killed run actually presented, measured.** On job
+    100714288570 the job cap fired, `Resolve outcome` was skipped -- it carried
+    no `if:`, so GitHub applied the implicit `success()` -- and `Write run
+    summary`, which does carry `always()`, fell back to its
+    `--result "${RESULT:-fatal}"` default. The log line reads
+    `run summary written: result=fatal, tiers=1`, and the reader was told:
+    *"Review failed -- the workflow needs fixing ... The failure is in the
+    workflow configuration, not in the change under review."*
+
+    **That is a wrong instruction, not merely a wrong verdict.** The correct
+    action after a cap kill is precisely to re-run, and the summary sent the
+    reader to look for a configuration bug that did not exist. Two agents were
+    sent to debug a healthy workflow by the sibling version of this message.
+
+    ⚠️ **The vocabulary is closed here, not merely extended.** `--result` had no
+    `choices` and `_headline` ended in a bare fall-through, so *every*
+    unrecognised value rendered the misdirection -- adding one branch would have
+    left the class of defect live and fixed one instance of it. The sibling
+    module made exactly this fix and recorded why; this follows it.
+    """
+
+    def test_a_cancelled_run_is_reported_as_unfinished(self):
+        body = build_run_summary.build("cancelled", "", [])
+        self.assertIn("did not finish", body.lower())
+
+    def test_a_cancelled_run_tells_the_reader_to_rerun(self):
+        """The one sentence the killed runs needed and did not get."""
+
+        body = build_run_summary.build("cancelled", "", [])
+        self.assertIn("re-run", body.lower())
+
+    def test_a_cancelled_run_does_not_blame_the_workflow(self):
+        """Asserted by the exact strings an operator acted on.
+
+        Not a paraphrase: these two are what sent somebody looking for a
+        configuration fault, so they are what must be absent.
+        """
+
+        body = build_run_summary.build("cancelled", "", [])
+        self.assertNotIn("the workflow needs fixing", body)
+        self.assertNotIn("workflow configuration", body)
+
+    def test_an_unrecognised_result_raises_rather_than_blaming_the_workflow(self):
+        """The class, not the instance.
+
+        A bare fall-through means any future outcome -- or a typo -- renders
+        "the workflow needs fixing" about a run nobody classified. Refusing is
+        louder than a plausible wrong answer.
+        """
+
+        with self.assertRaises(ValueError):
+            build_run_summary.build("timed-out", "", [])
+
+    def test_the_cli_keeps_the_result_vocabulary_closed(self):
+        """`--result` is fed Resolve's alphabet; a value outside it is a defect.
+
+        ⚠️ `--out` points into a temporary directory even though nothing should
+        reach it: an assertion about a refusal must not depend on the refusal
+        working in order to stay clean.
+        """
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = str(Path(tmp) / "unreached.md")
+            argv = sys.argv
+            sys.argv = [
+                "build_run_summary.py",
+                "--result",
+                "timed-out",
+                "--out",
+                out,
+            ]
+            try:
+                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    build_run_summary.main()
+            finally:
+                sys.argv = argv
+            self.assertFalse(Path(out).exists(), "a refused render wrote a file")
+        self.assertIn("invalid choice", stderr.getvalue())
+
+    def test_the_settled_outcomes_render_unchanged(self):
+        """The negative control: closing the vocabulary must move nothing else."""
+
+        self.assertIn("Review posted", build_run_summary.build("ok", "Kitty", []))
+        self.assertIn(
+            "provider was unavailable", build_run_summary.build("exhausted", "", [])
+        )
+        self.assertIn(
+            "the workflow needs fixing", build_run_summary.build("fatal", "", [])
+        )
+
+@unittest.skipIf(BASH is None, "bash is required to run workflow steps")
+class ResolveSurvivesCancellationTests(unittest.TestCase):
+    """`Resolve outcome` must answer for every job status, not only a healthy one.
+
+    🔴 **It used to answer for one.** The step carried no `if:` at all, so GitHub
+    applied the implicit `success()` and a cancelled job skipped it entirely --
+    leaving `Write run summary`, which does carry `always()`, to fall back to
+    `${RESULT:-fatal}` and announce a broken workflow about a run that was merely
+    killed at a cap. Measured on five jobs; see
+    :class:`CancelledRunIsNotAMisconfigurationTests` for the log line.
+
+    🔴 **Moving to `always()` is what makes the FAILURE case matter, and the
+    first draft of this change missed it.** `job.status` has three values. With a
+    bare `always()` and only a cancellation branch, a run whose `Interpret
+    result` reported `ok` and whose next step then failed hard would resolve
+    `ok`, and the summary would render *"Review posted -- the pull request was
+    reviewed"* beside a red required check, with `Post review` -- implicit
+    `success()` -- never having run. Today's defect is a wrong instruction; that
+    draft would have replaced it with a **false success**, which this suite
+    already names as the worst outcome it guards against. Hence a case per value.
+
+    ⚠️ **`failure` resolves `fatal` deliberately, because that is what happens
+    today.** Whether a cap kill presents to an `always()` step as `cancelled` or
+    as `failure` is a runtime detail of GitHub's, and this repository's evidence
+    could not settle it before the change: on the killed job the step was
+    skipped, which is equally consistent with either. Sending `failure` to the
+    value the `${RESULT:-fatal}` default already produces means a wrong guess can
+    only leave today's behaviour standing -- never invent a success.
+    """
+
+    def test_a_cancelled_job_resolves_as_cancelled(self):
+        outputs = resolve_outcome(status="", job_status="cancelled")
+        self.assertEqual(outputs["result"], "cancelled")
+
+    def test_a_cancellation_outranks_an_attempt_that_reported_ok(self):
+        """The precedence, and the reason it goes this way.
+
+        🔴 `Resolve outcome` runs BEFORE `Build review payload` and `Post
+        review`, so `STATUS=ok` means "an attempt produced a review", never "a
+        review was posted" -- and under cancellation those two steps are
+        skipped. Resolving `ok` here would claim something that demonstrably did
+        not happen.
+
+        ⚠️ Design review proposed the opposite precedence, on the grounds that a
+        `cancelled` verdict would stop `Supersede any stale failure notice` from
+        retracting a stale banner. It cannot: that step carries an implicit
+        `success()`, which is false on ANY cancelled job whatever this output
+        holds. The cost of this direction is one wasted re-run when a cancel
+        lands after a review was already posted, on a check that is red either
+        way.
+        """
+
+        outputs = resolve_outcome(status="ok", job_status="cancelled")
+        self.assertEqual(outputs["result"], "cancelled")
+
+    def test_a_failed_job_resolves_as_fatal(self):
+        """Unchanged behaviour, asserted so the `always()` cannot quietly change it."""
+
+        outputs = resolve_outcome(status="ok", job_status="failure")
+        self.assertEqual(outputs["result"], "fatal")
+
+    def test_a_healthy_job_is_untouched(self):
+        """The negative control: the new ladder must not hijack the good path."""
+
+        outputs = resolve_outcome(status="ok", job_status="success")
+        self.assertEqual(outputs["result"], "ok")
+        self.assertEqual(outputs["provider"], "Kitty Bridge")
+
+    def test_an_unset_job_status_is_untouched(self):
+        """The step runs under `set -euo pipefail`, so the read must be guarded.
+
+        🔴 **This case is only real because the harness OMITS the variable
+        rather than setting it empty.** With `JOB_STATUS=""` always exported,
+        `set -u` has nothing to fire on and a bare `$JOB_STATUS` passes
+        everything -- which is exactly what happened to the first version of
+        this battery: the mutation survived, and the guard the code carries was
+        justified by nothing.
+
+        ⚠️ In production the variable is always present, because `job.status`
+        yields a string into the step's `env:` block. What this pins is the
+        weaker but load-bearing claim: the step is readable by a caller that
+        knows nothing about the ladder, which is every existing call in this
+        file.
+        """
+
+        outputs = resolve_outcome(status="exhausted")
+        self.assertEqual(outputs["result"], "exhausted")
+
+    def test_the_step_reports_the_job_status_it_saw(self):
+        """Echoed so a future cancellation records the value.
+
+        Which of `success`/`failure`/`cancelled` a cap kill presents is a fact
+        about GitHub that this repository can only learn by observing one. The
+        log line is how the next occurrence answers it without anyone
+        re-deriving the question.
+        """
+
+        script = _workflow_step_script("Resolve outcome")
+        self.assertIn("JOB_STATUS", script)
+        self.assertIn("job_status=", script)
+
+
+class OutcomeChainCancellationWiringTests(unittest.TestCase):
+    """Which steps may begin running on a cancellation, and which may not.
+
+    🔴 **Asserted on each step's parsed `if:` expression, never on its body.**
+    The step reader in this file returns the surrounding comments too, so a
+    comment saying a step deliberately carries no `always()` would satisfy an
+    assertion about the body -- and a comment written above a step's `- name:`
+    is attributed by that parser to the PREVIOUS step. Both are ways to pass
+    while checking nothing.
+    """
+
+    def test_resolve_outcome_runs_when_the_job_is_cancelled(self):
+        """Without this the whole repair is unreachable.
+
+        ⚠️ A **bare** `always()` is safe here, against the precedent elsewhere in
+        this file that a bare `always()` also fires when the job died before the
+        checkout: this step reads no repository file and shells out to nothing.
+        It computes from step outputs, which are empty rather than missing.
+        """
+
+        self.assertIn("always()", _step_condition("Resolve outcome"))
+
+    def test_no_step_that_speaks_to_the_pull_request_runs_on_a_cancellation(self):
+        """🔴 The workflow cancels an in-flight review on every new push.
+
+        `concurrency.cancel-in-progress: true` makes a superseded cancellation
+        routine -- one per rapid push sequence. Giving these steps `always()`
+        would post a failure notice, and emit an `::error::` annotation, on every
+        one of those. That is the noise the concurrency group exists to prevent,
+        so the repair stops at the two surfaces that are per-run and silent: the
+        job summary and the check's own conclusion.
+
+        ⚠️ **Accepted residual, recorded rather than implied:** a cap kill
+        therefore still has no pull-request-visible surface. It has none today
+        either. What changed is that the run summary stopped telling the reader
+        to go and find a configuration bug that does not exist.
+        """
+
+        for name in (
+            "Build failure notice",
+            "Post failure notice",
+            "Fail when no review was produced",
+        ):
+            with self.subTest(step=name):
+                self.assertNotIn("always()", _step_condition(name))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

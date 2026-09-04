@@ -118,14 +118,40 @@ that overrides the child's endpoint and credentials.
 - A step that runs between `Interpret` and `Resolve` and can fail without
   `continue-on-error` will suppress a review that had already succeeded, because
   the later steps carry an implicit `success()`.
+- 🔴 **`Resolve outcome` carries `always()`; the steps that speak to the pull
+  request must not.** A cancelled job skips every step on the implicit
+  `success()`, which used to include `Resolve outcome` — leaving `Write run
+  summary` to default to `fatal` and announce a misconfigured workflow about a
+  run that was merely killed at a cap. That is a wrong instruction: the correct
+  response to a cap kill is to re-run. But `cancel-in-progress: true` makes
+  superseded cancellations routine, so `always()` on `Build failure notice`,
+  `Post failure notice` or `Fail when no review was produced` would comment and
+  annotate on every rapid push. Flag a change that adds `always()` to any of
+  those three, and flag one that removes it from `Resolve outcome`.
 
 ## Runner and caps
 
-- `runs-on: ubuntu-slim` — GitHub-hosted, **not** the self-hosted fleet the
-  upstream repository uses. This repository is public, and a runner group's
-  "Allow public repositories" setting is off by default, so it reaches no
-  self-hosted group at all. A change that moves this back to `[self-hosted, ...]`
-  needs to say what changed about that grant, or it will silently never run.
+- `runs-on: ubuntu-latest` for the review job, `ubuntu-slim` for the two `ci.yml`
+  jobs — GitHub-hosted, **not** the self-hosted fleet the upstream repository
+  uses. This repository is public, and a runner group's "Allow public
+  repositories" setting is off by default, so it reaches no self-hosted group at
+  all. A change that moves either back to `[self-hosted, ...]` needs to say what
+  changed about that grant, or it will silently never run.
+- 🔴 **A `timeout-minutes:` above the runner's platform ceiling is a fiction, and
+  nothing warns.** `ubuntu-slim` is a single-CPU runner with a **15-minute job
+  ceiling that cannot be raised from configuration** (GitHub: *"The job timeout
+  for single-CPU runners is 15 minutes. If a job reaches this limit, the job is
+  terminated and fails."*). The review job declared 60 on that label and was
+  killed mid-run five times on a merge-gating check before anyone paired the two
+  lines. Ordinary GitHub-hosted labels are 6 hours. **Flag any change that moves
+  a `runs-on:` or a `timeout-minutes:` without saying what it did with the
+  other** — `DeclaredJobCapIsEnforceableTests` pairs them, and a change that
+  weakens or deletes that guard to make an edit pass is a critical finding.
+- ⚠️ **`ubuntu-slim` is one of GitHub's STANDARD PUBLIC labels, not something the
+  organisation grants.** An earlier version of this file and of the workflow said
+  the opposite, and that belief is why a documented platform limit was hunted for
+  in organisation settings. Its distinguishing property is the ceiling above, not
+  its availability.
 - 🔴 **An unreachable runner label is completely silent, and that is the most
   expensive thing to know about this file.** A job asking for a label nothing
   offers queues **for ever** — no error, no annotation, no timeout. A typo and an
@@ -134,20 +160,25 @@ that overrides the child's endpoint and credentials.
   55 seconds. So flag any change to a `runs-on:` label that the pull request does
   not explain, and treat "the check never appeared" as a label question first.
   `ubuntu-latest` is the always-available fallback.
-- **A slim image is the one most likely to be missing a tool the action shells
-  out to.** `unzip` is the known case and the preflight step covers it. A change
-  that adds a step invoking a new tool should add it to that preflight call —
-  nothing else will catch it, and it will fail inside a third-party action's log
-  rather than at a step that names the package.
+- **A runner image may be missing a tool the action shells out to.** `unzip` is
+  the known case and the preflight step covers it. A change that adds a step
+  invoking a new tool should add it to that preflight call — nothing else will
+  catch it, and it will fail inside a third-party action's log rather than at a
+  step that names the package. ⚠️ The slim-image argument this bullet used to
+  carry is **expired**: the preflight's only caller moved to `ubuntu-latest`,
+  which carries `unzip`. The reason that survives is the one that never depended
+  on the image — `unzip` is invoked inside a third-party action two levels down
+  and is named nowhere in this repository, so no scan of `run:` blocks finds it.
 - A capability label declares memory and **nothing else**, which is why
   `ci_preflight.sh` probes for `unzip` before the action shells out to it. The
   fleet is not homogeneous. A new job that invokes a tool without a preflight call
   fails only when placement is unlucky, and the re-run passes — the most expensive
   failure class there is.
-- `timeout-minutes` is a backstop, sized for two attempts' tails. `API_TIMEOUT_MS`
-  is what bounds a single hung call and must stay well below it, so a hang fails
-  as a timeout with a diagnostic rather than being killed by the job cap with
-  none.
+- `timeout-minutes` is a backstop, sized for two attempts' tails, and is only a
+  backstop when the runner will honour it — see the ceiling bullet above.
+  `API_TIMEOUT_MS` is what bounds a single hung call and must stay well below it,
+  so a hang fails as a timeout with a diagnostic rather than being killed by the
+  job cap with none.
 
 ## Forks
 
