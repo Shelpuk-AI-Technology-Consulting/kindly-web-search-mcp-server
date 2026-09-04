@@ -445,26 +445,31 @@ survived its first review.
 
 Carries no `Result:` bullet, for the reason the milestone section above records.
 
-Taken at commit **`36c8397`**, the fix's last commit.
+Taken at commit **`a95f498`**, the fix's last substantive commit. An earlier run
+at `36c8397` gave `0 failed, 567 passed, 3 skipped` against `568 passed, 2
+skipped` on Linux; it is superseded rather than kept, because the code review
+that followed it changed both production and test files and **a per-platform
+figure is worth exactly one run of the tree it was taken from**. Re-running was
+cheaper than arguing that the changes could not matter on Windows.
 
-- **Linux** · 2026-09-04 · commit `36c8397` · Ubuntu 24.04 · Linux 6.8.0-138 ·
-  CPython 3.13.15 —
-  **0 failed, 568 passed, 2 skipped, 16 subtests passed.**
-- **Windows** · 2026-09-04 · commit `36c8397`, run as probe commit `8c18ffa` ·
+- **Linux** · 2026-09-04 · commit `a95f498` · Ubuntu 24.04 · Linux 6.8.0-138 ·
+  CPython 3.13.15 · pytest 9.1.1 —
+  **0 failed, 572 passed, 2 skipped, 16 subtests passed.**
+- **Windows** · 2026-09-04 · commit `a95f498`, run as probe commit `1e34679` ·
   Windows-2025Server-10.0.26100-SP0 · GitHub Actions `windows-latest` ·
-  CPython 3.13.15 (MSC v.1944 64 bit) · pytest 9.1.1 —
-  **0 failed, 567 passed, 3 skipped, 16 subtests passed.**
+  CPython 3.13.15 (MSC v.1944 64 bit, AMD64) · pytest 9.1.1 —
+  **0 failed, 571 passed, 3 skipped, 16 subtests passed.**
 
-`8c18ffa` is `36c8397` plus the temporary workflow file and nothing else,
+`1e34679` is `a95f498` plus the temporary workflow file and nothing else,
 verified with `git diff --stat` before the run.
 
 **The platforms differ by one case, and the difference is accounted for rather
 than tolerated.** `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`
 skips on Windows: it compares process groups, and `os.getpgid` does not exist
-there. 568 − 1 = 567, and 2 + 1 = 3. Any other arithmetic would mean a case was
-silently not collected, which is the failure an "identical on both platforms"
-figure is normally what proves — so where the figures cannot be identical, the
-single named difference has to be.
+there. 572 − 1 = 571, and 2 + 1 = 3. Any other arithmetic would mean a case was
+silently not collected — which is the failure an "identical on both platforms"
+figure normally rules out, so where the figures *cannot* be identical the single
+named difference has to do that job instead.
 
 **What this run actually buys.** Four subsystem cases drive a real process tree
 through `_run_worker_command` — a cancelled run, a timed-out run, a descendant
