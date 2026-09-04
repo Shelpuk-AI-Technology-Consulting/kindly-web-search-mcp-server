@@ -89,6 +89,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -169,6 +170,14 @@ STREAM_READ_CHUNK = 16_384
 STREAM_PROGRESS_INTERVAL_SECONDS = 2.0
 STREAM_PROGRESS_MIN_BYTES = 64 * 1024
 STREAM_HEARTBEAT_INTERVAL_SECONDS = 2.0
+#: Ceiling on retrying the removal of a worker's profile directory. Bounded
+#: because it runs while a caller is already unwinding; generous because the
+#: alternative to waiting is leaking the directory permanently.
+PROFILE_CLEANUP_TIMEOUT_SECONDS = 5.0
+
+#: One retry slice for that removal.
+PROFILE_CLEANUP_RETRY_SECONDS = 0.1
+
 PIPE_PROBE_TIMEOUT_SECONDS = 3.0
 PIPE_PROBE_OUTPUT_BYTES = 4 * 1024
 PIPE_PROBE_SAMPLE_LIMIT = 400
@@ -634,6 +643,66 @@ async def _emit_worker_heartbeat(
             },
         )
         await asyncio.sleep(STREAM_HEARTBEAT_INTERVAL_SECONDS)
+
+
+async def _remove_worker_profile_directory(
+    path: str, *, diagnostics: Diagnostics | None
+) -> None:
+    """Delete a profile directory the parent created for a worker
+
+    Killing the process tree does not delete this: a directory is not a
+    process, and the worker that would have removed its own was ``SIGKILL``ed
+    without running a single finalizer. The parent creates it and the parent
+    removes it, on every path a fetch can end on.
+
+    **Retried, because the descendants were signalled and not waited for.**
+    :func:`_terminate_process_tree` awaits the *worker*; a browser holding files
+    open in here may take a moment longer to go, and on Windows an open handle
+    makes the delete fail outright rather than merely orphaning an inode. One
+    attempt would therefore leak on exactly the platform this fix is least able
+    to observe.
+
+    **Never raised, and never silent.** The docstring beside the worker's own
+    copy of this cleanup records that a profile directory which cannot be
+    deleted must not fail the request; and raising here would replace a caller's
+    ``CancelledError`` with an ``OSError`` from a ``finally``. But swallowing it
+    would leave the disk half of a leak invisible, which is the failure mode
+    this whole change exists to end — so a directory that survives is reported.
+
+    This lives in the runner rather than beside its caller because the retry
+    needs to ``await`` between attempts, and the loader is forbidden to import
+    :mod:`asyncio` at all: that import's absence is how the module boundary is
+    asserted.
+
+    Args:
+        path: The directory to remove.
+        diagnostics: Sink for the record written when removal fails, or ``None``.
+    """
+    deadline = time.monotonic() + PROFILE_CLEANUP_TIMEOUT_SECONDS
+    last_error = ""
+    while True:
+        try:
+            shutil.rmtree(path)
+            return
+        # Already gone is success, not an error worth retrying for five seconds.
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = type(exc).__name__
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(PROFILE_CLEANUP_RETRY_SECONDS)
+
+    if diagnostics:
+        diagnostics.emit(
+            "worker.profile_dir_retained",
+            "Worker profile directory could not be removed",
+            {
+                "path": path,
+                "error": last_error,
+                "waited_seconds": PROFILE_CLEANUP_TIMEOUT_SECONDS,
+            },
+        )
 
 
 def _parse_parent_pid(stat_text: str) -> int | None:

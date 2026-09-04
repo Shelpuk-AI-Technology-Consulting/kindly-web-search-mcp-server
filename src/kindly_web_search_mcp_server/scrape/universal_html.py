@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,11 @@ import httpx
 from .chromium_pool import ChromiumSlot, get_chromium_pool, reuse_enabled
 from .extract import extract_content_as_markdown
 from .sanitize import sanitize_markdown
-from .worker_runner import _run_pipe_probe, _run_worker_command
+from .worker_runner import (
+    _remove_worker_profile_directory,
+    _run_pipe_probe,
+    _run_worker_command,
+)
 from ..utils.diagnostics import (
     Diagnostics,
     MAX_SAMPLE_CHARS,
@@ -152,6 +157,7 @@ def _build_worker_command(
     config: UniversalHtmlLoaderConfig,
     slot: ChromiumSlot | None,
     browser_executable_path: str | None,
+    unpooled_user_data_dir: str | None = None,
 ) -> list[str]:
     """Build the command line that runs the nodriver worker child process.
 
@@ -181,6 +187,14 @@ def _build_worker_command(
             environment.
         browser_executable_path: Browser binary the worker should launch, or
             ``None`` to let it resolve one itself.
+        unpooled_user_data_dir: Profile directory the caller has created for a
+            worker that will launch its own browser, or ``None``. Read **only**
+            when ``slot`` is ``None``, so the two sources of this one flag are
+            mutually exclusive by construction rather than by a convention a
+            caller has to remember: a pooled run gets the slot's own directory,
+            an unpooled run gets the caller's, and neither can shadow the other.
+            Like every other input it arrives as a parameter — this function
+            creates nothing and its result still depends on nothing ambient.
 
     Returns:
         The full argv, interpreter first, ready for
@@ -215,6 +229,11 @@ def _build_worker_command(
         )
         if slot.user_data_dir is not None:
             command.extend(["--user-data-dir", slot.user_data_dir.name])
+    # An unpooled worker used to create this directory inside itself, where a
+    # killed worker could never remove it again. The caller owns it now, and
+    # this branch is how the worker is told so.
+    elif unpooled_user_data_dir:
+        command.extend(["--user-data-dir", unpooled_user_data_dir])
 
     if browser_executable_path:
         command.extend(["--browser-executable-path", browser_executable_path])
@@ -242,6 +261,10 @@ async def fetch_html_via_nodriver(
 
     pool = None
     slot = None
+    # Bound before the `try`, because the `finally` that removes it has to see
+    # it on every path -- including one that raises between the acquisition and
+    # the assignment below.
+    unpooled_user_data_dir: str | None = None
     # The acquisition sits inside the try whose `finally` returns the slot,
     # rather than before it. A slot acquired and then abandoned by a raise is
     # never queued again, and repeated occurrences starve the pool down to the
@@ -263,6 +286,13 @@ async def fetch_html_via_nodriver(
                 slot = None
 
         browser_executable_path = _resolve_browser_executable_path()
+        # No slot means the worker would otherwise create this itself and then
+        # be killed before it could remove it -- which is the disk half of the
+        # orphaned-browser leak. `mkdtemp` rather than `TemporaryDirectory`:
+        # ownership is explicit here, and a finalizer that fires on garbage
+        # collection is exactly the mechanism that failed in the worker.
+        if slot is None:
+            unpooled_user_data_dir = tempfile.mkdtemp(prefix="kindly-nodriver-")
         cmd = _build_worker_command(
             executable=sys.executable,
             url=url,
@@ -270,6 +300,7 @@ async def fetch_html_via_nodriver(
             config=config,
             slot=slot,
             browser_executable_path=browser_executable_path,
+            unpooled_user_data_dir=unpooled_user_data_dir,
         )
 
         env = _maybe_add_src_to_pythonpath(dict(os.environ))
@@ -424,6 +455,11 @@ async def fetch_html_via_nodriver(
                 referer=referer,
                 config=config,
                 slot=slot,
+                # Always `None` here: this block is unreachable without a slot
+                # (`if slot is None or pool is None: raise`, above), so the
+                # replacement slot's own directory is what the worker gets.
+                # Passed rather than omitted so the two call sites cannot drift.
+                unpooled_user_data_dir=unpooled_user_data_dir,
                 browser_executable_path=browser_executable_path,
             )
             _emit_worker_spawn(cmd)
@@ -436,6 +472,14 @@ async def fetch_html_via_nodriver(
     finally:
         if slot is not None and pool is not None:
             await pool.release(slot, diagnostics=diagnostics)
+        # A sibling of the release, never inside it. Nested under the pooled
+        # branch this would run only for pooled runs -- the one case that must
+        # delete nothing, because the directory belongs to a browser that is
+        # still running and will serve the next caller.
+        if unpooled_user_data_dir is not None:
+            await _remove_worker_profile_directory(
+                unpooled_user_data_dir, diagnostics=diagnostics
+            )
 
 
 def _apply_markdown_cap(

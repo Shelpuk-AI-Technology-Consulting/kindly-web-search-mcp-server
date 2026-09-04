@@ -57,6 +57,7 @@ from test_worker_child_fixture import FIXTURE_CHILD, _kill_pid, _pid_is_alive
 
 from kindly_web_search_mcp_server.scrape import universal_html, worker_runner
 from kindly_web_search_mcp_server.scrape.worker_runner import _run_worker_command
+from kindly_web_search_mcp_server.utils.diagnostics import Diagnostics
 
 #: The markup the fixture child writes. Byte-identical to
 #: `tests/test_universal_html_loader.py`'s `WORKER_STDOUT`: that file asserts the
@@ -282,6 +283,7 @@ PROCESS_MANAGEMENT_SURFACE = (
     "_read_parent_map",
     "_collect_descendants",
     "_signal_descendants",
+    "_remove_worker_profile_directory",
     "_subprocess_launch_options",
     "_StdoutAccumulator",
     "_StderrAccumulator",
@@ -1213,6 +1215,111 @@ def test_terminate_process_tree_guards_only_on_the_return_code() -> None:
     assert test.comparators[0].value is None, (
         "The tree-kill guard no longer compares `proc.returncode` against None."
     )
+
+
+async def test_a_profile_directory_removal_is_retried_before_it_is_given_up_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wait for a browser that has not finished letting go of its files
+
+    `_terminate_process_tree` awaits the *worker*; the descendants holding files
+    open in the profile directory are signalled and not waited for. On Windows
+    an open handle makes the delete fail outright rather than merely orphaning
+    an inode, so a single attempt would leak on the one platform this project
+    can least easily observe.
+
+    Driven through a failing `rmtree` rather than a real browser, because the
+    claim is about the retry and not about any particular reason to need one.
+
+    Args:
+        tmp_path: Directory to remove.
+        monkeypatch: Replaces the removal primitive.
+    """
+    attempts: list[int] = []
+    real_rmtree = worker_runner.shutil.rmtree
+
+    def _fail_twice(path: str) -> None:
+        """Refuse the first two attempts, then remove for real.
+
+        Args:
+            path: The directory to remove.
+
+        Raises:
+            PermissionError: On the first two calls, as Windows does while a
+                process still holds a handle inside the directory.
+        """
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise PermissionError(path)
+        real_rmtree(path)
+
+    monkeypatch.setattr(worker_runner.shutil, "rmtree", _fail_twice)
+    monkeypatch.setattr(worker_runner, "PROFILE_CLEANUP_RETRY_SECONDS", 0.01)
+    diagnostics = Diagnostics(request_id="retry", enabled=True, stream=io.StringIO())
+
+    await worker_runner._remove_worker_profile_directory(
+        str(tmp_path), diagnostics=diagnostics
+    )
+
+    assert len(attempts) == 3
+    assert not tmp_path.exists()
+    # Nothing reported: a removal that eventually worked is not a leak, and a
+    # record here would train a reader to ignore the one that matters.
+    assert not [
+        entry for entry in diagnostics.entries if "profile_dir" in str(entry)
+    ]
+
+
+async def test_a_profile_directory_that_cannot_be_removed_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Say so when the disk half of the leak survives anyway
+
+    Raising is not an option: this runs from a `finally` while a caller is
+    already unwinding, so an `OSError` here would replace the `CancelledError`
+    the caller is handling — and the worker's own copy of this cleanup records
+    that a profile directory which cannot be deleted must never fail a request.
+
+    But swallowing it is what this whole change exists to end. A leak nobody can
+    see is the reason browsers and directories accumulated for months with no
+    signal pointing at the cause, so the surviving directory is named.
+
+    Args:
+        tmp_path: Directory the removal will refuse to delete.
+        monkeypatch: Replaces the removal primitive and shortens the deadline.
+    """
+
+    def _always_fail(path: str) -> None:
+        """Refuse every attempt.
+
+        Args:
+            path: The directory that will not be removed.
+
+        Raises:
+            PermissionError: Always.
+        """
+        raise PermissionError(path)
+
+    monkeypatch.setattr(worker_runner.shutil, "rmtree", _always_fail)
+    monkeypatch.setattr(worker_runner, "PROFILE_CLEANUP_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(worker_runner, "PROFILE_CLEANUP_RETRY_SECONDS", 0.01)
+    diagnostics = Diagnostics(request_id="stuck", enabled=True, stream=io.StringIO())
+
+    await worker_runner._remove_worker_profile_directory(
+        str(tmp_path), diagnostics=diagnostics
+    )
+
+    retained = [
+        entry
+        for entry in diagnostics.entries
+        if entry.get("stage") == "worker.profile_dir_retained"
+    ]
+    assert len(retained) == 1, (
+        "a profile directory survived and nothing said so. That is the shape "
+        "of the leak this change closes, reintroduced inside its own fix."
+    )
+    assert retained[0]["data"]["path"] == str(tmp_path)
+    assert retained[0]["data"]["error"] == "PermissionError"
 
 
 def _taskkill_call_in_the_windows_branch() -> ast.Call:
