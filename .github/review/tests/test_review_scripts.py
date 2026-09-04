@@ -210,7 +210,15 @@ def _declared_jobs(path):
         runner = re.findall(
             r"^ {4}runs-on:[ \t]*(\S.*?)[ \t]*(?:#.*)?$", body, re.M
         )
-        timeout = re.findall(r"^ {4}timeout-minutes:[ \t]*(\d+)[ \t]*$", body, re.M)
+        # Same trailing-comment tolerance as `runs-on` above, and for a sharper
+        # reason: an unstripped `timeout-minutes: 10  # reason` matches nothing,
+        # so the cap reads as ABSENT and the failure says "declares no
+        # job-level `timeout-minutes:`" about a line that is right there. The
+        # two patterns must agree, or the parser is lenient about the runner and
+        # strict about the cap for no stated reason.
+        timeout = re.findall(
+            r"^ {4}timeout-minutes:[ \t]*(\d+)[ \t]*(?:#.*)?$", body, re.M
+        )
         jobs.append(
             {
                 "file": path.name,
@@ -11384,6 +11392,22 @@ class WorkflowJobParserTests(unittest.TestCase):
             self.HEAD + "  a:\n    runs-on: ubuntu-slim  # cheap\n    timeout-minutes: 5\n"
         )
         self.assertEqual(jobs[0]["runner"], "ubuntu-slim")
+
+    def test_a_trailing_comment_is_not_part_of_the_cap(self):
+        """The same tolerance as `runs-on`, and a worse failure without it.
+
+        An unstripped `timeout-minutes: 10  # reason` matches nothing, so the
+        cap reads as ABSENT -- and the guard reports "declares no job-level
+        `timeout-minutes:`" about a line the author is looking straight at.
+        The two patterns were inconsistent in the first draft: lenient about the
+        runner, strict about the cap, with no reason for the difference.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ubuntu-slim\n    timeout-minutes: 10  # measured\n"
+        )
+        self.assertEqual(jobs[0]["timeout"], 10)
 
     def test_a_flow_mapping_job_is_refused_rather_than_skipped(self):
         """🔴 The escape that made every check pass on a 99-minute cap.

@@ -158,7 +158,7 @@ step 2 above.
 ## Changing the review system
 
 `.github/workflows/ci.yml` runs `tests/test_review_scripts.py` on every pull
-request — 512 tests over the selector, the classifier, the notices, the redactor,
+request — 513 tests over the selector, the classifier, the notices, the redactor,
 the schema and the workflow's own wiring. Run them locally the same way:
 
 ```bash
