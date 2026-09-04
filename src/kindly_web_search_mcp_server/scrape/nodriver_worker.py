@@ -355,8 +355,11 @@ def _is_snap_browser(executable_path: str) -> bool:
     """Report whether a browser executable is snap-packaged.
 
     A snap-packaged Chromium is markedly slower to open its DevTools endpoint
-    than a distribution-packaged one, so the caller multiplies both the
-    DevTools-ready timeout and the retry backoff for one. The marker ``/snap/``
+    than a distribution-packaged one, so a caller that gets ``True`` here
+    multiplies the time it allows. The two callers do not allow the same
+    things: `_fetch_html` multiplies the DevTools-ready timeout **and** its
+    retry backoff, while :meth:`chromium_pool.ChromiumSlot._start` multiplies
+    the timeout only -- it has no retry loop to slow down. The marker ``/snap/``
     is matched anywhere in the path, on the path as supplied and then on its
     resolved form; the reasoning for the ordering, for the POSIX guard, and for
     matching a substring rather than a prefix is recorded in

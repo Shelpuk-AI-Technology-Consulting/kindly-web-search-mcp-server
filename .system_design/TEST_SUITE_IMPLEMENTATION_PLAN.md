@@ -867,7 +867,22 @@ duplicating tests or touching the same files.
   *Verify:* grouped by behaviour. **Numeric env parsing**
   (`_resolve_retry_backoff_seconds`, `_resolve_devtools_ready_timeout_seconds`,
   `_resolve_worker_timeout_seconds`, `_resolve_snap_backoff_multiplier`): unset,
-  blank, malformed, zero, negative. **String and list normalisation**
+  blank, malformed, zero, negative.
+  **Added scope: the DevTools ceiling does not hold, and this step characterises
+  that.** `_resolve_devtools_ready_timeout_seconds` clamps to `[0.5, 120]` and
+  both call sites then multiply the *clamped* value by
+  `_resolve_snap_backoff_multiplier`, which clamps to `[1, 20]`. Measured against
+  the shipped resolvers: with `KINDLY_NODRIVER_DEVTOOLS_READY_TIMEOUT_SECONDS=500`
+  the base is correctly clamped to `120.0`, and the product handed to
+  `_wait_for_devtools_ready` is **2400 s** — the ceiling defeated by a factor of
+  twenty. Defaults are unaffected (12 x 3 = 36 s), so this needs both variables
+  set deliberately, and the worker path is bounded from outside by the parent's
+  total budget; the pooled path is bounded only by the server's tool timeout.
+  Pin the product for a snap browser at the clamped maximum and name the
+  inconsistency in the docstring. **Characterise, do not repair** — the ordering
+  is a production decision, and this step does not change production. Found while
+  fixing the snap-detection defect; deliberately left there rather than widened
+  into. **String and list normalisation**
   (`_resolve_chrome_proxy`, `_resolve_chrome_proxy_bypass`, `_split_no_proxy_value`):
   unset, blank, single value, comma-separated with surrounding whitespace,
   duplicate entries. **Version and user-agent**
@@ -1109,6 +1124,21 @@ duplicating tests or touching the same files.
   are hermetic and belong in the fast lane. Every claim this step adds there
   needs its own `chromium` or `subsystem` marker, or a step written against a
   locally installed Chromium quietly acquires cases that run everywhere.
+  **Added scope: settle one §10.4 sentence this step is now the owner of.** §10.4
+  holds two positions about hermetic tests on `omit`-ed modules and nothing
+  reconciles them. One blesses the practice — "an L1 test on an omitted module,
+  which is already this suite's practice" — and names `chromium_pool.py` as a
+  target. The other, written by E2-4 for its own two termination helpers,
+  discourages the same shape: "the module is outside the gate, so a hermetic test
+  here earns no coverage while blurring the classification", and its stated
+  reason is a property of the *gate* rather than of `worker_runner.py`, so it
+  reads as if it generalises. `tests/test_chromium_pool_slot_start.py` is exactly
+  the shape E2-4 declined, in a module the other sentence names as a target. The
+  tension predates that module and was not created by it — a design review
+  confirmed no correction was obligatory on the branch that added it. One
+  sentence settles it: either scope E2-4's rule explicitly to `worker_runner.py`'s
+  process-termination helpers, or generalise it and say why the pooled DevTools
+  budget is an exception.
 
 ---
 
