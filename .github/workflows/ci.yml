@@ -47,7 +47,7 @@ on:
 
 jobs:
   review-scripts:
-    # The Claude review system's own tests -- 502 of them, covering the rule
+    # The Claude review system's own tests -- 512 of them, covering the rule
     # selector, the result classifier, the failure notices, the prompt redactor,
     # the findings schema and the workflow's own wiring.
     #

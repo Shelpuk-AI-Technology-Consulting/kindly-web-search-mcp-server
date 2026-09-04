@@ -1355,6 +1355,24 @@ jobs:
           # and that "outside `if` conditionals, you can use `job.status` to access the
           # job status". A `cancelled()` here is outside an `if:` and is not supported.
           # Its three values are `success`, `failure` and `cancelled`.
+          #
+          # 🔴 **MEASURED, because reading could not settle it and the whole repair
+          # turns on the answer.** GitHub's own wording is split: the timeout
+          # documentation says a job exceeding its cap is *cancelled*, while the
+          # single-CPU runner reference says such a job "is terminated and fails". A
+          # concurrency supersede is NOT a substitute for the measurement -- it is a
+          # different cancellation path, so observing one answers nothing about the
+          # other. So a throwaway workflow was run with `timeout-minutes: 1` and a
+          # 120-second step, on `ubuntu-latest`, and an `always()` step echoed the
+          # value. Run 33901140237 on 2026-09-04, annotated *"The job has exceeded the
+          # maximum execution time of 1m0s"* -- the same wording as the five production
+          # kills -- printed:
+          #
+          #     MEASURED job_status=cancelled
+          #
+          # So a cap kill takes the `cancelled` branch below, and the `always()` step
+          # ran after the kill. The `failure` branch is the fail-safe, not the
+          # expected path.
           JOB_STATUS: ${{ job.status }}
           # The second attempt's verdict when one ran, the first's otherwise.
           # `||` in a GitHub expression yields the right-hand side when the left

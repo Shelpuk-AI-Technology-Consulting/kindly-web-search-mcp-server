@@ -747,7 +747,8 @@ typo'd selector fails the job.
   `timeout-minutes: 60` on `ubuntu-slim`, whose ceiling is 15 and cannot be
   raised from configuration, and was killed mid-run five times on a merge-gating
   check while every offline check stayed green. §10.3 carries the rule.
-  §10.3's complete trigger list; one job selecting
+
+  The step itself: §10.3's complete trigger list; one job selecting
   `--ignore=tests/package -m "not live and not chromium and not package"` on both
   platforms — deliberately **including** `subsystem`, per TEST_SUITE §8B; and
   `ci-required` with `if: always()` asserting every dependency is `success`.

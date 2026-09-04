@@ -180,11 +180,36 @@ def _declared_jobs(path):
         for m in re.finditer(r"^  ([A-Za-z_][A-Za-z0-9_-]*):[ \t]*$", section, re.M)
     ]
 
+    # 🔴 **Anything at job depth this parser did not recognise is an ERROR, not a
+    # job it silently skipped.** The mark pattern is end-anchored, so a
+    # flow-mapping job -- `sneaky: {runs-on: ubuntu-slim, timeout-minutes: 99}`,
+    # legal YAML that GitHub accepts -- matches nothing and vanishes. Measured:
+    # appended to `ci.yml` it left the sweep finding three jobs, still equal to
+    # the recorded set, with every check green and a 99-minute cap declared on a
+    # 15-minute runner. Pinning the job SET catches deletions and renames; only
+    # this catches an ADDITION in a spelling the parser cannot read.
+    unresolved = [
+        line
+        for line in section.splitlines()
+        if re.match(r"^  (?![ #])\S", line)
+        and not re.match(r"^  [A-Za-z_][A-Za-z0-9_-]*:[ \t]*$", line)
+    ]
+    assert not unresolved, (
+        f"{path.name}: line(s) at job depth this parser cannot resolve, so the "
+        f"job they declare would escape every check below: {unresolved}"
+    )
+
     jobs = []
     for index, (name, start) in enumerate(marks):
         end = marks[index + 1][1] if index + 1 < len(marks) else len(section)
         body = section[start:end]
-        runner = re.findall(r"^ {4}runs-on:[ \t]*(\S.*?)[ \t]*$", body, re.M)
+        # ⚠️ A trailing `# comment` is legal after a scalar and must not become
+        # part of the label -- otherwise the failure below reads "add
+        # 'ubuntu-slim  # cheap' to the ceiling table", which is an instruction
+        # to record a comment as a runner.
+        runner = re.findall(
+            r"^ {4}runs-on:[ \t]*(\S.*?)[ \t]*(?:#.*)?$", body, re.M
+        )
         timeout = re.findall(r"^ {4}timeout-minutes:[ \t]*(\d+)[ \t]*$", body, re.M)
         jobs.append(
             {
@@ -3548,6 +3573,12 @@ def resolve_outcome(
         out = Path(tmp) / "out"
         out.touch()
         env = dict(os.environ)
+        # 🔴 Popped before anything sets it. `env` is inherited from the real
+        # environment, so a developer or runner that happens to export
+        # `JOB_STATUS` would leave the unset case below testing the SET path --
+        # the exact hole the conditional set at the end of this block exists to
+        # close. A control that only holds on a clean machine is no control.
+        env.pop("JOB_STATUS", None)
         # Forward slashes: a Windows temp path reaches bash with backslashes,
         # which it reads as escapes and then cannot open for redirection.
         env.update(
@@ -3574,6 +3605,12 @@ def resolve_outcome(
             if "=" in line:
                 key, _, value = line.partition("=")
                 parsed[key] = value
+        # 🔴 The step's own stdout, carried alongside its outputs. Asserting the
+        # log line against the `run:` SOURCE reads the comments too -- and this
+        # step's comments explain the echo, so a source assertion passed with
+        # the echo itself deleted. Measured: that mutation survived the whole
+        # class. What the step PRINTS is the only thing that proves it prints.
+        parsed["_stdout"] = proc.stdout
         return parsed
 
 
@@ -4335,6 +4372,25 @@ class TestWorkflowConfiguration(unittest.TestCase):
         action, model, `--effort max` and `--max-turns 150`, and across **52 successful
         runs** its median is 455s and its **maximum 1244s — 20.7 minutes**. Any job cap
         at or below 21 kills that tail.
+
+        🔴 **THIS repository's own distribution, added BESIDE the inherited one rather
+        than replacing it** -- two measurements from two repositories are two labelled
+        facts, and a recorded measurement is never edited to keep a document tidy.
+        Measured per ATTEMPT, since a re-run adds an attempt to the same run id and a
+        per-run reading undercounts: across **49 successful attempts**, median 543s,
+        p90 818s, **maximum success 868s -- 14m28s**.
+
+        ⚠️ **And here is why that second measurement had to be taken: every figure
+        above was compared against a cap the runner never honoured.** This job ran on
+        `ubuntu-slim`, whose platform ceiling is 15 minutes and cannot be raised from
+        configuration, so "a job cap that clears the measurement" was a true statement
+        about a number nothing read. Five attempts were killed at 15m0s. The job moved
+        to `ubuntu-latest`.
+
+        **This case checks the cap clears the WORKLOAD;
+        :class:`DeclaredJobCapIsEnforceableTests` checks the RUNNER will allow it.
+        Neither implies the other -- this one passed throughout the outage -- which is
+        why both exist.**
         """
 
         job = re.findall(r"^    timeout-minutes: (\d+)", self.workflow, re.M)
@@ -11224,6 +11280,33 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
                     "it against its runner's ceiling",
                 )
 
+    def test_a_caller_job_really_declares_neither_key(self):
+        """The exemption must be earned, not merely claimed.
+
+        🔴 A 4-space `uses:` switches BOTH checks off for a job. GitHub would
+        reject a job declaring `uses:` beside `runs-on:`, so it is not reachable
+        in a valid workflow -- but this guard cannot tell, and the comment
+        beside the exemption claims it is granted "BY NAME rather than by
+        falling through a condition". This case is what makes that sentence
+        true: a job claiming the exemption is held to the shape justifying it.
+
+        ⚠️ Vacuous today -- this repository has no caller job. §1.3 of the
+        implementation plan commits `ci.yml` to becoming callers, and this is
+        here so the exemption is checked from the first one rather than
+        retrofitted after somebody notices.
+        """
+
+        for job in self._jobs():
+            if not job["caller"]:
+                continue
+            with self.subTest(file=job["file"], job=job["job"]):
+                self.assertIsNone(
+                    job["runner"],
+                    "declares `uses:` AND `runs-on:`; GitHub rejects such a job, "
+                    "and here it silently buys exemption from both checks",
+                )
+                self.assertIsNone(job["timeout"], "declares `uses:` and a cap")
+
     def test_no_job_declares_a_cap_its_runner_will_not_honour(self):
         """The claim this class is for.
 
@@ -11234,6 +11317,11 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
         that looks correct and buys nothing.
         """
 
+        # ⚠️ The two `continue`s below are NOT the skipping this class's docstring
+        # forbids: a missing cap and an unrecorded runner each already fail in
+        # their own case above, and re-reporting them here would turn one defect
+        # into three failures. Nothing reaches a `continue` without having
+        # already failed something.
         for job in self._jobs():
             if job["caller"] or job["timeout"] is None:
                 continue
@@ -11252,6 +11340,108 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
                     "does not declare anywhere",
                 )
 
+
+class WorkflowJobParserTests(unittest.TestCase):
+    """The parser behind the ceiling guard, on spellings this tree does not use.
+
+    🔴 **Every case here is a way the guard could have gone hollow while staying
+    green**, so they are driven against written files rather than left to the
+    mutation battery: a mutation proves a check fires today, a committed case
+    keeps proving it.
+
+    ⚠️ The parser reads block-style YAML with a regex, because this suite runs on
+    a bare interpreter with no dependency install. That is a real limit, and the
+    rule that makes it safe is **refuse what you cannot resolve** -- never skip.
+    """
+
+    def _write(self, body):
+        """Write a throwaway workflow and parse it.
+
+        Args:
+            body: The file's whole text.
+
+        Returns:
+            The parsed job dicts.
+        """
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "throwaway.yml"
+        path.write_text(body, encoding="utf-8")
+        return _declared_jobs(path)
+
+    HEAD = "name: T\non:\n  workflow_dispatch:\njobs:\n"
+
+    def test_a_trailing_comment_is_not_part_of_the_runner_label(self):
+        """`runs-on: ubuntu-slim  # cheap` is legal and names a known runner.
+
+        Without the strip it reads as the label ``'ubuntu-slim  # cheap'`` and
+        the guard tells the author to add a comment string to the ceiling
+        table -- a failure, but for a reason that sends them the wrong way.
+        """
+
+        jobs = self._write(
+            self.HEAD + "  a:\n    runs-on: ubuntu-slim  # cheap\n    timeout-minutes: 5\n"
+        )
+        self.assertEqual(jobs[0]["runner"], "ubuntu-slim")
+
+    def test_a_flow_mapping_job_is_refused_rather_than_skipped(self):
+        """🔴 The escape that made every check pass on a 99-minute cap.
+
+        `a: {runs-on: ubuntu-slim, timeout-minutes: 99}` is legal YAML that
+        GitHub accepts. The job-mark pattern is end-anchored, so it matched
+        nothing and the job vanished from the sweep -- leaving the recorded job
+        set intact and the whole class green with an unenforceable cap declared
+        on a capped runner. Measured before the fix.
+        """
+
+        with self.assertRaises(AssertionError) as caught:
+            self._write(self.HEAD + "  a: {runs-on: ubuntu-slim, timeout-minutes: 99}\n")
+        self.assertIn("cannot resolve", str(caught.exception))
+
+    def test_a_quoted_job_key_is_refused_rather_than_skipped(self):
+        """It used to fail only by accident, which is not the same as being caught.
+
+        A quoted key did not match the mark pattern either, so its body lines
+        were attributed to the PREVIOUS job -- which happened to trip a
+        different check. Depending on that is depending on the order of the
+        jobs in the file.
+        """
+
+        with self.assertRaises(AssertionError):
+            self._write(
+                self.HEAD + '  "a":\n    runs-on: ubuntu-slim\n    timeout-minutes: 5\n'
+            )
+
+    def test_a_step_level_timeout_is_not_read_as_a_job_cap(self):
+        """Eight spaces, not four. Reading one as the other invents a cap."""
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ubuntu-latest\n    steps:\n"
+            + "      - run: true\n        timeout-minutes: 3\n"
+        )
+        self.assertIsNone(jobs[0]["timeout"])
+
+    def test_a_caller_job_is_recognised_as_one(self):
+        """The exemption exists for this shape and no other."""
+
+        jobs = self._write(self.HEAD + "  a:\n    uses: ./.github/workflows/x.yml\n")
+        self.assertTrue(jobs[0]["caller"])
+        self.assertIsNone(jobs[0]["runner"])
+
+    def test_top_level_keys_are_not_mistaken_for_jobs(self):
+        """`on:`, `env:`, `permissions:` and `concurrency:` all have 2-space children.
+
+        The sweep is bounded to the `jobs:` block for exactly this reason; an
+        unbounded one reads `workflow_dispatch:` as a job with no runner.
+        """
+
+        jobs = self._write(
+            "name: T\non:\n  workflow_dispatch:\nenv:\n  X: '1'\n"
+            "jobs:\n  a:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n"
+        )
+        self.assertEqual([job["job"] for job in jobs], ["a"])
 
 class NoDocumentMisdescribesTheSlimRunnerTests(unittest.TestCase):
     """`ubuntu-slim` is one of GitHub's standard public labels. Four files said otherwise.
@@ -11294,8 +11484,60 @@ class NoDocumentMisdescribesTheSlimRunnerTests(unittest.TestCase):
     #: leak guard does.
     MARKER = "noqa: runner-claim"
 
+    def _root(self):
+        """Return the directory both the sweep and its control walk.
+
+        🔴 **One expression, used by both, deliberately.** The control below
+        exists to prove the sweep reached real files; when each computed its own
+        root, moving the sweep's left the control green and the survivor was
+        measured. A control that cannot see the thing it controls is not one.
+
+        Returns:
+            The `.github/` directory this suite lives under.
+        """
+
+        return Path(__file__).resolve().parents[2]
+
+    def test_the_rule_recognises_the_claim_it_forbids(self):
+        """🔴 The control the sweep cannot give itself.
+
+        The check below asserts an EMPTY list. A mistyped pattern, or a move
+        that leaves `parents[2]` pointing somewhere other than `.github`, passes
+        it for ever on a walk that saw nothing. The leak guard this class models
+        itself on carries two such controls; the first version of this one
+        carried none.
+        """
+
+        # These three lines state the shapes the rule forbids, so the sweep reads
+        # them as offences unless suppressed -- the same self-match the leak
+        # guard handles the same way. Marked per line, so editing this case
+        # cannot silently disable the sweep.
+        self.assertRegex("an organisation-configured runner", self.CLAIM)  # noqa: runner-claim
+        self.assertRegex("an organization-configured runner", self.CLAIM)  # noqa: runner-claim
+        self.assertNotRegex("a GitHub-hosted standard label", self.CLAIM)
+
+    def test_the_marker_suppresses_a_deliberate_match(self):
+        """The escape hatch is exercised, or it is only a comment.
+
+        Nothing in the tree needs it today, so without this the marker could
+        stop working and the first person to need it finds out the hard way.
+        """
+
+        line = "an organisation-configured one  # noqa: runner-claim"
+        self.assertRegex(line, self.CLAIM)
+        self.assertIn(self.MARKER, line)
+
+    def test_the_sweep_actually_reaches_the_files_it_claims_to(self):
+        """A walk that found nothing satisfies an empty-offences assertion."""
+
+        root = self._root()
+        seen = {path.name for path in root.rglob("*") if path.is_file()}
+        for expected in ("claude-code-review.yml", "ci.md", "README.md"):
+            with self.subTest(file=expected):
+                self.assertIn(expected, seen)
+
     def test_no_file_under_dot_github_misdescribes_the_label(self):
-        root = Path(__file__).resolve().parents[2]
+        root = self._root()
         offences = []
         for path in sorted(root.rglob("*")):
             if not path.is_file() or "__pycache__" in path.parts:
@@ -11511,12 +11753,21 @@ class ResolveSurvivesCancellationTests(unittest.TestCase):
         Which of `success`/`failure`/`cancelled` a cap kill presents is a fact
         about GitHub that this repository can only learn by observing one. The
         log line is how the next occurrence answers it without anyone
-        re-deriving the question.
+        re-deriving the question, so it is a criterion rather than a courtesy.
+
+        🔴 **Asserted against the step's EXECUTED stdout, not its source.** The
+        first version of this case read the `run:` block and looked for the
+        strings -- but the block carries a comment explaining the echo, so
+        deleting the echo itself left the case green. Measured: that mutation
+        survived. It is the same trap
+        :class:`OutcomeChainCancellationWiringTests` documents for the `if:`
+        reader, missed one class over for the `run:` reader.
         """
 
-        script = _workflow_step_script("Resolve outcome")
-        self.assertIn("JOB_STATUS", script)
-        self.assertIn("job_status=", script)
+        self.assertIn(
+            "job_status=cancelled", resolve_outcome(job_status="cancelled")["_stdout"]
+        )
+        self.assertIn("job_status=<unset>", resolve_outcome(status="ok")["_stdout"])
 
 
 class OutcomeChainCancellationWiringTests(unittest.TestCase):
@@ -11555,6 +11806,13 @@ class OutcomeChainCancellationWiringTests(unittest.TestCase):
         therefore still has no pull-request-visible surface. It has none today
         either. What changed is that the run summary stopped telling the reader
         to go and find a configuration bug that does not exist.
+
+        ⚠️ **`cancelled()` is forbidden here too, not only `always()`.** The
+        requirement is about behaviour -- may this step begin running on a
+        cancellation -- and `if: cancelled()`, or `failure() || cancelled()`,
+        starts on exactly the supersede this guard exists to keep quiet while
+        satisfying an `always()`-only assertion. Forbidding one spelling of a
+        behaviour is not forbidding the behaviour.
         """
 
         for name in (
@@ -11563,7 +11821,12 @@ class OutcomeChainCancellationWiringTests(unittest.TestCase):
             "Fail when no review was produced",
         ):
             with self.subTest(step=name):
-                self.assertNotIn("always()", _step_condition(name))
+                self.assertNotRegex(
+                    _step_condition(name),
+                    r"always\(\)|cancelled\(\)",
+                    "this step would begin running on a cancellation, so a "
+                    "superseded push comments or annotates once per push",
+                )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
