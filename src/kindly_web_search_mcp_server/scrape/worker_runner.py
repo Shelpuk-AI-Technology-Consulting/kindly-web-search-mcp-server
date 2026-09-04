@@ -182,6 +182,13 @@ STREAM_READ_CHUNK = 16_384
 STREAM_PROGRESS_INTERVAL_SECONDS = 2.0
 STREAM_PROGRESS_MIN_BYTES = 64 * 1024
 STREAM_HEARTBEAT_INTERVAL_SECONDS = 2.0
+#: How long the Windows branch waits for the worker to die, after `taskkill` and
+#: again after the `terminate()` fallback. One constant for both, because they
+#: are the same question asked twice and a reader comparing two literals cannot
+#: tell a deliberate difference from a typo. Was an inline `1.5` on the first
+#: wait and nothing at all on the second.
+TERMINATE_WAIT_SECONDS = 1.5
+
 #: Ceiling on retrying the removal of a worker's profile directory. Bounded
 #: because it runs while a caller is already unwinding; generous because the
 #: alternative to waiting is leaking the directory permanently.
@@ -978,11 +985,12 @@ async def _terminate_process_tree(proc: WorkerProcess) -> None:
     * Where ``/proc`` does not exist the walk yields nothing and behaviour
       degrades to killing the worker alone — which is what shipped before.
     * A Windows process stuck in unprocessed I/O defeats ``taskkill /F`` and
-      ``TerminateProcess`` alike. This does not then return: the branch ends in
-      an unbounded ``await proc.wait()``, so it **blocks**, inside a
-      cancellation handler. Pre-existing, and a materially worse limit than
-      returning quietly — bounding that wait is a behaviour change on a platform
-      with no standing lane and is deliberately not made here.
+      ``TerminateProcess`` alike, and this returns having killed nothing. It
+      **returns** rather than blocking because both of that branch's waits are
+      bounded by :data:`TERMINATE_WAIT_SECONDS`; the closing one was unbounded
+      until three reviews in a row said so. The POSIX branch's closing wait is
+      deliberately not bounded to match: there ``SIGKILL`` has already been
+      delivered and cannot be caught or ignored, so the kernel bounds it.
 
     Every failure that can be raced is suppressed: the process may exit between
     any two statements, and racing it is not an error worth propagating to a
@@ -1021,14 +1029,23 @@ async def _terminate_process_tree(proc: WorkerProcess) -> None:
                 with contextlib.suppress(Exception):
                     killer.kill()
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(proc.wait(), timeout=1.5)
+            await asyncio.wait_for(proc.wait(), timeout=TERMINATE_WAIT_SECONDS)
         # Keyed on our own worker, never on `taskkill`'s exit code: 128 means
         # "something in the tree had already gone", not "the tree survived".
         if proc.returncode is None:
             with contextlib.suppress(Exception):
                 proc.terminate()
+        # Bounded, unlike the POSIX branch's closing wait, and the asymmetry is
+        # the point. There `SIGKILL` has already been delivered and cannot be
+        # caught or ignored, so the kernel bounds the wait. Here the process
+        # that defeated `taskkill /F` is the same one `TerminateProcess` may
+        # fail to signal, and an unbounded wait would park the event loop inside
+        # a cancellation handler -- a hang on the path handling a fetch the
+        # caller has already given up on, which is worse than the leak this
+        # function exists to close. Returning without reaping is the lesser
+        # cost.
         with contextlib.suppress(Exception):
-            await proc.wait()
+            await asyncio.wait_for(proc.wait(), timeout=TERMINATE_WAIT_SECONDS)
         return
 
     # Before any signal. After `proc.kill()` these pids are children of `init`

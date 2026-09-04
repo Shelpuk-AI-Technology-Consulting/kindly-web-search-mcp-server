@@ -1442,6 +1442,63 @@ def test_taskkill_is_the_first_kill_the_windows_branch_attempts() -> None:
     )
 
 
+def test_every_wait_in_the_windows_branch_is_bounded() -> None:
+    """Refuse an unbounded wait on the path that handles a fetch already given up on
+
+    The Windows branch's closing `await proc.wait()` was unbounded, and the
+    branch reaches it precisely when `proc.terminate()` may have failed —
+    `TerminateProcess` does not signal a process stuck in unprocessed I/O, which
+    is the same condition that defeats `taskkill /F`. So the one case that
+    reaches an unbounded wait is the one where the process will not exit, and
+    this whole function runs inside `_run_worker_command`'s cancellation
+    handler. The result would be the event loop parked on a subprocess reaper:
+    a hang, which is worse than the leak this function exists to close.
+
+    Asserted structurally, because no Linux run executes this branch and a
+    process that ignores `TerminateProcess` is not something a test can
+    manufacture. The POSIX branch's closing wait is deliberately **not** covered
+    here: `SIGKILL` has already been delivered there and cannot be caught or
+    ignored, so the kernel bounds it, and requiring a timeout would be cargo
+    cult rather than a claim.
+    """
+    branch = _windows_branch_of("_terminate_process_tree")
+
+    bare_waits = [
+        node.lineno
+        for node in ast.walk(branch)
+        if isinstance(node, ast.Await)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "wait"
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == "proc"
+    ]
+    assert not bare_waits, (
+        f"`await proc.wait()` is unbounded at line(s) {bare_waits}. Wrap it in "
+        "`asyncio.wait_for`: the branch reaches it exactly when the process may "
+        "refuse to die, and this runs inside a cancellation handler."
+    )
+
+    # Two of them, and both through the same named constant: two literals here
+    # would leave a reader unable to tell a deliberate difference from a typo.
+    bounded = [
+        node
+        for node in ast.walk(branch)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "wait_for"
+        and any(
+            isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "TERMINATE_WAIT_SECONDS"
+            for keyword in node.keywords
+        )
+    ]
+    assert len(bounded) == 2, (
+        f"expected both `proc.wait()` calls in the Windows branch to be bounded "
+        f"by TERMINATE_WAIT_SECONDS, found {len(bounded)}."
+    )
+
+
 def test_the_taskkill_argv_asks_for_the_tree_and_names_the_worker() -> None:
     """Pin `/T`, which is the only reason this call reaches a descendant
 
