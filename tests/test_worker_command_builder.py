@@ -120,6 +120,7 @@ def _build(**overrides: Any) -> list[str]:
         "config": CONFIG,
         "slot": None,
         "browser_executable_path": None,
+        "unpooled_user_data_dir": None,
     }
     arguments.update(overrides)
     return _build_worker_command(**arguments)
@@ -245,6 +246,80 @@ def test_pooled_slot_with_profile_directory_appends_user_data_dir(
         "--user-data-dir",
         profile_directory.name,
     ]
+
+
+def test_unpooled_run_appends_the_callers_profile_directory_last_but_one() -> None:
+    """Place the unpooled profile flag exactly where the pooled one sits
+
+    Position, by whole-list equality, because position is the part a reader
+    cannot check by eye. `--browser-executable-path` is pinned last by
+    `test_browser_executable_path_is_appended_last`, and this flag has to
+    precede it; a builder that emitted it after would produce an argv this file
+    accepts nowhere else and that no other case in the suite would notice.
+
+    **Both optional arguments are supplied, and that is the whole case.** A
+    first draft passed only the profile directory, and the reordering mutant
+    survived it: with no browser path in the argv there is nothing for the flag
+    to be after, so every ordering produces the same list. Measured -- 21 passed
+    against the moved emission. Only a command carrying both can tell them
+    apart, which is the general shape of an ordering claim and is easy to get
+    wrong in exactly this direction.
+    """
+    assert _build(
+        unpooled_user_data_dir="/tmp/kindly-unpooled",
+        browser_executable_path="/usr/bin/chromium-for-tests",
+    ) == [
+        *BASE_COMMAND,
+        "--user-data-dir",
+        "/tmp/kindly-unpooled",
+        "--browser-executable-path",
+        "/usr/bin/chromium-for-tests",
+    ]
+
+
+def test_unpooled_run_without_a_profile_directory_is_the_shipped_command() -> None:
+    """Change nothing for a caller that passes no directory
+
+    The parameter is optional so that `BASE_COMMAND` and the three pooled pins
+    could stay byte-identical through this change. That is only true while the
+    default emits nothing, and a default of `""` or a stray `elif` on `is not
+    None` would break it silently -- every other case in this file passes either
+    way, because they all pass no directory.
+    """
+    assert _build() == BASE_COMMAND
+    assert _build(unpooled_user_data_dir=None) == BASE_COMMAND
+
+
+def test_a_pooled_slot_ignores_a_caller_supplied_profile_directory(
+    profile_directory: tempfile.TemporaryDirectory[str],
+) -> None:
+    """Let the slot's own directory win, and emit exactly one
+
+    The two sources for this one flag are meant to be mutually exclusive by
+    construction rather than by a convention the caller has to remember. Driving
+    both at once is the only way to prove the `elif` is an `elif`: written as a
+    second `if`, the child would receive `--user-data-dir` twice, and a browser
+    handed two profile directories takes the last one -- so the pooled browser
+    would quietly start using a directory the parent deletes at the end of the
+    fetch.
+    """
+    slot = ChromiumSlot(
+        slot_id=7, host="127.0.0.9", port=9333, user_data_dir=profile_directory
+    )
+
+    command = _build(slot=slot, unpooled_user_data_dir="/tmp/kindly-ignored")
+
+    assert command == [
+        *BASE_COMMAND,
+        "--remote-host",
+        "127.0.0.9",
+        "--remote-port",
+        "9333",
+        "--reuse-browser",
+        "--user-data-dir",
+        profile_directory.name,
+    ]
+    assert command.count("--user-data-dir") == 1
 
 
 def test_pooled_slot_without_profile_directory_omits_user_data_dir() -> None:

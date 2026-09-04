@@ -816,6 +816,68 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         assert cmd[cmd.index("--user-data-dir") + 1] == slot_dir
         pool.release.assert_awaited_once()
 
+    async def test_a_cancelled_pooled_run_keeps_the_slots_directory_and_releases_once(
+        self,
+    ) -> None:
+        """Hold both pooled guarantees on the path that unwinds, not the one that returns
+
+        The clean-run case above already kills the obvious mutant — a `finally`
+        that deletes whichever directory it finds. This is the path that mutant
+        would most plausibly be *written* on: the cleanup and the slot release
+        live in the same `finally`, and that block runs while a
+        `CancelledError` is propagating.
+
+        Both halves are asserted together because the failure modes compound. A
+        deleted pooled directory corrupts a live browser's profile for every
+        later caller; a slot released twice hands one browser to two of them,
+        which is the defect the four-statement ordering in the restart block
+        exists to prevent. Cancellation is the commonest way a real fetch ends,
+        so it is the path where neither may be true.
+        """
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot_dir = tempfile.mkdtemp(prefix="kindly-pooled-cancel-")
+        self.addCleanup(shutil.rmtree, slot_dir, True)
+        slot = SimpleNamespace(
+            host="127.0.0.1",
+            port=9222,
+            slot_id="slot-0",
+            user_data_dir=SimpleNamespace(name=slot_dir),
+            browser_executable_path=None,
+        )
+        pool = AsyncMock()
+        pool.acquire = AsyncMock(return_value=slot)
+        pool.release = AsyncMock()
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_pipe_probe",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError(),
+            ),
+            contextlib.suppress(asyncio.CancelledError),
+        ):
+            await fetch_html_via_nodriver("https://example.com")
+
+        assert os.path.isdir(slot_dir), (
+            f"the pool's profile directory {slot_dir} was deleted while a "
+            "cancellation unwound. The next caller to take this slot gets a "
+            "browser whose profile is gone."
+        )
+        pool.release.assert_awaited_once()
+
     async def test_pool_acquisition_failure_falls_back_to_an_unpooled_run(self) -> None:
         """Degrade to a cold browser rather than failing when the pool is unusable
 

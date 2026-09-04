@@ -686,6 +686,15 @@ async def _remove_worker_profile_directory(
     :mod:`asyncio` at all: that import's absence is how the module boundary is
     asserted.
 
+    **Two costs, so they are decisions rather than surprises.** This can add up
+    to :data:`PROFILE_CLEANUP_TIMEOUT_SECONDS` to a request whose budget has
+    already expired; and a *second* cancellation delivered at the sleep below
+    escapes the caller's ``finally``, leaking the directory with no record — the
+    one outcome this function exists to prevent. Both are accepted: the
+    alternative to waiting is leaking on Windows every time, and a shield
+    against re-cancellation here would have to swallow ``CancelledError``, which
+    is worse than the leak it would prevent.
+
     Args:
         path: The directory to remove.
         diagnostics: Sink for the record written when removal fails, or ``None``.
@@ -722,11 +731,11 @@ def _parse_parent_pid(stat_text: str) -> int | None:
 
     The second field of that line is the executable name in brackets, and the
     kernel neither escapes nor rejects spaces or a closing bracket inside it.
-    Splitting the line on whitespace therefore reads some other field entirely
-    and returns a plausible small integer rather than an error — a number this
-    module would go on to treat as a process it may ``SIGKILL``, and as a
-    process group it may signal. Everything after the **last** bracket is read
-    for that reason.
+    Splitting the line on whitespace therefore reads some other field entirely.
+    Against a name containing a space and a digit that is *silent*: it yields a
+    plausible small integer rather than an error, and this module would go on to
+    treat it as a process it may ``SIGKILL`` and as a process group it may
+    signal. Everything after the **last** bracket is read for that reason.
 
     Args:
         stat_text: One line of a ``/proc/<pid>/stat`` file.
@@ -770,6 +779,15 @@ def _read_parent_map() -> dict[int, int]:
     and the worker is still killed by pid, which is the behaviour that shipped
     before.
 
+    **The claim is "no *additional* await", not "no await on this path".** That
+    handler already awaits four stream tasks before it reaches the terminator,
+    and a re-cancellation delivered at any of those does what this paragraph
+    describes. Closing that window means killing before draining, which reorders
+    the diagnostics both sides of the seam pin and is a behaviour change this
+    walk has no business smuggling in. Recorded rather than fixed, because the
+    difference between "we closed it" and "we did not widen it" is the whole
+    value of writing it down.
+
     Returns:
         Each visible pid mapped to its parent's pid. Empty when ``/proc`` cannot
         be read at all, which is every non-Linux platform.
@@ -780,7 +798,10 @@ def _read_parent_map() -> dict[int, int]:
     except OSError:
         return parent_map
     for entry in entries:
-        if not entry.isdigit():
+        # `isdecimal`, not `isdigit`: the latter is true for characters like
+        # 'squared' that `int()` then rejects. Unreachable on procfs, and this
+        # function is contracted never to raise into a cancellation handler.
+        if not entry.isdecimal():
             continue
         # One unreadable entry costs its own row and nothing else: processes are
         # exiting underneath this loop by definition, and abandoning the scan
@@ -951,15 +972,24 @@ async def _terminate_process_tree(proc: WorkerProcess) -> None:
       tried first.
 
     **Known limits, so silence is not mistaken for success.** This function
-    reports nothing. Where ``/proc`` does not exist the walk yields nothing and
-    behaviour degrades to killing the worker alone; and a Windows process stuck
-    in unprocessed I/O defeats ``taskkill /F`` and ``TerminateProcess`` alike,
-    after which this returns having killed nothing. Both are invisible until it
-    gains a diagnostics sink.
+    reports nothing, so both of the following are invisible until it gains a
+    diagnostics sink.
 
-    Every failure is suppressed throughout. The process may exit between any two
-    statements, and racing it is not an error worth propagating to a caller who
-    is already handling a timeout.
+    * Where ``/proc`` does not exist the walk yields nothing and behaviour
+      degrades to killing the worker alone — which is what shipped before.
+    * A Windows process stuck in unprocessed I/O defeats ``taskkill /F`` and
+      ``TerminateProcess`` alike. This does not then return: the branch ends in
+      an unbounded ``await proc.wait()``, so it **blocks**, inside a
+      cancellation handler. Pre-existing, and a materially worse limit than
+      returning quietly — bounding that wait is a behaviour change on a platform
+      with no standing lane and is deliberately not made here.
+
+    Every failure that can be raced is suppressed: the process may exit between
+    any two statements, and racing it is not an error worth propagating to a
+    caller already handling a timeout. The two walk calls below are the
+    exception and need no suppression of their own — each catches its own
+    ``OSError`` internally, per entry and per signal, so one unreadable process
+    costs its own row rather than the whole kill.
 
     Args:
         proc: The child to kill. Returns immediately if it has already exited.

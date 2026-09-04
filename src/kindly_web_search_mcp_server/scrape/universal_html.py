@@ -232,7 +232,7 @@ def _build_worker_command(
     # An unpooled worker used to create this directory inside itself, where a
     # killed worker could never remove it again. The caller owns it now, and
     # this branch is how the worker is told so.
-    elif unpooled_user_data_dir:
+    elif unpooled_user_data_dir is not None:
         command.extend(["--user-data-dir", unpooled_user_data_dir])
 
     if browser_executable_path:

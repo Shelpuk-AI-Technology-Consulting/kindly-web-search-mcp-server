@@ -433,6 +433,47 @@ test written after the measurement and never executed on the platform, because n
 argument can. That gap closes only with a Windows lane, not with a better
 argument.
 
+## Verified — the browser-orphan fix, both platforms
+
+The second run in this repository's history to produce a Windows figure. It
+exists because that fix makes a **per-platform behavioural claim**: the Windows
+half of `_terminate_process_tree` — `taskkill /T /F` promoted ahead of
+`terminate()` — is code no Linux run executes at all, and its correctness had
+been argued from CPython's source rather than measured. A Linux-only check
+passes while half the defect ships, which is how the Windows half of that defect
+survived its first review.
+
+Carries no `Result:` bullet, for the reason the milestone section above records.
+
+Taken at commit **`36c8397`**, the fix's last commit.
+
+- **Linux** · 2026-09-04 · commit `36c8397` · Ubuntu 24.04 · Linux 6.8.0-138 ·
+  CPython 3.13.15 —
+  **0 failed, 568 passed, 2 skipped, 16 subtests passed.**
+- **Windows** · 2026-09-04 · commit `36c8397`, run as probe commit `8c18ffa` ·
+  Windows-2025Server-10.0.26100-SP0 · GitHub Actions `windows-latest` ·
+  CPython 3.13.15 (MSC v.1944 64 bit) · pytest 9.1.1 —
+  **0 failed, 567 passed, 3 skipped, 16 subtests passed.**
+
+`8c18ffa` is `36c8397` plus the temporary workflow file and nothing else,
+verified with `git diff --stat` before the run.
+
+**The platforms differ by one case, and the difference is accounted for rather
+than tolerated.** `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`
+skips on Windows: it compares process groups, and `os.getpgid` does not exist
+there. 568 − 1 = 567, and 2 + 1 = 3. Any other arithmetic would mean a case was
+silently not collected, which is the failure an "identical on both platforms"
+figure is normally what proves — so where the figures cannot be identical, the
+single named difference has to be.
+
+**What this run actually buys.** Four subsystem cases drive a real process tree
+through `_run_worker_command` — a cancelled run, a timed-out run, a descendant
+in the caller's own process group, and a control that must survive. On Windows
+they execute the `taskkill` branch for real. Before this run, that branch's
+ordering was pinned only by an AST assertion, which proves the code is *arranged*
+correctly and cannot prove it *works*. Both are needed and neither substitutes
+for the other.
+
 ## Relocated claims
 
 A retired node id and the id that now carries its claims, one row per

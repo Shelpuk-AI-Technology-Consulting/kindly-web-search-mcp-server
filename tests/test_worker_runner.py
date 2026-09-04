@@ -42,22 +42,25 @@ from typing import Any
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-# This directory too: the suite is not an installed package, and the L3 cases
-# below import two platform-specific pid helpers from a sibling module.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# `test_worker_child_fixture` is imported rather than copied from. `_pid_is_alive`
-# and `_kill_pid` are forty lines of platform-specific probing that already
-# exist, already run on both platforms, and already carry the reasoning for why
-# a signal-0 probe is not enough on Linux. Generalising them into a shared
-# harness belongs to the anti-flake harness step; taking a second committed
-# consumer now is what tells that step the helpers are load-bearing rather than
-# local to the module that introduced them.
-from test_worker_child_fixture import FIXTURE_CHILD, _kill_pid, _pid_is_alive
-
+# Imported rather than copied from. `_pid_is_alive` and `_kill_pid` are forty
+# lines of platform-specific probing that already exist, already run on both
+# platforms, and already carry the reasoning for why a signal-0 probe is not
+# enough on Linux. Generalising them into a shared harness belongs to the
+# anti-flake harness step; taking a second committed consumer now is what tells
+# that step the helpers are load-bearing rather than local to the module that
+# introduced them.
+#
+# Through the `tests.` package, which is the convention five other modules here
+# already use -- and not a bare name plus a `sys.path` entry for this directory.
+# Measured: pytest imports the file as `tests.test_worker_child_fixture`, so a
+# bare import leaves **two** module objects in `sys.modules`, executed twice. It
+# is harmless while that module has no state, and it means a future
+# `monkeypatch.setattr` against it would reach one copy and not the other.
 from kindly_web_search_mcp_server.scrape import universal_html, worker_runner
 from kindly_web_search_mcp_server.scrape.worker_runner import _run_worker_command
 from kindly_web_search_mcp_server.utils.diagnostics import Diagnostics
+from tests.test_worker_child_fixture import FIXTURE_CHILD, _kill_pid, _pid_is_alive
 
 #: The markup the fixture child writes. Byte-identical to
 #: `tests/test_universal_html_loader.py`'s `WORKER_STDOUT`: that file asserts the
@@ -438,11 +441,19 @@ PID_FILE_TIMEOUT_SECONDS = 30.0
 #: fix, and one taken too late would pass a broken one only by luck.
 DEATH_TIMEOUT_SECONDS = 15.0
 
-#: Budget handed to the runner by the cases that want it to expire. Long enough
-#: that the child has certainly written its pid file first (which those cases
-#: also wait for), short enough not to dominate the module's runtime. The runner
-#: clamps below 1.0s, so nothing smaller would mean what it says.
-EXPIRING_TIMEOUT_SECONDS = 3.0
+#: Budget handed to the runner by the cases that want it to expire.
+#:
+#: This is the one place in this module where two clocks can cross: the budget
+#: starts at spawn, and the case then waits up to `PID_FILE_TIMEOUT_SECONDS` for
+#: the child to announce itself. A budget that expired first would fail on the
+#: readiness assertion instead of the claim under test -- a confusing red, not a
+#: silent pass, but still the wrong diagnosis. Ten seconds is therefore a lower
+#: bound on the child's life and not a measurement of anything: interpreter
+#: start plus a grandchild spawn is well under a second even on a loaded
+#: `windows-latest` runner under antivirus, and the case costs exactly this much
+#: when it passes. The runner clamps below 1.0s, so nothing smaller than that
+#: would mean what it says either.
+EXPIRING_TIMEOUT_SECONDS = 10.0
 
 #: One polling slice. Every wait in this module is a condition with a deadline,
 #: never a bare sleep sized to "long enough".
@@ -682,14 +693,18 @@ async def test_a_cancelled_run_leaves_a_process_it_did_not_start_alone(
         pid_file = tmp_path / "pids.json"
         async with _worker_running(
             pid_file, "--grandchild-new-session", timeout_seconds=30.0
-        ) as (task, _recorded):
+        ) as (task, recorded):
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-            # Probed after the descendants are gone rather than immediately, so
-            # "survived" means survived the whole reap and not merely that the
-            # reap had not reached it yet.
+            # Wait for the reap to finish before probing the control. Without
+            # this the case would assert "survived" at a moment when the reap
+            # may simply not have reached it yet -- true, and proving nothing.
+            # The signals are in fact delivered synchronously, so this normally
+            # returns at once; it is here to make the claim independent of that.
+            assert await _wait_until_gone(recorded["grandchild_pid"])
+
             assert _pid_is_alive(control.pid), (
                 f"the pooled-browser control {control.pid} was killed. It is "
                 "not a descendant of the worker, so whatever reached it would "
@@ -705,7 +720,7 @@ async def test_a_cancelled_run_leaves_a_process_it_did_not_start_alone(
 #: permits: it contains spaces *and* a closing bracket. Real programs do this --
 #: a thread renamed at run time, or a binary whose name a user chose. The fields
 #: after `comm` are `state ppid pgrp ...`, so the parent pid here is 4242.
-HOSTILE_STAT_LINE = "1234 (weird ) name) S 4242 1234 1234 0 -1 4194304 100 0"
+HOSTILE_STAT_LINE = "1234 (a b) 99 c) S 4242 1234 1234 0 -1 4194304 100 0"
 
 #: Signal the kill-loop cases hand to the doubles. Not `signal.SIGKILL`: that
 #: name does not exist on Windows, and these cases are pure -- they must collect
@@ -777,8 +792,12 @@ def test_the_stat_parse_survives_a_command_name_with_spaces_and_a_bracket() -> N
     on to be treated as a process this code is entitled to `SIGKILL`, and one
     of its process group.
 
-    The parse takes everything after the **last** bracket for that reason. A
-    naive parse reads `4194304` from the line below; this one reads 4242.
+    The fixture is chosen so the naive parse fails *silently* rather than
+    loudly, which is the case worth pinning: `HOSTILE_STAT_LINE.split()[3]` is
+    `"99"` — a plausible pid, no exception — while the correct answer is 4242. A
+    name that merely broke `int()` would make the wrong implementation raise,
+    and a raising bug is one somebody finds. This one would send `SIGKILL` to
+    process 99.
     """
     assert worker_runner._parse_parent_pid(HOSTILE_STAT_LINE) == 4242
 
