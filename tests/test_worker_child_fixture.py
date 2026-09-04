@@ -919,6 +919,80 @@ def test_spawns_a_live_descendant_and_reports_its_pid() -> None:
 
 
 @pytest.mark.subsystem
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Process groups are a POSIX concept; `os.getpgid` does not exist here.",
+)
+def test_the_descendant_joins_the_childs_group_unless_asked_for_its_own() -> None:
+    """Reproduce both descendant topologies a real browser can present
+
+    A production Chromium is launched with ``start_new_session=True``, so it is
+    its **own** session and group leader and no group kill aimed at the worker
+    reaches it. The descendant this script spawns by default is not: it inherits
+    the child's group. Those are two different things to survive, and a parent
+    that reaps only one of them has half a fix.
+
+    Both polarities are asserted in one case because the flag's whole meaning is
+    the difference between them. Asserting only the new-session half would pass
+    against a script that ``setsid``s unconditionally, which would silently
+    retire the inherited-group topology the default is there to provide.
+    """
+    with _fixture_child("--spawn-grandchild", "--hang") as inherited:
+        assert os.getpgid(inherited.grandchild_pid) == os.getpgid(inherited.proc.pid)
+
+    with _fixture_child(
+        "--spawn-grandchild", "--grandchild-new-session", "--hang"
+    ) as detached:
+        detached_group = os.getpgid(detached.grandchild_pid)
+        assert detached_group != os.getpgid(detached.proc.pid)
+        # Leader of its own group, not merely a member of some other one: that
+        # is what `setsid` produces, and it is what makes a single `killpg`
+        # against this pid reach the descendant and everything it started.
+        assert detached_group == detached.grandchild_pid
+
+
+@pytest.mark.subsystem
+def test_the_pid_file_is_readable_once_readiness_has_arrived(
+    tmp_path: Path,
+) -> None:
+    """Give a reader the pids on a channel that survives cancellation
+
+    The readiness frame already carries both pids, and for a parent that runs
+    the child to completion that is enough. It is not enough for the parent this
+    fixture exists to test: ``_run_worker_command`` appends worker frames to the
+    caller's diagnostics on the timeout path and **not at all** on the
+    cancellation path, so a cancelled run loses the frame and with it any way to
+    name the process that must be gone.
+
+    A file closes that, and the ordering is what makes it usable: the script
+    writes it *before* announcing readiness, so a reader that has seen readiness
+    can always read it without polling. That is the property asserted here --
+    not "the file eventually appears", which a reader cannot act on.
+
+    Args:
+        tmp_path: pytest's per-test directory, so the path is unique per run.
+    """
+    pid_file = tmp_path / "pids.json"
+
+    with _fixture_child(
+        "--pid-file", str(pid_file), "--spawn-grandchild", "--hang"
+    ) as child:
+        # Read the instant readiness is observed, with no wait of any kind.
+        # This is the strongest form the claim can take from outside the script:
+        # a test that slept here would pass against a script writing the file
+        # after the frame. It is not a deterministic mutant kill -- a write
+        # moved just after the readiness flush usually loses this race but need
+        # not always -- so the ordering is also stated in the script, next to
+        # the two calls, where it can be read rather than raced.
+        recorded = json.loads(pid_file.read_text(encoding="utf-8"))
+
+        assert recorded == {
+            "pid": child.proc.pid,
+            "grandchild_pid": child.grandchild_pid,
+        }
+
+
+@pytest.mark.subsystem
 def test_a_child_that_dies_talking_is_reported_with_its_exit_code() -> None:
     """Diagnose a bad command line as one, not as a startup timeout
 

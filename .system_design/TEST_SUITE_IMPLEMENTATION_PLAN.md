@@ -614,7 +614,9 @@ it carries no X-number.
   telemetry, never a pass condition.
 
   **Landed.** `tests/child_processes/worker_child.py` plus ten smoke cases in
-  `tests/test_worker_child_fixture.py`; the interface, its rationale and its
+  `tests/test_worker_child_fixture.py` -- **fourteen today**, because later
+  steps add flags to the script and cases beside them; the number here is
+  what this step delivered, not what the file holds; the interface, its rationale and its
   known limits are §5.2a. Two things the build changed about the surrounding
   plan. **E3-4 now depends on it**: that step's verify clause reads "a hanging
   fixture child is killed at the deadline and its PID tree is gone", an artefact
