@@ -163,6 +163,15 @@ NOT_ENVIRONMENT_VARIABLES = frozenset(
         "SW_HIDE",
         # A GitHub reaction name.
         "THUMBS_UP",
+        # Module constants in `worker_runner`, named as string literals only
+        # because a test refers to them by name -- `monkeypatch.setattr` takes
+        # its attribute as a string, and an AST assertion matches an `ast.Name`
+        # by `.id`. Both are shapes this sweep cannot distinguish from an
+        # environment read. Nothing in the tree passes any of them to
+        # `os.environ` or `getenv`.
+        "PROFILE_CLEANUP_TIMEOUT_SECONDS",
+        "PROFILE_CLEANUP_RETRY_SECONDS",
+        "TERMINATE_WAIT_SECONDS",
         # Fixture values in the diagnostics-masking and GitHub tests.
         "AUTH_BEARER",
         "SOME_URL",

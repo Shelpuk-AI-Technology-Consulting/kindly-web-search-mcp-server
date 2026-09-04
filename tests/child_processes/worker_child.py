@@ -27,16 +27,21 @@ that a timed-out run still yields the frames received before the deadline gets
 exercised. They are applied in a fixed order:
 
 1. spawn a descendant, if asked, and learn its pid;
-2. emit the readiness frame on standard error and flush it;
-3. emit each requested frame;
-4. write the requested standard-error garbage;
-5. write the requested standard-output payload;
-6. hang, if asked, until signalled;
-7. exit with the requested code.
+2. write the pid file, if asked;
+3. emit the readiness frame on standard error and flush it;
+4. emit each requested frame;
+5. write the requested standard-error garbage;
+6. write the requested standard-output payload;
+7. hang, if asked, until signalled;
+8. exit with the requested code.
 
 The descendant is spawned **before** readiness is announced, so a harness that
 reaps the process tree the moment it sees the readiness frame can never observe
-a half-built tree.
+a half-built tree. The pid file is written in that same window, and for a
+stronger reason: a parent that is **cancelled** never receives this script's
+frames at all -- ``_run_worker_command`` appends them to the caller's
+diagnostics on the timeout path and on no other -- so the file is the only
+channel on which a cancelled run can learn which processes must be gone.
 
 **Every byte this script writes goes through a stream's ``.buffer`` and is
 flushed.** Standard error is block-buffered behind a pipe, so an unflushed
@@ -167,6 +172,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Start a descendant that outlives this process unless killed.",
     )
     parser.add_argument(
+        "--grandchild-new-session",
+        action="store_true",
+        help="Give the descendant its own session, the way a browser is launched.",
+    )
+    parser.add_argument(
+        "--pid-file",
+        default=None,
+        metavar="PATH",
+        help="Write this process's pid and its descendant's to PATH as JSON.",
+    )
+    parser.add_argument(
         "--hang",
         action="store_true",
         help="Block after all other output until the process is signalled.",
@@ -214,12 +230,24 @@ def _write_stderr_garbage() -> None:
     sys.stderr.buffer.flush()
 
 
-def _spawn_grandchild() -> int:
+def _spawn_grandchild(*, new_session: bool) -> int:
     """Start a descendant process and return its pid.
 
     Exists so a test can observe what happens to a *tree*: a parent that kills
     only its direct child leaves this process running, and that defect cannot be
     seen without a second generation.
+
+    ``new_session`` selects which of the two topologies a real browser can
+    present. A production Chromium is launched with ``start_new_session`` set on
+    every POSIX platform (``nodriver_worker.py:608`` spells it
+    ``start_new_session=(os.name == "posix")``), which makes it its own session
+    and group leader and puts it outside any process group a reaper could aim at
+    the worker; the default here inherits this process's group instead. A reaper has to survive both, and a single
+    flag producing only one of them would let half a fix look complete. The
+    argument is POSIX-only in ``subprocess`` and is ignored on Windows, which
+    has no session to start -- so both settings describe the same topology
+    there, and the Windows tree-walk this fixture serves keys on parentage
+    rather than on groups anyway.
 
     Its standard output and standard error are ``DEVNULL``, deliberately. A
     descendant that inherited this process's pipes would hold them open after
@@ -228,6 +256,9 @@ def _spawn_grandchild() -> int:
     it is a *different* claim from the orphan one, and a single flag producing
     both would make a failure ambiguous. A test that needs a pipe-holding
     descendant should get a second flag rather than a change to this one.
+
+    Args:
+        new_session: Whether the descendant calls ``setsid`` before it runs.
 
     Returns:
         The descendant's pid.
@@ -247,8 +278,25 @@ def _spawn_grandchild() -> int:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=new_session,
     )
     return grandchild.pid
+
+
+def _write_pid_file(path: str, *, pid: int, grandchild_pid: int | None) -> None:
+    """Record this process's pid and its descendant's, for a reader that has no frame.
+
+    Args:
+        path: Where to write the record.
+        pid: This process's own pid.
+        grandchild_pid: The descendant's pid, or ``None`` when none was asked for.
+    """
+    # Written whole and then flushed, because the reader is told it may read the
+    # instant readiness arrives: a partial line would be a decode error rather
+    # than a wait, and no amount of retrying at the reader would be correct.
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"pid": pid, "grandchild_pid": grandchild_pid}, handle)
+        handle.flush()
 
 
 def _hang(limit_seconds: float) -> None:
@@ -279,7 +327,19 @@ def main(argv: list[str]) -> int:
     # The descendant comes first so that readiness means the whole tree exists.
     # Announced the other way round, a harness that reaps on the readiness frame
     # could sample the tree between the announcement and the spawn and miss it.
-    grandchild_pid = _spawn_grandchild() if args.spawn_grandchild else None
+    grandchild_pid = (
+        _spawn_grandchild(new_session=args.grandchild_new_session)
+        if args.spawn_grandchild
+        else None
+    )
+
+    # Before the frame, not after: a reader is promised the file is there once
+    # readiness has arrived, and that promise is what lets a *cancelled* parent
+    # -- which never receives this script's frames -- still name what to reap.
+    if args.pid_file:
+        _write_pid_file(
+            args.pid_file, pid=os.getpid(), grandchild_pid=grandchild_pid
+        )
 
     # Readiness before any other output, so a reader can consume exactly one
     # line to learn the script is up and to learn the pids it must reap.

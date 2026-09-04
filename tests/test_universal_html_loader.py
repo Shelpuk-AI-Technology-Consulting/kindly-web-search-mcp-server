@@ -4,9 +4,13 @@ import asyncio
 import contextlib
 import io
 import os
+import shutil
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -611,6 +615,268 @@ class TestUniversalHtmlLoader(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_builder.call_count, 1)
         self.assertEqual(mock_run.await_count, 1)
         self.assertEqual(pool.release.await_count, 1)
+
+    async def _unpooled_fetch_recording_its_profile_directory(
+        self, *, run_worker: AsyncMock
+    ) -> tuple[str | None, bool]:
+        """Run one unpooled fetch and report what it did with a profile directory.
+
+        Args:
+            run_worker: Double standing in for `_run_worker_command`, so the
+                caller decides whether the run succeeds, times out or is
+                cancelled.
+
+        Returns:
+            The path passed as ``--user-data-dir``, and whether that path
+            existed at the moment the worker would have been running. The second
+            value is captured *during* the run because the whole point of the
+            change is that the directory outlives the spawn and not the call.
+        """
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        seen: dict[str, Any] = {}
+
+        async def _record(cmd: list[str], **kwargs: Any) -> str:
+            """Capture the profile directory the parent built, then defer.
+
+            Args:
+                cmd: The worker argv.
+                **kwargs: The runner's keyword arguments, unused here.
+
+            Returns:
+                Whatever the caller's double decided to return.
+            """
+            if "--user-data-dir" in cmd:
+                path = cmd[cmd.index("--user-data-dir") + 1]
+                seen["path"] = path
+                seen["existed"] = os.path.isdir(path)
+            return await run_worker(cmd, **kwargs)
+
+        # `BaseException`, not `Exception`: two of this helper's three callers
+        # drive it with `CancelledError`, which is the path `asyncio.wait_for`
+        # takes and therefore the commonest way a real fetch ends early.
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="0"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new=_record,
+            ),
+            contextlib.suppress(BaseException),
+        ):
+            await fetch_html_via_nodriver("https://example.com")
+
+        return seen.get("path"), bool(seen.get("existed"))
+
+    async def test_an_unpooled_run_owns_its_profile_directory_and_removes_it(
+        self,
+    ) -> None:
+        """Create the browser's profile directory in the parent, and delete it there
+
+        The worker used to own this directory as a `TemporaryDirectory` inside
+        its own process. That works exactly until the worker is killed — which
+        is the case this whole change exists for — because a `SIGKILL`ed process
+        runs no finalizers. Killing the process tree does not help: the
+        directory is not a process.
+
+        So both halves are asserted, and the first is not decoration. A cleanup
+        that passed a path it never created would satisfy "the directory is
+        gone" perfectly.
+        """
+        run_worker = AsyncMock(return_value=WORKER_STDOUT.decode())
+
+        path, existed_during_run = (
+            await self._unpooled_fetch_recording_its_profile_directory(
+                run_worker=run_worker
+            )
+        )
+
+        assert path is not None, (
+            "an unpooled run built no `--user-data-dir`, so the worker is still "
+            "creating its own and the parent has nothing to delete."
+        )
+        assert existed_during_run, f"{path} did not exist while the worker ran."
+        assert not os.path.exists(path), f"{path} outlived a successful fetch."
+
+    async def test_an_unpooled_run_removes_its_profile_directory_after_a_timeout(
+        self,
+    ) -> None:
+        """Delete the directory on the path that actually leaks
+
+        The success path is the easy one and the one a `TemporaryDirectory`
+        already handled. A timeout is where the worker dies without running
+        anything of its own, so it is where ownership by the parent earns its
+        place.
+        """
+        # The builtin, which `asyncio.TimeoutError` has been an alias for since
+        # 3.11 -- the runner raises exactly this on budget expiry.
+        run_worker = AsyncMock(side_effect=TimeoutError())
+
+        path, existed_during_run = (
+            await self._unpooled_fetch_recording_its_profile_directory(
+                run_worker=run_worker
+            )
+        )
+
+        assert path is not None and existed_during_run
+        assert not os.path.exists(path), f"{path} outlived a timed-out fetch."
+
+    async def test_an_unpooled_run_removes_its_profile_directory_after_cancellation(
+        self,
+    ) -> None:
+        """Delete the directory on the commonest path of all
+
+        `server.py` wraps every fetch in `asyncio.wait_for`, which **cancels**
+        rather than timing out the inner call, and a client disconnecting does
+        the same. Asserted separately from the timeout because `CancelledError`
+        derives from `BaseException`: a `finally` is enough, but an `except
+        Exception` around the cleanup would pass the case above and leak here.
+        """
+        run_worker = AsyncMock(side_effect=asyncio.CancelledError())
+
+        path, existed_during_run = (
+            await self._unpooled_fetch_recording_its_profile_directory(
+                run_worker=run_worker
+            )
+        )
+
+        assert path is not None and existed_during_run
+        assert not os.path.exists(path), f"{path} outlived a cancelled fetch."
+
+    async def test_a_pooled_run_leaves_the_slots_profile_directory_alone(self) -> None:
+        """Never delete a directory the pool owns
+
+        The slot's profile directory belongs to a browser that is still running
+        and will serve the next caller. Deleting it would turn this fix into a
+        worse bug than the one it closes: the leak wastes disk, this would
+        corrupt a live browser's profile for every subsequent fetch.
+
+        The claim is structural rather than incidental — the parent creates a
+        directory only when it has no slot — and this is what holds it that way.
+        """
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot_dir = tempfile.mkdtemp(prefix="kindly-pooled-test-")
+        self.addCleanup(shutil.rmtree, slot_dir, True)
+        slot = SimpleNamespace(
+            host="127.0.0.1",
+            port=9222,
+            slot_id="slot-0",
+            user_data_dir=SimpleNamespace(name=slot_dir),
+            browser_executable_path=None,
+        )
+        pool = AsyncMock()
+        pool.acquire = AsyncMock(return_value=slot)
+        pool.release = AsyncMock()
+
+        seen: dict[str, Any] = {}
+
+        async def _record(cmd: list[str], **kwargs: Any) -> str:
+            """Capture the pooled argv, then answer as a clean run.
+
+            Args:
+                cmd: The worker argv.
+                **kwargs: The runner's keyword arguments, unused here.
+
+            Returns:
+                The worker's stdout.
+            """
+            seen["cmd"] = cmd
+            return WORKER_STDOUT.decode()
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_pipe_probe",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new=_record,
+            ),
+        ):
+            await fetch_html_via_nodriver("https://example.com")
+
+        assert os.path.isdir(slot_dir), (
+            f"the pool's profile directory {slot_dir} was deleted by a fetch "
+            "that only borrowed it."
+        )
+        # And the argv still names the slot's directory rather than one the
+        # parent invented alongside it: two directories for one browser would
+        # be a silent second leak.
+        cmd = seen["cmd"]
+        assert cmd[cmd.index("--user-data-dir") + 1] == slot_dir
+        pool.release.assert_awaited_once()
+
+    async def test_a_cancelled_pooled_run_keeps_the_slots_directory_and_releases_once(
+        self,
+    ) -> None:
+        """Hold both pooled guarantees on the path that unwinds, not the one that returns
+
+        The clean-run case above already kills the obvious mutant — a `finally`
+        that deletes whichever directory it finds. This is the path that mutant
+        would most plausibly be *written* on: the cleanup and the slot release
+        live in the same `finally`, and that block runs while a
+        `CancelledError` is propagating.
+
+        Both halves are asserted together because the failure modes compound. A
+        deleted pooled directory corrupts a live browser's profile for every
+        later caller; a slot released twice hands one browser to two of them,
+        which is the defect the four-statement ordering in the restart block
+        exists to prevent. Cancellation is the commonest way a real fetch ends,
+        so it is the path where neither may be true.
+        """
+        from kindly_web_search_mcp_server.scrape.universal_html import (
+            fetch_html_via_nodriver,
+        )
+
+        slot_dir = tempfile.mkdtemp(prefix="kindly-pooled-cancel-")
+        self.addCleanup(shutil.rmtree, slot_dir, True)
+        slot = SimpleNamespace(
+            host="127.0.0.1",
+            port=9222,
+            slot_id="slot-0",
+            user_data_dir=SimpleNamespace(name=slot_dir),
+            browser_executable_path=None,
+        )
+        pool = AsyncMock()
+        pool.acquire = AsyncMock(return_value=slot)
+        pool.release = AsyncMock()
+
+        with (
+            pinned_environment(KINDLY_NODRIVER_REUSE_BROWSER="1"),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html.get_chromium_pool",
+                new_callable=AsyncMock,
+                return_value=pool,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_pipe_probe",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "kindly_web_search_mcp_server.scrape.universal_html._run_worker_command",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError(),
+            ),
+            contextlib.suppress(asyncio.CancelledError),
+        ):
+            await fetch_html_via_nodriver("https://example.com")
+
+        assert os.path.isdir(slot_dir), (
+            f"the pool's profile directory {slot_dir} was deleted while a "
+            "cancellation unwound. The next caller to take this slot gets a "
+            "browser whose profile is gone."
+        )
+        pool.release.assert_awaited_once()
 
     async def test_pool_acquisition_failure_falls_back_to_an_unpooled_run(self) -> None:
         """Degrade to a cold browser rather than failing when the pool is unusable
