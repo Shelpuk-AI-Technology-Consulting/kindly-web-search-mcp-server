@@ -75,7 +75,7 @@ lxml==6.1.2
 lxml_html_clean==0.4.5
 markdownify==1.2.3
 MarkupSafe==3.0.3
-mcp==1.29.1
+mcp==1.28.1
 mss==10.2.0
 nodriver==0.50.3
 packaging==26.3
