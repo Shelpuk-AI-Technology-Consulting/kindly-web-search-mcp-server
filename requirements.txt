@@ -22,7 +22,7 @@ pycparser==2.23
 pydantic-settings==2.12.0
 pydantic==2.12.5
 pydantic_core==2.41.5
-python-multipart==0.0.21
+python-multipart==0.0.31
 referencing==0.37.0
 rpds-py==0.30.0
 sse-starlette==3.1.2

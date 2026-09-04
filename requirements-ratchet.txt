@@ -91,7 +91,7 @@ pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
-python-multipart==0.0.32
+python-multipart==0.0.31
 pytz==2026.3.post1
 referencing==0.37.0
 regex==2026.8.31
