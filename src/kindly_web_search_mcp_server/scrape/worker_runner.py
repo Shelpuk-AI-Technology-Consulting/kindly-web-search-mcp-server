@@ -71,10 +71,22 @@ new branch does not have to re-derive it:
   that branch is then the native one for a POSIX-only body, and the
   ``--platform win32`` one for a Windows-only body; both exist.
 * Otherwise use ``os.name``, which leaves the branch checked on **both** runs.
-  Converting :func:`_terminate_process_tree` "for consistency" would make mypy
-  treat its whole ``taskkill`` path unreachable on Linux and stop checking it —
-  measured with an injected error, reported under ``os.name`` and not under
-  ``sys.platform``.
+
+**:func:`_terminate_process_tree` used to be this rule's example and is now its
+counter-example.** It was ``os.name``-guarded for exactly the reason above, and
+the price of converting it was measured: with ``sys.platform``, mypy treats its
+whole ``taskkill`` path as unreachable on Linux and stops checking it there —
+an injected error is reported under ``os.name`` and not under ``sys.platform``.
+It converted anyway, because the tree walk added to its POSIX branch reads
+``os.killpg``, ``os.getpgid`` and ``signal.SIGKILL``, all POSIX-only in
+typeshed, and the first rule outranks the second whenever both apply. The
+``--platform win32`` invocation is now that branch's only reader, which is what
+makes that invocation load-bearing rather than a belt-and-braces extra.
+
+The rule to take from the pair: **ask which stdlib the branch bodies touch, not
+which reads more tidily.** A function acquires a platform-exclusive call long
+after its guard was written, and the guard does not announce that it has gone
+stale.
 
 ``getattr``/``hasattr`` is a third spelling already used below. It is for
 optional *attributes* on a module that does exist, and it is not a substitute

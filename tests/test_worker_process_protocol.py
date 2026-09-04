@@ -727,10 +727,15 @@ def test_mypy_accepts_the_committed_target_for_windows(tmp_path: Path) -> None:
     is not reported, and under ``--platform win32`` it is. Without this case
     that branch is unchecked on every runner this project currently has.
 
-    Note what it does *not* cover: ``_terminate_process_tree``'s Windows branch
-    guards on ``os.name``, which mypy cannot narrow, so the native run reads it
-    and this run adds nothing there. That asymmetry is deliberate and is pinned
-    by ``test_each_platform_guard_uses_the_spelling_its_checking_needs``.
+    ``_terminate_process_tree`` used to be the exception here: it guarded on
+    ``os.name``, which mypy cannot narrow, so the native run read its Windows
+    branch and this run added nothing there. That is no longer true. Its POSIX
+    branch now walks a process tree with ``os.killpg``, ``os.getpgid`` and
+    ``signal.SIGKILL``, all POSIX-only in typeshed, so it converted to
+    ``sys.platform`` and its Windows branch joined
+    ``_subprocess_launch_options``'s in being readable only here. **Two
+    functions now depend on this run, not one**, and the spelling of each is
+    pinned by ``test_each_platform_guard_uses_the_spelling_its_checking_needs``.
 
     Args:
         tmp_path: Home for this run's cache. ``--platform`` is cache-affecting,
@@ -746,8 +751,9 @@ def test_mypy_accepts_the_committed_target_for_windows(tmp_path: Path) -> None:
     _assert_resolved(result)
     assert result.returncode == 0, (
         "mypy rejected the committed target under --platform win32. The Windows "
-        "branch of _subprocess_launch_options is unreachable on a native run, "
-        f"so this is the only case that reads it.\n{result.stdout}"
+        "branches of _subprocess_launch_options and _terminate_process_tree are "
+        "both unreachable on a native run, so this is the only case that reads "
+        f"either.\n{result.stdout}"
     )
 
 

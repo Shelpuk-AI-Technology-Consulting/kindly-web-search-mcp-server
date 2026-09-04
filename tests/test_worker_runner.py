@@ -425,19 +425,6 @@ async def test_runner_diagnostics_keep_their_order() -> None:
     ], stages
 
 
-# --------------------------------------------------------------------------
-# Platform guards, and why the two are spelled differently
-# --------------------------------------------------------------------------
-
-# The rule, so a future reader can apply it without re-measuring:
-#
-#   Use `sys.platform` where the branch touches stdlib that exists only on that
-#   platform AND a second mypy run under `--platform win32` covers it.
-#   Use `os.name` where you want the branch checked on EVERY run.
-#
-# mypy narrows on `sys.platform` and never on `os.name`, and it does not
-# type-check code it considers unreachable. So the spelling decides which runs
-# read the branch at all, and the two functions below want different answers.
 #: Ceiling on waiting for the fixture child to announce itself by writing its
 #: pid file. Generous on purpose: it bounds a hang, it is not a measurement of
 #: how fast an interpreter starts, and a tight value here is the flake generator
@@ -988,6 +975,28 @@ def test_the_kill_loop_survives_a_descendant_that_has_already_exited() -> None:
     assert 13 in signals.killed_pids
 
 
+# --------------------------------------------------------------------------
+# Platform guards, and which spelling each branch needs
+# --------------------------------------------------------------------------
+
+# The rule, so a future reader can apply it without re-measuring:
+#
+#   Use `sys.platform` where the branch touches stdlib that exists only on that
+#   platform AND a second mypy run under `--platform win32` covers it.
+#   Use `os.name` where you want the branch checked on EVERY run.
+#
+# mypy narrows on `sys.platform` and never on `os.name`, and it does not
+# type-check code it considers unreachable. So the spelling decides which runs
+# read the branch at all.
+#
+# Both functions below now want the first rule, and the second is kept rather
+# than deleted because `_terminate_process_tree` is the record of what it costs
+# to apply it. That function was correctly `os.name`-guarded -- measured, with
+# an injected error -- until its POSIX branch acquired `os.killpg`,
+# `os.getpgid` and `signal.SIGKILL`, at which point the first rule started
+# applying and outranked the second. A guard does not announce that it has gone
+# stale; the branch bodies are what decide, not which spelling reads more
+# tidily.
 PLATFORM_GUARDS = {
     # Touches `subprocess.STARTUPINFO`, which typeshed declares win32-only. Under
     # `os.name` this produced `Module has no attribute "STARTUPINFO"` the moment
@@ -1014,13 +1023,19 @@ PLATFORM_GUARDS = {
 def test_each_platform_guard_uses_the_spelling_its_checking_needs(
     function_name: str, guards: tuple[str, str]
 ) -> None:
-    """Pin both halves of the two-spelling rule, so a tidy-up cannot erase coverage
+    """Pin each guard's required spelling and its forbidden one
 
-    The asymmetry reads as an oversight and is not. Asserting only the
-    `sys.platform` half would leave a "make it consistent" edit free to convert
-    the other function and silently stop Linux from checking its Windows branch;
-    asserting only the `os.name` half would let the `STARTUPINFO` defect return.
-    Both directions are pinned because each fails a different way.
+    Both entries now require `sys.platform`, and the forbidden half is what
+    earns this case its place. Neither conversion back to `os.name` produces a
+    failure anyone would notice locally: `_subprocess_launch_options` would let
+    the `STARTUPINFO` defect return, and `_terminate_process_tree` would report
+    three `attr-defined` errors only under `--platform win32` — a run no
+    developer makes by hand. A "make it consistent" edit is therefore cheap to
+    write, invisible to a native `mypy`, and this is what stops it.
+
+    The table is parametrized rather than collapsed into one assertion because
+    the two functions arrived at the same spelling for different reasons, and
+    the comments above each entry are the record of that.
 
     Args:
         function_name: The guarded function in `worker_runner.py`.

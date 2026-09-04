@@ -562,11 +562,22 @@ it carries no X-number.
   mypy does not type-check code it considers unreachable**, so that branch is now
   unread on a native run — closed here by a second invocation under `--platform
   win32`, which E4-5 inherits along with the separate `--cache-dir` it needs.
-  `_terminate_process_tree` deliberately **keeps** `os.name`: measured, an error
+  `_terminate_process_tree` deliberately **kept** `os.name`: measured, an error
   injected into its Windows branch is reported natively under `os.name` and not
   under `sys.platform`, so converting it "for consistency" would delete that
   coverage. Both spellings are pinned, and the procedure is in the module
   docstring.
+
+  **It converted anyway, and the measurement above is still true.** The
+  browser-orphan bug fix added a `/proc` tree walk to that function's POSIX
+  branch, reading `os.killpg`, `os.getpgid` and `signal.SIGKILL` — all
+  POSIX-only in typeshed — so the first rule started applying and outranks the
+  second whenever both do. The recorded price was paid knowingly: the Windows
+  body is now unreachable on a native run and is read only by the `--platform
+  win32` invocation, which makes that invocation load-bearing rather than a
+  belt-and-braces extra. The rule worth carrying forward is that a guard does
+  not announce when it has gone stale — a function acquires a
+  platform-exclusive call long after its spelling was chosen.
 
   `pid`: the guard is dead and went. Typeshed declares `Process.pid: int` and
   CPython assigns it once in `__init__` from `transport.get_pid()`, never
@@ -622,11 +633,19 @@ it carries no X-number.
   fixture child is killed at the deadline and its PID tree is gone", an artefact
   only this step produces, and the column above said `impl E0-2` alone — the
   ordering was accidental, held only by both steps sitting in one wave for one
-  engineer. And **E7-2 cannot reap the descendant through the runner**:
+  engineer. And **the descendant cannot be reaped through the runner**:
   `_run_worker_command` surfaces worker frames only after the run ends, so the
-  pid in the readiness frame is unreachable mid-run. That step needs a second
-  channel — a `--pid-file` flag is the intended shape — and it is deliberately
-  not built here, because an unused flag is an unchecked one.
+  pid in the readiness frame is unreachable mid-run. A second channel is needed
+  — a `--pid-file` flag is the intended shape — and it is deliberately not built
+  here, because an unused flag is an unchecked one.
+
+  **Built later, in that shape, by the browser-orphan bug fix**, which is the
+  first thing to consume it: its cancellation cases must name the browser
+  stand-in that has to be gone, and cancellation is exactly the path on which no
+  frame arrives. That fix also added `--grandchild-new-session`, because the
+  descendant this step ships inherits the child's process group while a
+  production Chromium `setsid`s itself out of one, and a reaper has to survive
+  both topologies.
 - **E3-2.** Ephemeral port, readiness handshake, configurable result set including
   **zero results** (§6.1). *Verify:* `search_searxng` parses its responses; with
   `SEARXNG_BASE_URL` pointed at it and higher-priority provider variables cleared,
@@ -1042,6 +1061,42 @@ duplicating tests or touching the same files.
   stdlib at all. `worker_runner.py`'s module docstring states the procedure and
   `tests/test_worker_runner.py` pins both existing spellings; changing
   `_terminate_process_tree`'s guard means updating `PLATFORM_GUARDS` with it.
+
+  **CLOSED by the browser-orphan bug fix, ahead of this step, and two of the
+  paragraphs above are retracted.** This step's "killed parent leaves no orphan"
+  bullet no longer starts red; every other bullet is untouched, the four
+  `subsystem` cases are **retained unchanged** with no ledger relocation rows,
+  and this step's `blocked by` column does not move — the fix is a bug fix and
+  does not claim this step.
+
+  *Retraction 1 — a process group is not the POSIX candidate.* Measured:
+  `nodriver_worker._launch_chromium` already starts Chromium with
+  `start_new_session` on POSIX, so the browser leads a session of its own and no
+  group kill aimed at the worker reaches it. Worse, `_subprocess_launch_options`
+  returns no such option, so the worker shares the *server's* process group and
+  `os.killpg(os.getpgid(pid), SIGKILL)` written literally signals the server.
+  What survives is parentage: the walk must run **before** the kill, because
+  afterwards the descendants have reparented and cannot be attributed again.
+
+  *Retraction 2 — promoting `taskkill` does not cost the return-code case.*
+  This entry said that case "must update the case deliberately rather than
+  deleting it". Neither was needed: the `if proc.returncode is None:` guard
+  survives and simply gates the `terminate()` fallback instead of `taskkill`, so
+  every assertion in it still holds and only its docstring rationale changed.
+  Retiring it would have discarded three measured mutants and left
+  `_windows_branch_of` with no caller.
+
+  Also settled here, so this step inherits decisions rather than questions: a
+  Win32 job object was rejected (it needs `ctypes` against `kernel32` and a
+  handle held for the worker's lifetime, on a platform with no standing lane);
+  `taskkill`'s exit code must not gate anything, since `/T` returns 128 whenever
+  any tree member had already exited; and the profile-directory half of the leak
+  moved to the parent, because a `SIGKILL`ed worker runs no finalizers. What is
+  **not** closed and belongs to somebody: `_terminate_process_tree` still reports
+  nothing, so a walk that found no `/proc` and a Windows process that defeats
+  both `taskkill /F` and `TerminateProcess` are each invisible; and a worker that
+  dies *before* the terminator runs orphans its browser where no walk can reach
+  it.
 
   **A pre-existing cost this step should decide about, measured by E2-3's review
   and owned by nobody yet.** With diagnostics enabled, every worker run is padded

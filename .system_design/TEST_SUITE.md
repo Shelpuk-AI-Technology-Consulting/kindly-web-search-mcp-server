@@ -89,7 +89,10 @@ specific:
 - `universal_html.fetch_html_via_nodriver` and the parent-side streaming path —
   `_read_stdout_stream`, `_read_stderr_stream`, `_consume_stderr_line`,
   `_emit_worker_heartbeat`, `_terminate_process_tree`. The 3 stale loader tests
-  target this.
+  target this. *(Since narrowed: the browser-orphan fix gave
+  `_terminate_process_tree` four subsystem cases against a real process tree,
+  plus L1 cases for the tree walk it now performs. The stream readers and the
+  heartbeat still stand.)*
 - **All of `scrape/chromium_pool.py`** (372 lines) — no test file references it.
   *(Since narrowed: `tests/test_chromium_pool_slot_start.py` covers
   `ChromiumSlot._start`'s snap DevTools budget. The rest of the module stands.)*
@@ -552,10 +555,22 @@ later in `load_url_as_markdown`) plus parsed diagnostics; a hanging child is
 killed at the deadline; a killed parent leaves no orphaned child; garbage on
 stderr does not crash the parent; a non-zero exit surfaces a readable error.
 
+*The "killed parent leaves no orphaned child" bullet has since been closed
+ahead of this step by the browser-orphan bug fix, which rewrote
+`_terminate_process_tree` on both platforms and brought its own subsystem
+cases. Every other bullet here is untouched, and the four subsystem cases this
+step inherits are retained unchanged.*
+
 **Orchestration**, preserved from the stale sandbox tests: a retryable connect
 error is retried up to the configured attempts; each failed attempt is
 terminated before the next; a non-retryable error is not retried; the profile
-directory is cleaned up with `ignore_cleanup_errors`; and a missing browser
+directory is cleaned up (**by the parent now, not the worker** — see the
+browser-orphan fix: the worker's `TemporaryDirectory` could not survive its own
+`SIGKILL`, so `fetch_html_via_nodriver` creates the unpooled directory, passes
+it as `--user-data-dir` and removes it in the `finally` that returns the pool
+slot; the worker's own `ignore_cleanup_errors` branch remains for a pooled slot
+that carries no directory and for a direct worker invocation); and a missing
+browser
 executable surfaces the install and `KINDLY_BROWSER_EXECUTABLE_PATH` guidance
 rather than an error from Chromium. That last one is here rather than at L1
 because the resolver's contribution is only `None` — the translation into
@@ -630,8 +645,16 @@ that is not expressible as a mode selector.
 | `--stdout TEXT` | UTF-8 through the binary buffer, nothing added. |
 | `--stderr-garbage` | All four malformations the line router must survive. |
 | `--spawn-grandchild` | One descendant, pid reported in the readiness frame. |
+| `--grandchild-new-session` | Give that descendant its own session, as a browser has. |
+| `--pid-file PATH` | Write both pids to PATH as JSON, **before** the readiness frame. |
 | `--hang` | Block after all other output. |
 | `--exit-code N` | Exit status, default `0`. |
+
+The last two arrived with the browser-orphan fix. `--grandchild-new-session`
+exists because the default descendant inherits this script's process group while
+a production Chromium calls `setsid` for itself, and a reaper has to survive
+both — a fixture offering only one topology lets half a fix look complete.
+`--pid-file` is the second channel the paragraph below asks for.
 
 **Readiness is a frame on stderr, always first, always flushed.** Stderr rather
 than stdout because stdout is the payload channel the parent reads as the page.
@@ -646,9 +669,13 @@ runner appends worker frames to the caller's diagnostics only *after* the run
 ends, and not at all on the cancellation path; with `diagnostics=None` it parses
 and discards them. So a test that drives the fixture through the runner cannot
 read the descendant's pid while the run is in flight, and therefore cannot reap
-the tree from it. E7-2 needs a second channel for that — a `--pid-file` written
-before the readiness frame is the intended shape. Not built here: nothing
-consumes it yet, and an unused flag is an unchecked one.
+the tree from it. A second channel is needed for that — a `--pid-file` written
+before the readiness frame is the intended shape. **Built by the browser-orphan
+fix, in exactly that shape**, because that fix is the first thing to need it:
+its cancellation cases have to name the browser stand-in that must be gone, and
+cancellation is precisely the path on which no frame arrives. The flag is not an
+unchecked one — its ordering is asserted, and the guard registry counts the
+cases.
 
 **Both pipes must be drained by whoever spawns it.** The stdout payload is
 written before the hang, so a harness reading only stderr blocks the child
@@ -675,11 +702,16 @@ zero worker entries the way the real worker does with diagnostics off; the
 
 **"A killed parent leaves no orphan" has two readings**, and the fixture serves
 one. E7-2's entry reads it as the tree-kill defect — the parent kills the child
-and orphans the grandchild — which `--spawn-grandchild` drives. §5.2's own
-sentence can also be read as killing the process that *runs* the runner and
-asserting the worker child is gone; that needs a killable parent harness this
-step does not ship, and today's code has no process group, job object or
-`PDEATHSIG` to satisfy it.
+and orphans the grandchild — which `--spawn-grandchild` drives. **That reading
+is now closed**: the browser-orphan fix made `_terminate_process_tree` walk the
+worker's descendants before killing it, and the cases live beside the runner.
+§5.2's own sentence can also be read as killing the process that *runs* the
+runner and asserting the worker child is gone; that reading is still open. It
+needs a killable parent harness no step ships, and the fix deliberately added
+**no** process group, job object or `PDEATHSIG` — a process group at the
+worker's spawn was measured and rejected, because Chromium `setsid`s itself out
+of any such group and, written against today's spawn, the call would signal the
+server's own group.
 
 ### 5.2b The SearXNG-contract fixture server — built in E3-2
 
@@ -1320,6 +1352,11 @@ conversion bug.
    inverting it to `is not None` (taskkill fires *only* at processes that have
    already exited, never at the hung one it exists to reap), and dropping the
    wrong conjunct. The second is worse than the one a grep was written to catch.
+   *(The browser-orphan fix changed what that guard gates — `taskkill` now runs
+   first and the guard protects the `terminate()` fallback — and changed nothing
+   about the guard itself. Every assertion below still holds and the case was
+   deliberately not retired: retiring it would have discarded the three measured
+   mutants and left `_windows_branch_of` with no caller.)*
    `test_terminate_process_tree_guards_only_on_the_return_code` names the
    operator and both operands; all three mutants were run against it and all
    three fail.
