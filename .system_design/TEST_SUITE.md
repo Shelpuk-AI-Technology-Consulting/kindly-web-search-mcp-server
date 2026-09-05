@@ -189,22 +189,150 @@ operator meets first: a key that is wrong, expired, or revoked. None has a
 timeout case.
 
 The instrument is settled and cheap — `MockTransport` is already how
-`test_searxng_unit.py` works — so what is missing is the work, not a decision
-about how to do it. Each provider needs its documented success shape, the
+`test_searxng_unit.py` works — so what was missing was the work, not a decision
+about how to do it. Each provider needed its documented success shape, the
 malformed-item and empty-result paths it already claims to handle, and the five
 transport-level failures: `401`, `429`, a non-JSON body, a JSON body of the wrong
 shape, and a timeout.
 
-**One production defect is in scope here rather than filed separately**, because
-it is the thing that makes these errors hard to act on:
-`search_searxng` catches every per-instance exception in its multi-URL loop and
-re-raises `SearxngError(f"All configured SearXNG instances failed. Last error:
-{last_error}")` **without `from`**, so the branch's own message survives only as
-a substring of an aggregate and the exception chain is discarded entirely. The
-403 branch exists to tell an operator "enable the JSON format"; today that
-sentence reaches them flattened into a string with no traceback behind it. Fix
-the chaining as part of pinning the behaviour, so the assertion is written
-against an error worth raising.
+**Done, in E5-8 (2026-09-05).** The five transport failures live in
+`tests/test_search_provider_error_paths.py`, driven for all six providers from
+one `ProviderCase` table — one module rather than six so the `MockTransport`
+helper has a single copy. The parsing claims stay in the per-provider modules,
+which is where the tree already keeps them. Re-counted after the change, not
+derived by adding the new cases to the old figures:
+
+| Provider | Selection order | Unit-module tests | Shared error-path rows |
+|---|---|---|---|
+| Serper | **1st — the default** | 5 (was 1) | 5 |
+| SerpBase | 2nd | **6 (was 0 — the module is new)** | 5 |
+| Tavily | 3rd | 5 (was 1) | 5 |
+| SearXNG | 4th | 13 (was 9) | 5 |
+| Sofya | 5th | 13 (was 11) | 5 |
+| You.com | 6th | 15 (unchanged — already covered) | 5 |
+
+Thirty error-path rows plus one case for the SearXNG aggregate. Every provider
+now has `401`, `429`, a non-JSON body, a wrong-shaped JSON body and a timeout.
+
+**Nothing was retired; the three overlapping SearXNG cases were rewritten in
+place.** `test_search_searxng_raises_on_403`, `..._on_429` and
+`..._on_invalid_json` kept their node ids and gained the assertions the table
+cannot make. That is the ledger's own stated preference — a rewrite keeps the id,
+so no `## Relocated claims` row is needed and nothing rests on a sentence in a
+pull request. The table and those three cases are not two owners of one claim:
+the table owns the contract all six providers share, and the rewritten cases own
+the *wording* of SearXNG's per-status messages, which is that provider's own
+choice.
+
+**`tests/test_serpbase_unit.py` is pytest-style, unlike its five siblings.**
+`scripts/check_plan_dag.py` rejects a new `unittest`-style module that no E11
+migration batch claims, which is how the decision surfaced: enlarging E11-1 to
+convert a file written after that migration was planned is worse than writing it
+in the target style. Note for whoever edits it — the guard reads the file as
+**text**, so naming the framework beside `TestCase` anywhere in the module, its
+docstring included, puts it back in the batch's scope. Measured.
+
+**Three measurements worth carrying, each of which made a case stronger:**
+
+- **SearXNG's per-status arms are not killable by the aggregate's message.** The
+  aggregate quotes the per-instance error, so its message contains the status
+  whichever arm produced it. Measured: replacing the `403` arm's condition with
+  `False`, or the `429` arm's, leaves an aggregate whose message still contains
+  "403" / "429", and a containment assertion on the number passes on a provider
+  that no longer classifies anything. What separates them is the **chain**: the
+  arms are asserted through `__cause__`, against the message each arm actually
+  produces. So the production fix below is what makes those branches testable at
+  all, not merely their errors nicer.
+- **A container guard driven with an object is a case that cannot fail.** The
+  `if not isinstance(raw_results, list)` guards are exercised with a JSON `null`,
+  not with an object. Measured: with the guard removed, an object is iterable,
+  the loop walks its **keys** — strings, which the item guard drops — and the
+  function returns the same answer it would have anyway. `null` is not iterable,
+  so removal raises `TypeError` and the case fails. `null` is also the shape a
+  JSON API sends for "nothing here".
+- **A malformed-item case built only from malformed *objects* cannot see the
+  `isinstance(item, dict)` guard.** SearXNG's existing case had four object
+  entries and survived that guard's deletion; a non-object entry was added to its
+  payload, which is what a real instance can return.
+
+**A whole-guard mutation never asks the per-conjunct question.** The first
+mutation run deleted each item guard entire and reported no survivor. Deleting
+one *conjunct* at a time found **nine**: the `snippet` conjunct in Serper,
+SerpBase and Tavily; SearXNG's whole title guard, its `not title.strip()` and its
+`not snippet.strip()`; and the `title` conjunct in Sofya and You.com — those two
+masked by the `link` conjunct, because every bad-title entry in those payloads
+also carried a bad URL. One payload entry per condition kills eight. The rule
+this repository already records — one mutation per conjunct — applies to the
+*payload* as much as to the mutant: a list that trips every guard can leave most
+conditions unasserted.
+
+**The ninth is equivalent, and no entry should be added for it.** SearXNG's
+`not link.strip()` is subsumed by `_looks_like_url` on the next line: a string
+whose `.strip()` is falsy is whitespace-only, and `urlparse` gives whitespace no
+scheme, so the URL test rejects exactly the same inputs. Measured over `""`,
+`" "`, `"   "`, `"\t\n"` and `"\xa0"`. A mutation run will report it forever;
+it is triaged in the docstring of the case that would have had to kill it.
+
+**Named follow-up, deliberately not absorbed here: the missing-credential branch
+is covered for You.com alone.** Each provider's `_get_*_api_key` raises its
+`*ConfigError` when the variable is unset, and only
+`test_youcom_unit.py::test_missing_key_raises_config_error` asserts it. That is a
+*configuration* path, not one of the five transport failures E5-8 is scoped to,
+and it is named in neither this section's target list nor the plan step — so it
+is recorded rather than folded in. It is worth a small change of its own: this is
+precisely the base-class relationship that makes a transport case vacuous, so
+pinning it per provider is cheap insurance for the next author.
+
+**Four branches had no owner, and mutation found them where reading did not.**
+`searxng.py`'s `results`-is-a-list guard and its `num_results` cap, and the same
+two in `sofya.py`. All four now have a case in their provider's unit module. The
+§9 parsing row would have been flipped to *covered* with them untested if this
+step had trusted the per-provider test counts instead of measuring.
+
+**The timeout row has no branch for five of the six providers**, and that is
+recorded in the case rather than left for a mutation run to report as a hole.
+SearXNG's loop catches every exception, so removing that arm fails its row; the
+other five simply do not catch, and the row is a regression guard — it fails the
+day someone wraps the request in `except Exception: return []`, which would turn
+an operator-visible timeout into an empty result set indistinguishable from a
+query with no hits. It pins **propagation**, not **arming**: see §14 for what
+SearXNG's default arms, which is nothing.
+
+**Vacuity is closed three ways at once, and all three are needed.** Every
+provider's `*ConfigError` subclasses its `*Error`, so a case that loses its
+credential raises the *expected base type* having sent no request. So each row
+(a) runs on an environment cleared to nothing and rebuilt additively — §5.2b's
+rule, and SearXNG alone reads nine variables at the point of use — (b) asserts
+the **exact** exception class, and (c) asserts the mocked transport was reached.
+Measured: with only `SEARXNG_BASE_URL` managed, an ambient `SEARXNG_HEADERS_JSON`
+raises `SearxngConfigError` before any request is sent, and a base-class
+assertion passes on an exchange that never happened.
+
+**Statuses are read structurally, never matched in the message.**
+`status_code_of` walks the `__cause__` chain to an `httpx.HTTPStatusError` and
+reads `response.status_code`. Not tidiness: SerpBase sends its credential as a
+URL query parameter, so httpx's own error message quotes a URL containing the API
+key, and a message assertion would make that key part of a pinned expectation.
+§14 records the leak itself.
+
+**One production defect was in scope here rather than filed separately** —
+**FIXED in E5-8 (2026-09-05)** — because it is the thing that made these errors
+hard to act on: `search_searxng` catches every per-instance exception in its
+multi-URL loop and re-raised `SearxngError(f"All configured SearXNG instances
+failed. Last error: {last_error}")` **without `from`**, so the branch's own
+message survived only as a substring of an aggregate and the exception chain was
+discarded entirely. The 403 branch exists to tell an operator "enable the JSON
+format"; that sentence reached them flattened into a string with no traceback
+behind it.
+
+Measured before the fix, with two instances both answering `403`: the aggregate
+arrived with **`__cause__ is None` and `__context__ is None`**. Both, not just
+`__cause__` — the `raise` sits *outside* the `except` block, so Python's implicit
+chaining does not reach it either, and `from last_error` was the only repair.
+The assertion it enables is not cosmetic: it is what makes the status-
+classification arm killable at all (above), and it pins that the aggregate chains
+to the **last** instance's failure, so a `last_error` that is never updated inside
+the loop fails the case as surely as a missing `from` does.
 
 **Launch-argument and sandbox decisions.** `_build_chromium_launch_args`,
 `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
@@ -1638,8 +1766,8 @@ The **Today** column describes *test coverage*, not implementation status.
 | Subsystem / behaviour | Today | Target layer | CI job | Owner |
 |---|---|---|---|---|
 | Provider routing, strict order, no fallback | covered | L1 | `fast` | |
-| Serper / SerpBase / Tavily / SearXNG / Sofya parsing | partial — §3.1 counts it per provider; E5-8 owns it | L1 | `fast` | |
-| Provider errors: 401, 429, malformed JSON, timeout, empty | gap — E5-8 owns it | L1 (`httpx.MockTransport`) | `fast` | |
+| Serper / SerpBase / Tavily / SearXNG / Sofya parsing | covered (E5-8) — §3.1 records what landed | L1 | `fast` | |
+| Provider errors: 401, 429, malformed JSON, timeout, empty | covered (E5-8) — all six providers, one table | L1 (`httpx.MockTransport`) | `fast` | |
 | Provider registry ⇄ docs | covered | L2 | `fast` | |
 | StackExchange / GitHub issues / GitHub discussions / Wikipedia | partial — parsing covered, failure paths thin | L1 + L2 | `fast` | |
 | arXiv + PDF extraction | partial | L1 | `fast` | |
@@ -3023,6 +3151,41 @@ is nothing to test.
   `_is_snap_browser`), which implies breakage has happened and will recur.
 - **`_split_worker_diagnostics` is dead code** (§4.3), flagged for removal under
   a separate change.
+- **SerpBase's API key travels in the URL, and reaches the caller in an error
+  message.** `serpbase.py` puts `api_key` in the request `params`, so httpx's
+  `HTTPStatusError` message quotes the full URL — key included — and
+  `server.py`'s `search_web` call has no `except` around it, so a provider
+  exception propagates out of the MCP tool. Measured on a `401`: the message
+  reads `Client error '401 Unauthorized' for url
+  'https://api.serpbase.dev/google/search?q=…&api_key=<the key>'`.
+  `redact_url_credentials` does not help as written — it strips URL *userinfo*,
+  not a query parameter. **Found by E5-8 while pinning the error paths; not
+  repaired there**, because the repair is a redaction change in a different
+  subsystem and the step was scoped to a single production edit. E5-8's cases
+  read the status structurally instead of matching the message, so nothing in
+  the suite pins the leaking string. E9-1 owns the emit boundary and is the
+  natural home; the parameter itself is SerpBase's API and cannot move.
+- **SearXNG requests carry no deadline in the shipped default.**
+  `_get_request_timeout_seconds` returns `None` when `SEARXNG_TIMEOUT_SECONDS` is
+  unset, and that `None` is passed explicitly as `client.get(timeout=None)`. In
+  httpx an explicit `None` means *no timeout*; it does not fall back to the
+  client's own `timeout=30`, so the default disarms the deadline rather than
+  inheriting one. Measured: the outbound request carries
+  `{'connect': None, 'read': None, 'write': None, 'pool': None}` on a client
+  constructed with `timeout=30`. Bounded only from outside, by the server's total
+  tool budget. **Characterised by E5-8, not repaired** —
+  `test_search_searxng_arms_no_request_timeout_by_default` pins the current
+  answer so a change to it is deliberate. Which deadline SearXNG should carry is
+  a production decision with no owner yet.
+- **The six providers disagree on what a reshaped result container means, and
+  nobody decided it.** `serper.py` and `serpbase.py` return `[]` when `organic` /
+  `organic_results` is present but not a list; `tavily.py`, `searxng.py`,
+  `sofya.py` and `youcom.py` raise. The raising side carries a recorded reason —
+  *"returning an empty list would be indistinguishable from 'no matches' and
+  would hide the mismatch"* — which argues against the silent `[]` in the two
+  providers a default deployment reaches **first**. E5-8 pins both behaviours as
+  they are and does not resolve the split; resolving it is a production change
+  and needs an owner.
 - **`_is_snap_browser` misclassified the commonest snap install. CLOSED** — the
   repair landed as a change of its own, which is what this entry said it
   deserved. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu and

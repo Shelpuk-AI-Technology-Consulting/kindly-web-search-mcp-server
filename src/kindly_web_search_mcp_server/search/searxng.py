@@ -175,7 +175,17 @@ async def search_searxng(
             continue
 
     if data is None:
-        raise SearxngError(f"All configured SearXNG instances failed. Last error: {last_error}")
+        # Chained to the last per-instance failure rather than only quoting it.
+        # The `raise` sits outside the `except` block, so without `from` neither
+        # `__cause__` nor `__context__` is set, and the branch that produced the
+        # message -- the 403 arm, whose whole purpose is to tell an operator to
+        # enable the `json` format -- reaches them as a substring with no
+        # traceback behind it. `last_error` is never None here: the loop runs at
+        # least once, since `_get_searxng_base_urls` raises on an empty list, and
+        # `data` stays None only if every iteration failed.
+        raise SearxngError(
+            f"All configured SearXNG instances failed. Last error: {last_error}"
+        ) from last_error
 
     raw_results = data.get("results", [])
     if not isinstance(raw_results, list):
