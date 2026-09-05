@@ -22,12 +22,22 @@
 # per label rather than heterogeneous -- so the "unlucky placement" shape does not
 # apply here.
 #
-# 🔴 **The risk it is kept for is different and just as real: a SLIM IMAGE.** Being
-# slim is precisely a claim to carry fewer packages than the full image, and `unzip`
-# -- which `anthropics/claude-code-action` shells out to, two levels down, without
-# ever naming it in this repository -- is exactly what gets trimmed. Uniform means
-# every run fails the same way rather than one in three, which is easier to diagnose
-# and no less broken.
+# 🔴 **The SLIM-IMAGE argument that stood here is FALSIFIED, and is corrected rather
+# than deleted.** It read that the risk kept this script alive because a slim image is
+# precisely a claim to carry fewer packages, and `unzip` is what gets trimmed. That was
+# true while `claude-code-review.yml` ran on `ubuntu-slim`. It no longer does -- that
+# job is this script's only caller, and it moved to `ubuntu-latest`, which carries
+# `unzip`. Leaving the sentence would have left this file asserting the opposite of the
+# workflow that calls it, one file apart, which is the partial-fix shape this
+# repository keeps having to remove.
+#
+# 🔴 **The reason that survives is the one that never depended on the image.** `unzip`
+# is shelled out to by `anthropics/claude-code-action`, two levels down, and is named
+# NOWHERE in this repository -- so no scan of `run:` blocks can find it, and only
+# probing for the capabilities a job's ACTIONS need will. That argument held on the
+# self-hosted fleet, held on `ubuntu-slim`, and holds now. The script is a no-op on a
+# runner that already carries the package, which is the point: it costs nothing when it
+# is not needed and names the package when it is.
 #
 # ⚠️ On a GitHub-hosted runner this should SELF-HEAL rather than fail: the job has
 # passwordless sudo, so a missing package is installed and a warning emitted. Read

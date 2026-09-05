@@ -116,11 +116,15 @@ def _headline(result: str, provider: str) -> list[str]:
     """Build the opening lines stating what the run achieved.
 
     Args:
-        result: Resolved run outcome: ``ok``, ``exhausted`` or ``fatal``.
+        result: Resolved run outcome: ``ok``, ``exhausted``, ``cancelled`` or
+            ``fatal``.
         provider: Winning tier label, empty unless the result is ``ok``.
 
     Returns:
         Markdown lines.
+
+    Raises:
+        ValueError: The result is not one of the four `Resolve outcome` emits.
     """
 
     if result == "ok":
@@ -143,6 +147,40 @@ def _headline(result: str, provider: str) -> list[str]:
             "means the change would otherwise merge unreviewed. That is why "
             "this outcome is red rather than green.*",
         ]
+    if result == "cancelled":
+        # 🔴 The run was cut short. Two things cause it and both want the same
+        # response, which is why they share one branch rather than being guessed
+        # between: the job cap fired, or a newer push superseded this run
+        # (`concurrency.cancel-in-progress: true`).
+        #
+        # 🔴 **This branch exists because its absence was a wrong INSTRUCTION.**
+        # `Resolve outcome` carried no `if:`, so a cancellation skipped it and
+        # this renderer fell back to `${RESULT:-fatal}` -- announcing that the
+        # workflow needed fixing about a run that was merely killed at a cap.
+        # Measured on five killed jobs; the correct action was always to re-run.
+        return [
+            "## No review this run — the run did not finish",
+            "",
+            "**This check fails**, because the pull request has not been "
+            "reviewed. Nothing is wrong with the change, and nothing is wrong "
+            "with the workflow: the run was cancelled before it could report.",
+            "",
+            "Either it reached the job's time cap, or a newer commit superseded "
+            "it. If a newer commit superseded this run, its own review reports "
+            "and there is nothing to do here; otherwise **re-run this job**.",
+        ]
+    if result != "fatal":
+        # 🔴 A bare fall-through stood here, so ANY unrecognised value rendered
+        # the failure headline below -- a wrong-but-plausible verdict from a
+        # typo, on the surface an operator opens first. The sibling notice
+        # builder closed its own vocabulary for exactly this reason; refusing is
+        # louder than answering confidently about a run nobody classified.
+        raise ValueError(
+            f"unknown result {result!r}: the vocabulary is closed to 'ok', "
+            "'exhausted', 'cancelled' and 'fatal', which is the alphabet "
+            "`Resolve outcome` emits. Rendering an unknown value would announce "
+            "the workflow as broken about a run that was never classified."
+        )
     # 🔴 upstream. This ended "so re-running will not clear it" -- word for word
     # the claim removed from the pull request comment and the `::error::` line.
     # §14.3 treats the three as ONE voice, and this is the surface an operator
@@ -175,7 +213,8 @@ def build(
     """Build the job summary in Markdown.
 
     Args:
-        result: Resolved run outcome: ``ok``, ``exhausted`` or ``fatal``.
+        result: Resolved run outcome: ``ok``, ``exhausted``, ``cancelled`` or
+            ``fatal``.
         provider: Winning tier label, empty unless the result is ``ok``.
         tiers: Every provider attempt, whether or not it ran.
         egress_cause: Why the egress gate refused, verbatim from
@@ -269,7 +308,12 @@ def main() -> int:
     """
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--result", required=True)
+    # 🔴 Closed, not open. This is fed `${{ steps.outcome.outputs.result }}` with a
+    # `${RESULT:-fatal}` shell default, and an unrecognised value used to render the
+    # "workflow needs fixing" headline rather than being refused.
+    parser.add_argument(
+        "--result", required=True, choices=["ok", "exhausted", "cancelled", "fatal"]
+    )
     parser.add_argument("--provider", default="")
     parser.add_argument(
         "--tier",
