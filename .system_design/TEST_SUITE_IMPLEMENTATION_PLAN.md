@@ -1001,15 +1001,19 @@ duplicating tests or touching the same files.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
   HTML, length within cap) fail when the corresponding transform is disabled;
   golden matching only for handcrafted fragments — **and each golden asserts
-  which backend produced it.** E3-3 kept every fragment above trafilatura's
-  250-character `MIN_EXTRACTED_SIZE` so the production path runs, but
-  `extract_content_as_markdown` falls back to BeautifulSoup on a bare
-  `except Exception` and says nothing, so a golden alone cannot tell a passing
-  transform from a passing fallback. **Decide here where a golden lives**: E3-3's
-  the corpus admits Markdown **by name** (`README.md`) and not by extension, so a
-  golden lands only once this step widens `allowed_filenames` — a reviewed
-  two-file edit that has to say out loud what pairs the golden with its fragment,
-  because the sidecar rule pairs only HTML.
+  which backend produced it.** `extract_content_as_markdown` selects its
+  BeautifulSoup fallback on a **falsy result**, not on an exception: there is no
+  `try` around the `trafilatura.extract` call, and the three `except Exception`s
+  in `scrape/extract.py` guard its three imports. So nothing is raised and
+  nothing is logged, and a golden alone cannot tell a passing transform from a
+  passing fallback. E3-3 sized every fragment past that cliff — **measured at
+  roughly 112 extracted characters**, not at `MIN_EXTRACTED_SIZE`'s documented
+  250; §3.3 carries the measurement, and anyone moving the floor should
+  re-measure rather than reason from the setting's name. **Decide here where a
+  golden lives**: the corpus admits Markdown **by name** (`README.md`) and not by
+  extension, so a golden lands only once this step widens `allowed_filenames` —
+  a reviewed two-file edit that has to say out loud what pairs the golden with
+  its fragment, because the sidecar rule pairs only HTML.
 - **E5-6.** `_append_tail_text` — **moved by E2-3** from `universal_html.py` to
   `scrape/worker_runner.py`, with the rest of the stderr-tail chain — and the
   encoding-cookie helpers. Both addresses are in `.coveragerc-gate`'s `omit`
