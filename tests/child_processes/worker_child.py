@@ -376,6 +376,39 @@ _DESCENDANT_SOURCE = (
 )
 
 
+def _chain_record_directory(pid_file: str | None) -> str:
+    """Choose where the chain's generations record themselves.
+
+    **Beside the caller's pid file whenever there is one**, because then the
+    caller owns the directory and something else cleans it: pytest's ``tmp_path``
+    removes the whole tree after the test, whenever and however this process
+    died.
+
+    The window this closes is narrower than it first looks, and the narrower
+    claim is the measured one. The removal below runs as soon as the chain is
+    complete -- **not** at process exit -- so a child killed later, which is what
+    every reaping case does, has already cleaned up: those cases leaked nothing
+    even with ``tempfile.mkdtemp``, measured. What does leak is a child killed
+    *during* the chain wait, before the removal is reached: **5 of 10 runs** left
+    a directory behind.
+
+    A caller with no pid file still gets a temporary directory, and still has
+    that window. Nothing in the suite takes that path; it is for a developer
+    running the script by hand.
+
+    Args:
+        pid_file: The ``--pid-file`` path, or ``None``.
+
+    Returns:
+        An existing, empty directory to record into.
+    """
+    if pid_file is None:
+        return tempfile.mkdtemp(prefix="kindly-fixture-chain-")
+    record_dir = pid_file + ".chain"
+    os.makedirs(record_dir, exist_ok=True)
+    return record_dir
+
+
 def _read_chain(record_dir: str) -> list[dict[str, int]]:
     """Read whatever the descendant chain has recorded about itself so far.
 
@@ -617,7 +650,7 @@ def main(argv: list[str]) -> int:
     grandchild_pid: int | None = None
     chain: list[dict[str, int]] = []
     if args.spawn_grandchild:
-        record_dir = tempfile.mkdtemp(prefix="kindly-fixture-chain-")
+        record_dir = _chain_record_directory(args.pid_file)
         try:
             grandchild_pid = _spawn_grandchild(
                 new_session=args.grandchild_new_session,

@@ -17,9 +17,9 @@ broken. The dependency runs one way only -- these cases use the fixture child,
 and its own cases use nothing from here but the two platform probes, which are
 the pieces this module pins hardest.
 
-**Four cases are hermetic, and that is not a preference.** The walk, its stat
-parse, and the kill set it produces are driven against injected values with no
-process in existence, because the obvious mutation of a tree reaper -- one that
+**Thirteen cases are hermetic, and that is not a preference.** The walk, its
+stat parse, the kill set it produces and the reap lock they share are driven
+against injected values with no process in existence, because the obvious mutation of a tree reaper -- one that
 loses its exclusions -- signals the caller's own process group when it is run
 against a real tree, which kills the pytest session and its shell and produces
 no report at all. That is the same argument production's own signaller makes for
@@ -830,9 +830,12 @@ def test_the_deadline_watchdog_does_not_outlive_the_block_it_bounds() -> None:
     ) as child:
         pass
 
-    # The child was still hanging when the block ended, so teardown reaped it --
-    # that is one signal, and it is not the watchdog's.
-    assert child.proc.pid in signalled
+    # Exactly one signal, and it is teardown's rather than the watchdog's: the
+    # child was still hanging when the block ended, and it has no descendants,
+    # so the kill order is the root alone. Asserted as equality because
+    # membership would also pass against a watchdog that had fired early and
+    # added a second.
+    assert signalled == [child.proc.pid]
     reaped_at_teardown = list(signalled)
 
     time.sleep(PAST_DEADLINE_SECONDS)
