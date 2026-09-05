@@ -810,10 +810,14 @@ it carries no X-number.
   other with no third point, and a failure unable to name which broke. It takes
   `pid_is_alive` and `kill_pid` and nothing else.
 
-  **The Windows half is measured, not assumed.** The harness has Windows
-  branches — `taskkill /F`, `tasklist`, and a `/T` tree reap standing in for an
-  enumeration the standard library does not offer — and this repository has no
-  standing lane on any platform. §5.4b records the run.
+  **The Windows half is measured, not assumed — and the re-run earned its
+  place.** The harness has Windows branches — `taskkill /F`, `tasklist`, and a
+  `/T` tree reap standing in for an enumeration the standard library does not
+  offer — and this repository has no standing lane on any platform. A first run
+  was green; a review then asked for a change to the branch that run covered, the
+  re-run failed two cases with "generation pid N outlived the tree kill", and the
+  cause was a reordering that let `taskkill /T` walk from a root it had already
+  killed. No Linux case can see it. §5.4b records both runs.
 - **E3-5.** *Verify:* a file added there without `@pytest.mark.package` fails the
   policy test; source-checkout jobs pass `--ignore=tests/package`.
 - **E3-6.** **Production change**, not a test helper. E9-5 must observe a hostname

@@ -1625,20 +1625,47 @@ platform. So the branches were run, in the instrument E1-6 used: a throwaway
 branch carrying one temporary workflow, `git diff --stat` confirming the workflow
 file was the only difference from the merge candidate, and both deleted after.
 
-**Result, `windows-latest`, 2026-09-05.** `Python 3.13.15 (tags/v3.13.15:4061bc4)
-[MSC v.1944 64 bit (AMD64)]`, `Windows-2025Server-10.0.26100-SP0`. The three
-modules this step touches: **80 passed, 1 skipped, 0 failed** in 31.97 s. The
-whole suite: **813 passed, 3 skipped, 16 subtests, 0 failed** in 145.53 s.
+**Result, `windows-latest`, 2026-09-05, merge candidate `59cf861`.**
+`Python 3.13.15 (tags/v3.13.15:4061bc4) [MSC v.1944 64 bit (AMD64)]`,
+`Windows-2025Server-10.0.26100-SP0`, pytest 9.1.1. The three modules this step
+touches: **86 passed, 1 skipped, 0 failed** in 36.33 s. The whole suite:
+**819 passed, 3 skipped, 16 subtests, 0 failed** in 136.59 s.
 
-The one-test difference from Linux's 814/2 is
+The one-test difference from Linux's 820/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
 skips where `os.getpgid` does not exist. Nothing else diverges.
+
+🔴 **The re-run is not a formality, and this step is the evidence.** An earlier
+run of an earlier commit was green; a review then asked for a change to the very
+branch the run covered, and the re-run failed two cases with *"generation pid N
+outlived the tree kill"*. The change had reordered the Windows reap to kill the
+root and then sweep — which reads more naturally, and leaks the entire chain,
+because `taskkill /T` finds descendants through the parent id in the process
+snapshot and can only walk while the root is alive. It is the Linux path's
+"descendants before the root" rule wearing a different hat, no Linux case can
+observe it, and nothing but a run on the platform says so.
 
 **Which case reaches which branch**, because a green run over code nothing
 exercises proves less than it looks:
 
 | Windows branch | Reached by |
 |---|---|
+| `kill_pid` → `taskkill /F /PID` | the fixture child's own teardown, the depth-chain case reaping its record, and the root of every tree reap |
+| `pid_is_alive` → `tasklist` | every `wait_until_gone` assertion in §5.4a's reaping cases |
+| `kill_process_tree` → `taskkill /F /T` | the deadline case and the identical-command-line case |
+
+**What Windows does not get is a descendant *list*.** `descendants_of` returns
+nothing there, so the deadline case's "the walk found exactly these three" is
+asserted on Linux only; the "each of them is gone" half runs on both, against
+pids read from the fixture child's `--pid-file` rather than from the walk. Two
+`taskkill` facts the reap must not re-learn: it returns **128** whenever any
+member of the tree has already exited, which is the ordinary outcome, so nothing
+may gate on its status — liveness is what a caller keys on; and `/T` enumerates
+from the parent id in the process snapshot, which Windows neither maintains after
+a parent dies nor refuses to recycle, so an intermediate death can put deeper
+generations out of reach.
+
+---|---|
 | `kill_pid` → `taskkill /F /PID` | the fixture child's own teardown, and the depth-chain case reaping its record |
 | `pid_is_alive` → `tasklist` | every `wait_until_gone` assertion in §5.4a's reaping cases |
 | `kill_process_tree` → `taskkill /F /T` | the deadline case and the identical-command-line case |
