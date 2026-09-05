@@ -396,15 +396,23 @@ def kill_process_tree(
 
     # Windows has no descendant enumeration in the standard library, so the
     # platform's own tree kill stands in for one. The injected killer is called
-    # for the root anyway, so a caller observing what gets signalled sees the
+    # for the root as well, so a caller observing what gets signalled sees the
     # same pid it would see on Linux -- and `taskkill /T` runs regardless of what
     # that killer does, because the alternative is a Windows-only leak whenever a
     # case injects one. What a Windows caller does *not* get is a list of the
     # descendants; `descendants_of` says so by returning nothing.
+    #
+    # 🔴 **`/T` first, the injected killer second, and the order is the whole
+    # thing.** `/T` walks the tree from the parent id in the process snapshot, so
+    # it can only find descendants while the root is still alive; run after a
+    # kill of the root it reports "no running instance" and every generation
+    # survives. Written the other way round -- which reads more naturally, kill
+    # then sweep -- this leaked the whole chain, and a Windows run is the only
+    # thing that says so. Measured: two cases failed with "generation pid N
+    # outlived the tree kill". The Linux path states the same rule as
+    # "descendants before the root"; this is that rule wearing a different hat.
     if sys.platform == "win32" and parent_map is None:
         order = build_kill_order([], root=root, own_pid=resolved_own)
-        for pid in order:
-            kill(pid)
         if order:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 subprocess.run(
@@ -413,6 +421,8 @@ def kill_process_tree(
                     check=False,
                     timeout=REAP_TIMEOUT_SECONDS,
                 )
+        for pid in order:
+            kill(pid)
         return order
 
     snapshot = read_parent_map() if parent_map is None else parent_map
@@ -735,7 +745,6 @@ class CapturedChild:
         # joins everything already read, because the queue is destructive: a line
         # consumed by the readiness wait, by a caller synchronising on it, or by
         # an earlier report would otherwise be absent from this one.
-        fresh: list[bytes] = []
         while True:
             try:
                 line = self.stderr_lines.get_nowait()
