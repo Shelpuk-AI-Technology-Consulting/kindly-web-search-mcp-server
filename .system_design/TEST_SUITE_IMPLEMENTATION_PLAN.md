@@ -978,6 +978,23 @@ duplicating tests or touching the same files.
   one engineer can land them in any order, and splitting would multiply the
   shared `MockTransport` helper across six PRs.
 
+  **Landed 2026-09-05.** Thirty error-path rows in
+  `tests/test_search_provider_error_paths.py` plus one aggregate case; a new
+  `tests/test_serpbase_unit.py`; parsing cases added to `test_serper_unit.py`,
+  `test_tavily_unit.py`, `test_searxng_unit.py` and `test_sofya_unit.py`; and the
+  `from last_error` chaining fix in `searxng.py`. Thirty-six mutations run, no
+  survivor **once the mutations were taken per conjunct** — the first run deleted
+  each item guard whole, reported nothing, and hid nine live conditions. §3.1
+  carries the measurements; five of them changed how a case is written and are
+  worth reading before extending this work. One named follow-up is recorded
+  there: the missing-credential `*ConfigError` branch is covered for You.com
+  alone, and is a configuration path this step was not scoped to. Three things this
+  step found and deliberately did **not** repair are in §14: SerpBase's API key
+  reaching the caller inside an httpx error message, SearXNG's default arming no
+  request timeout at all, and the six providers disagreeing on what a reshaped
+  result container means. **Nothing was retired** — the three overlapping SearXNG
+  cases were rewritten in place, so no `## Relocated claims` row was needed.
+
 ---
 
 ### E6 — L2 contract tests
@@ -1429,6 +1446,12 @@ operation and would needlessly serialize this.
 Files: `tests/test_searxng_unit.py`, `tests/test_serper_unit.py`, `tests/test_sofya_unit.py`, `tests/test_tavily_unit.py`, `tests/test_youcom_unit.py`
 
 `tests/test_serper_live.py` is deliberately absent: E8-4 rewrites and migrates it.
+`tests/test_serpbase_unit.py` is deliberately absent too, for the opposite
+reason: E5-8 created it and wrote it pytest-first, so there is nothing to
+convert. `scripts/check_plan_dag.py` is what forces the choice — it rejects a
+new `unittest`-style module no batch claims — and it reads the file as text, so a
+module naming the framework beside `TestCase` even in a docstring lands back in
+this batch's scope.
 
 **E11-2** —
 Files: `tests/test_arxiv.py`, `tests/test_github_discussions.py`, `tests/test_github_issues.py`, `tests/test_stackexchange_api_client.py`, `tests/test_stackexchange_markdown.py`, `tests/test_stackexchange_parsing.py`

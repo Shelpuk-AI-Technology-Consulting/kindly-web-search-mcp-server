@@ -50,7 +50,7 @@ class TestSofyaParsing(unittest.TestCase):
 
 
 class TestSofyaSnippetSource(unittest.TestCase):
-    """Cover which response field supplies the snippet, and the empty-result path.
+    """Cover which response field supplies the snippet, and the response shape.
 
     Sofya returns extracted page text in ``content`` only when it fetched the page.
     This client requests ``search_depth="snippets"``, which explicitly does not
@@ -204,6 +204,26 @@ class TestSofyaSnippetSource(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].snippet, "")
 
+    def test_skips_an_entry_whose_title_is_not_a_string(self) -> None:
+        """Drop a result with a usable link but no usable title
+
+        Its own case rather than another entry in the all-unusable payload below.
+        There, an entry with a bad title also has a bad ``url``, so the ``link``
+        conjunct rejects it first and the ``title`` conjunct is never reached --
+        measured: deleting the ``title`` conjunct left the whole suite green. A
+        good ``url`` beside the bad title is what makes the condition observable.
+        """
+        results = self._search(
+            {
+                "results": [
+                    {"title": 7, "url": "https://odd-title.example/", "description": "s"},
+                    {"title": "Good", "url": "https://good.example/", "description": "ok"},
+                ]
+            }
+        )
+
+        self.assertEqual([result.title for result in results], ["Good"])
+
     def test_raises_when_no_returned_result_is_usable(self) -> None:
         """Fail loudly instead of returning nothing when the schema does not match
 
@@ -242,6 +262,43 @@ class TestSofyaSnippetSource(unittest.TestCase):
         self._search({"results": []}, sent=sent)
 
         self.assertEqual(sent["search_depth"], "snippets")
+
+    def test_raises_when_results_is_not_a_list(self) -> None:
+        """Refuse a reshaped `results` instead of reporting zero hits
+
+        Driven with ``null`` rather than with an object, and the difference is
+        measured: with the guard removed, an object is iterable, the loop walks
+        its **keys** -- strings, which the item guard drops -- and the function
+        returns ``[]``. The case would pass on a provider that no longer checks
+        the container. ``null`` is not iterable, so removal raises ``TypeError``.
+        It is also the shape a JSON API sends for "nothing here".
+        """
+        from kindly_web_search_mcp_server.search.sofya import SofyaError
+
+        with self.assertRaises(SofyaError) as caught:
+            self._search({"results": None})
+
+        self.assertIn("missing `results` list", str(caught.exception))
+
+    def test_returns_at_most_num_results(self) -> None:
+        """Stop at the caller's bound, which the clamped request parameter cannot
+
+        ``max_results`` is clamped to Sofya's documented 1-20 before being sent,
+        so for any ``num_results`` above 20 the request no longer carries the
+        caller's bound at all -- and nothing obliges the API to honour it below
+        20 either. The local cap is what the caller actually gets.
+        """
+        results = self._search(
+            {
+                "results": [
+                    {"title": f"R{i}", "url": f"https://e.example/{i}", "description": "s"}
+                    for i in range(5)
+                ]
+            },
+            num_results=2,
+        )
+
+        self.assertEqual([result.title for result in results], ["R0", "R1"])
 
 
 if __name__ == "__main__":

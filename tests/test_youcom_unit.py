@@ -222,6 +222,36 @@ class TestYoucomSections(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].snippet, "")
 
+    def test_skips_an_entry_whose_title_is_not_a_string(self) -> None:
+        """Drop a result with a usable link but no usable title
+
+        Its own case rather than another entry in the all-unusable payload below.
+        There, an entry with a bad title also has a bad ``url``, so the ``link``
+        conjunct rejects it first and the ``title`` conjunct is never reached --
+        measured: deleting the ``title`` conjunct left the whole suite green. A
+        good ``url`` beside the bad title is what makes the condition observable.
+        """
+        results = self._search(
+            {
+                "results": {
+                    "web": [
+                        {
+                            "title": 7,
+                            "url": "https://odd-title.example/",
+                            "description": "s",
+                        },
+                        {
+                            "title": "Good",
+                            "url": "https://good.example/",
+                            "description": "ok",
+                        },
+                    ]
+                }
+            }
+        )
+
+        self.assertEqual([result.title for result in results], ["Good"])
+
     def test_raises_when_no_returned_result_is_usable(self) -> None:
         """Fail loudly instead of returning nothing when the schema does not match"""
         from kindly_web_search_mcp_server.search.youcom import YoucomError
