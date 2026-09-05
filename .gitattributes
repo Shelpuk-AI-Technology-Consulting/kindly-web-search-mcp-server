@@ -1,0 +1,9 @@
+# The corpus is compared byte for byte.
+#
+# Two rules in section 3.3 of .system_design/TEST_SUITE.md are measured in
+# bytes: the per-tier size cap, and the golden outputs the Markdown-transform
+# tests take from these fragments. A CRLF checkout changes both, so the corpus
+# is LF in the working tree on every platform. tests/test_corpus_policy.py
+# carries the matching rule, which is what notices a file that arrived before
+# this attribute covered it.
+tests/corpus/** text eol=lf

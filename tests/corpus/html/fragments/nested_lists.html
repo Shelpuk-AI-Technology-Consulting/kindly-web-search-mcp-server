@@ -1,0 +1,24 @@
+<article>
+  <h2>Steps for a first run</h2>
+  <p>This fragment exists for one property: the depth of a nested list, and the
+  distinction between an ordered and an unordered marker one level down. A
+  transform that flattens the nesting produces output that reads as a single
+  sequence of eight steps, which is wrong, and it does so quietly.</p>
+  <ul>
+    <li>Prepare the environment
+      <ol>
+        <li>Create the virtual environment</li>
+        <li>Install the development extra</li>
+      </ol>
+    </li>
+    <li>Run the suite</li>
+    <li>Read the report
+      <ul>
+        <li>Failures first</li>
+        <li>Then skips, which are not failures but are not passes either</li>
+      </ul>
+    </li>
+  </ul>
+  <p>Text sits on the parent item beside the nested list on purpose: that is the
+  shape a flattening bug most often mangles.</p>
+</article>

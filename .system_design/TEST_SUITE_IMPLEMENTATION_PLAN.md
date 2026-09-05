@@ -672,6 +672,54 @@ it carries no X-number.
   content matching **sanitation patterns — `Set-Cookie`, `Authorization`,
   bearer-shaped tokens, email addresses, known analytics script bodies**. Seed with
   at least three handcrafted fragments.
+
+  **Landed.** `tests/corpus/html/` with `fragments/` and `snapshots/`,
+  `.gitattributes`, four seeded fragments and 135 cases in
+  `tests/test_corpus_policy.py`; the policy, its rationale and its known limits
+  are §3.3, which now carries the machine-readable half of itself in one fenced
+  JSON block. Every rule was mutation-checked — twenty mutants, no survivors.
+  Five things the build changed about the clause above.
+
+  **"At least three handcrafted fragments" became four fragments named by role.**
+  A count is satisfied by three copies of the same table, which would silently
+  remove E5-5's input for entity handling while the suite stayed green;
+  `required_fragments` pins the stems instead.
+
+  **Two of the five named sanitation categories were armed against shapes that do
+  not occur, and one was over-broad — measured, not reasoned.** `Set-Cookie` is a
+  *response header* and a saved page is a body: the two ways a cookie actually
+  reaches committed HTML are the `http-equiv` meta and a `document.cookie`
+  assignment, and a row armed only against the header form passed both. The
+  `Authorization` row matched `<h2>Authorization: Bearer tokens</h2>` — an API
+  documentation heading, which is the archetypal page this project scrapes and so
+  the archetypal snapshot somebody will want to commit — and the email row matched
+  `logo@2x.png`. Both false positives are committed as negative specimens. The
+  table also gained a `session_identifier` row, which §3.3's prose asked for and
+  no category named, and three analytics vendors beside Google.
+
+  **The size cap is per tier, because `forbidden` closes less than it looks.**
+  Forbidding `source_url` on a fragment stops a page *already committed* as a
+  snapshot being moved into `fragments/` with its provenance intact. It does
+  nothing about a fresh commit, which has no prior provenance to delete and is
+  how a real page actually arrives. The 8 KB fragment cap is what stands in for
+  review on that route; §3.3 states it as the weaker guarantee it is.
+
+  **Fragments carry a prose floor, and that is a constraint on E5-5, not on this
+  step.** `extract_content_as_markdown` falls back to BeautifulSoup whenever
+  trafilatura's result is falsy — on a falsy *result*, not on an exception, since
+  there is no `try` around that call — and "small handcrafted fragments" are
+  below the cliff by construction, so goldens taken from them would have pinned
+  the fallback rather than the production path. **The cliff was measured at
+  roughly 112 extracted characters, not at `MIN_EXTRACTED_SIZE`'s documented
+  250**: lowering that setting moved the cliff down, raising it did not move it
+  up. 250 is kept as the floor because it is about 2.2x the measured cliff, and
+  §3.3 records the measurement so the next reader does not re-derive the wrong
+  mechanism from the setting's name. The floor is enforced here because fragment
+  content is chosen here.
+
+  **The snapshot tier ships empty**, so its committed-tree cases are vacuous and
+  only the synthetic cases carry those claims. The first real snapshot is the
+  first time they run on committed bytes and should be reviewed as such.
 - **E3-4.** §5.4: readiness handshake, ephemeral ports, isolated profile
   directories, PID-tree cleanup keyed on spawned PIDs, child log capture on
   failure. Test-only. Blocked by E3-1, whose fixture child is the only thing in
@@ -944,7 +992,16 @@ duplicating tests or touching the same files.
   `_apply_markdown_cap`, `_build_md_suffix_url` over E3-3's fragments.
   *Verify:* structural assertions (headings preserved, code fences intact, no raw
   HTML, length within cap) fail when the corresponding transform is disabled;
-  golden matching only for handcrafted fragments.
+  golden matching only for handcrafted fragments — **and each golden asserts
+  which backend produced it.** E3-3 kept every fragment above trafilatura's
+  250-character `MIN_EXTRACTED_SIZE` so the production path runs, but
+  `extract_content_as_markdown` falls back to BeautifulSoup on a bare
+  `except Exception` and says nothing, so a golden alone cannot tell a passing
+  transform from a passing fallback. **Decide here where a golden lives**: E3-3's
+  the corpus admits Markdown **by name** (`README.md`) and not by extension, so a
+  golden lands only once this step widens `allowed_filenames` — a reviewed
+  two-file edit that has to say out loud what pairs the golden with its fragment,
+  because the sidecar rule pairs only HTML.
 - **E5-6.** `_append_tail_text` — **moved by E2-3** from `universal_html.py` to
   `scrape/worker_runner.py`, with the rest of the stderr-tail chain — and the
   encoding-cookie helpers. Both addresses are in `.coveragerc-gate`'s `omit`

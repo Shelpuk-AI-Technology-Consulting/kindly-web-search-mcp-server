@@ -1,0 +1,14 @@
+<article>
+  <h2>Character reference edge cases</h2>
+  <p>Every form below has to be decoded exactly once. Decoding twice turns the
+  double-escaped case into a bare ampersand and silently corrupts the text;
+  decoding zero times leaves raw entity references in output that claims to be
+  plain Markdown. Both failures are easy to introduce and hard to notice without
+  a fragment that carries all the forms side by side.</p>
+  <p>Named: &amp; &lt; &gt; &quot; &copy; &mdash; &hellip;</p>
+  <p>Numeric decimal: &#8364; &#8212; &#169;</p>
+  <p>Numeric hexadecimal: &#x20AC; &#x2014; &#xA9;</p>
+  <p>Non-breaking space between&nbsp;these&nbsp;words.</p>
+  <p>An ampersand in ordinary prose: R &amp; D, and the expression 5 &amp;&amp; 6.</p>
+  <p>Double-escaped: &amp;amp; has to survive as the literal text &amp;amp;.</p>
+</article>
