@@ -1630,21 +1630,24 @@ platform. So the branches were run, in the instrument E1-6 used: a throwaway
 branch carrying one temporary workflow, `git diff --stat` confirming the workflow
 file was the only difference from the merge candidate, and both deleted after.
 
-**Result, `windows-latest`, 2026-09-05, merge candidate `c3ee481`.**
+**Result, `windows-latest`, 2026-09-05, merge candidate `05595c6`.**
 `Python 3.13.15 (tags/v3.13.15:4061bc4) [MSC v.1944 64 bit (AMD64)]`,
 `Windows-2025Server-10.0.26100-SP0`, pytest 9.1.1. The three modules this step
-touches: **90 passed, 1 skipped, 0 failed** in 39.69 s. The whole suite:
-**823 passed, 3 skipped, 16 subtests, 0 failed** in 165.96 s.
+touches: **90 passed, 1 skipped, 0 failed** in 39.84 s. The whole suite:
+**823 passed, 3 skipped, 16 subtests, 0 failed** in 165.34 s.
 
 The one-test difference from Linux's 824/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
 skips where `os.getpgid` does not exist. Nothing else diverges.
 
-This is the **fourth** run. Each one followed a review-driven change, which is
-the rule; the second is why the rule exists. The first covered an earlier commit,
-the second `59cf861` and is the one described below, the third the lock cases and
-timer fix from the second code-review pass, and this one the chain record
-directory moving under the caller's `--pid-file`.
+This is the **fifth** run. Each one followed a review-driven change, which is
+the rule; the second is why the rule exists. Two of the later ones are worth
+naming for the opposite reason — **Windows was where a defect hid, not where it
+showed.** A case injected a killer that never killed, leaking a child and thirty
+seconds of suite time on Linux; Windows was clean throughout, because the tree
+reap there runs `taskkill /F /T` whatever the injected killer does. A platform
+whose behaviour diverges can conceal a leak as easily as reveal one, and only
+the Linux run and the automatic review found that.
 
 🔴 **The re-run is not a formality, and this step is the evidence.** The first
 run was green; a review then asked for a change to the very
