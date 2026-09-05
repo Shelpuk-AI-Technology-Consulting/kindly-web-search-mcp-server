@@ -29,6 +29,7 @@ injecting its signal primitives.
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import os
 import socket
@@ -44,6 +45,12 @@ from _pytest.outcomes import Failed
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# The fixture child is the only artefact in this tree with a process tree to
+# reap, so these cases drive it -- and they take its path and its loader from
+# the module that calibrates it rather than re-deriving either. The dependency
+# runs this way only: that module takes `pid_is_alive` and `kill_pid` from the
+# harness and nothing else, which is what keeps the *script* the fixed point
+# both instruments are measured against.
 from tests.harness.anti_flake import (
     REAP_TIMEOUT_SECONDS,
     build_kill_order,
@@ -56,14 +63,9 @@ from tests.harness.anti_flake import (
     wait_for_accepting_port,
     wait_until_gone,
 )
+from tests.test_worker_child_fixture import FIXTURE_CHILD, _fixture_child_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-#: The fixture child, which is the only artefact in this tree with a process
-#: tree to reap. Imported from its own calibration module rather than
-#: re-derived, so there is one path constant; the dependency runs this way only,
-#: and that module takes nothing from the harness but the two platform probes.
-FIXTURE_CHILD = REPO_ROOT / "tests" / "child_processes" / "worker_child.py"
 
 #: Readiness budget for the cases that spawn a child. Well under the
 #: thirty-second default and still two orders of magnitude above the forty
@@ -71,6 +73,13 @@ FIXTURE_CHILD = REPO_ROOT / "tests" / "child_processes" / "worker_child.py"
 #: a child that is genuinely not going to speak. It is a budget, never an
 #: assertion: no case checks how long readiness took.
 SHORT_READINESS_SECONDS = 5.0
+
+#: Deadline for the case that walks the tree *before* the deadline fires. Larger
+#: than the others because the block does real work first -- a file read, a JSON
+#: parse and a whole `/proc` walk, measured at 8 ms and up to 14 ms idle -- and a
+#: deadline that expired during it would leave the walk correctly finding an
+#: empty tree and the assertion failing for a reason that is not the subject.
+WALK_DEADLINE_SECONDS = 2.0
 
 #: Per-child deadline for the cases that assert it fires. Small, and it can be:
 #: the deadline is measured from the handshake rather than from the spawn, so a
@@ -104,6 +113,25 @@ CHATTY_SOURCE = (
     "time.sleep(60)\n"
 )
 
+def _captured_stderr(notes: str) -> str:
+    """Take just the child's stderr out of a failure note.
+
+    **Not a convenience.** The note also quotes the argv, and a fixture child is
+    usually told on its command line what to say -- so ``"alpha" in notes`` is
+    satisfied by the flag that asked for the frame, whether or not the frame ever
+    arrived or was ever captured. Measured: with the captured lines dropped from
+    the report entirely, an assertion against the whole note still passed.
+
+    Args:
+        notes: The joined ``__notes__`` of a failure raised inside a block.
+
+    Returns:
+        The text between the report's ``stderr:`` and ``stdout:`` labels.
+    """
+    assert "stderr:" in notes and "stdout:" in notes, notes
+    return notes.split("stderr:", 1)[1].split("stdout:", 1)[0]
+
+
 def _recording_killer(seen: list[int]) -> Any:
     """Build a killer that records the pid **and then kills it**.
 
@@ -127,10 +155,11 @@ def _recording_killer(seen: list[int]) -> Any:
     return record_and_kill
 
 
-#: The control process's program, byte-identical to what the fixture child's
-#: descendants run, so a reaper matching on a command line cannot tell them
-#: apart. It outlives nothing: the case kills it in its own ``finally``.
-CONTROL_SOURCE = "import time\nwhile True:\n    time.sleep(0.25)\n"
+#: How long to keep watching for a signal that must never arrive. Twice the
+#: deadline, so a watchdog that fires late is still caught -- and, in the case
+#: that asserts a *fired* watchdog signals nothing, so the window in which it
+#: fires is not a few milliseconds wide.
+PAST_DEADLINE_SECONDS = BRIEF_DEADLINE_SECONDS * 2
 
 #: The harness package, addressed by path for the import guard, which reads
 #: syntax trees rather than the imported modules' namespaces. The whole package
@@ -371,7 +400,13 @@ def test_the_harness_never_names_a_group_signalling_primitive() -> None:
     pass it, and it names attributes rather than imports so
     ``os.killpg(...)`` is caught however ``os`` arrived.
     """
-    forbidden = {"killpg", "setpgid", "getpgid"}
+    # `getpgrp` and `setsid` are in the set for a reason worth naming: they do
+    # not resolve *another* process's group, so a reader trims them as
+    # irrelevant -- but `os.kill(-os.getpgrp(), SIGKILL)` reaches the caller's own
+    # group, which is the exact outcome this case exists to prevent, and it names
+    # none of the other three. Anything aimed at a *different* process's group
+    # has to ask for it, and asking spells `getpgid`.
+    forbidden = {"killpg", "setpgid", "getpgid", "getpgrp", "setsid"}
     seen: list[str] = []
     for module in sorted(HARNESS_PACKAGE.rglob("*.py")):
         tree = ast.parse(module.read_text(encoding="utf-8"))
@@ -508,6 +543,7 @@ def test_a_port_wait_spends_its_whole_bound_when_nothing_accepts() -> None:
     assert "127.0.0.1" in str(excinfo.value)
 
 
+@pytest.mark.subsystem
 def test_a_reserved_port_is_never_one_a_live_listener_holds() -> None:
     """Give out a port nothing is using, which is the whole point of the helper
 
@@ -533,6 +569,7 @@ def test_a_reserved_port_is_never_one_a_live_listener_holds() -> None:
     assert held not in drawn
 
 
+@pytest.mark.subsystem
 def test_a_reserved_port_can_be_bound_immediately() -> None:
     """Leave the port free, rather than holding the socket that found it
 
@@ -589,7 +626,7 @@ def test_a_hanging_child_is_killed_at_its_deadline_with_its_whole_tree(
         ],
         readiness_marker=b"fixture.ready",
         readiness_timeout=SHORT_READINESS_SECONDS,
-        deadline=SHORT_DEADLINE_SECONDS,
+        deadline=WALK_DEADLINE_SECONDS,
     ) as child:
         chain = [entry["pid"] for entry in json.loads(pid_file.read_text())["chain"]]
         assert len(chain) == 3
@@ -627,14 +664,36 @@ def test_a_process_with_an_identical_command_line_survives_the_reap(
     ``chrome`` reaches it; so does a scan for ``python``, which is what every
     process in this tree is called.
 
-    The control is spawned by **this test**, with a command line byte-identical
-    to the descendants', and is not a descendant of the child. Any reaper that
-    matched on a name, an executable, or a command line kills it. Measured the
-    same way in production, where the control stood in for a pooled browser.
+    The control is spawned by **this test**, runs the descendants' own program
+    taken from the script itself, and is not a descendant of the child. Any
+    reaper matching on a name, an executable, or a command line kills it --
+    which is why the control could not simply be some other ``python -c``: that
+    only fails a reaper matching the *executable*, and the interesting mutant
+    matches the command line. The one difference is the directory it records
+    into, which must differ or the chain wait would count it. Measured the same
+    way in production, where the control stood in for a pooled browser.
     """
     pid_file = tmp_path / "pids.json"
+    # The control runs the descendants' **own program**, taken from the script
+    # rather than written out again here, and with an argv of the same shape.
+    # A control merely called `python` only exercises a reaper that matches on
+    # the executable name; this one also fails a reaper matching on the command
+    # line, which is the mutant AC-7 names. The single difference is the
+    # directory it records into, which has to differ or it would be counted as
+    # part of the chain.
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    descendant_source = _fixture_child_module()._DESCENDANT_SOURCE
     control = subprocess.Popen(
-        [sys.executable, "-c", CONTROL_SOURCE],
+        [
+            sys.executable,
+            "-c",
+            descendant_source,
+            descendant_source,
+            str(control_dir),
+            "1",
+            "1",
+        ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -716,7 +775,7 @@ def test_a_child_that_exits_inside_its_deadline_is_never_signalled() -> None:
         # in which the guard is reached at all: with the wait outside the block
         # the disarm handles it first and the mutation that deletes the guard
         # survives. Measured.
-        time.sleep(BRIEF_DEADLINE_SECONDS)
+        time.sleep(PAST_DEADLINE_SECONDS)
 
     assert not signalled, (
         "the deadline watchdog signalled a pid after its child had been reaped"
@@ -754,7 +813,7 @@ def test_the_deadline_watchdog_does_not_outlive_the_block_it_bounds() -> None:
     assert signalled == [child.proc.pid] or child.proc.pid in signalled
     reaped_at_teardown = list(signalled)
 
-    time.sleep(BRIEF_DEADLINE_SECONDS * 2)
+    time.sleep(PAST_DEADLINE_SECONDS)
 
     assert signalled == reaped_at_teardown, (
         "the deadline watchdog was still armed after its block had ended"
@@ -784,9 +843,24 @@ def test_a_payload_past_the_pipe_capacity_neither_blocks_nor_is_truncated() -> N
         readiness_timeout=SHORT_READINESS_SECONDS,
     ) as child:
         assert child.wait_for_exit(timeout=DEATH_TIMEOUT_SECONDS) == 0
-        payload = child.stdout_bytes()
+
+    # Read **after** the block, not inside it. The pump appends to its sink only
+    # when `read()` returns, and the caller's `wait_for_exit` returns from the
+    # same process exit -- nothing orders the two. Measured under twelve spinner
+    # processes on four cores: the sink was still empty three times in sixty
+    # right after the wait, and this module failed two runs in eight. The
+    # context manager's own `finally` joins the pumps, so outside the block the
+    # ordering is structural rather than lucky.
+    payload = child.stdout_bytes()
 
     assert len(payload) == size
+    # Byte for byte, not merely the right length. A pump that returned the right
+    # number of wrong bytes is the mutation a length check cannot see -- measured:
+    # `sink.append(bytes(len(stream.read())))` left all eighty-one cases in these
+    # modules passing. Re-derived from the script's own generator, so the
+    # expectation has one source.
+    script = _fixture_child_module()
+    assert payload == bytes(script.stdout_pattern_byte(i) for i in range(size))
 
 
 @pytest.mark.subsystem
@@ -832,21 +906,33 @@ def test_a_failure_inside_the_block_carries_the_childs_own_output(
             readiness_marker=b"fixture.ready",
             readiness_timeout=SHORT_READINESS_SECONDS,
             deadline=SHORT_DEADLINE_SECONDS,
-        ),
+        ) as child,
     ):
+        # Waited for rather than assumed: the frame is written immediately after
+        # readiness, but the pump need not have queued it yet, and the report's
+        # drain is non-blocking because it runs on a failure path. The line is
+        # consumed here and still reaches the note -- that is what `seen_stderr`
+        # is for. Measured on this case's twin: without the wait it failed four
+        # runs in ten under load.
+        assert b"alpha" in child.next_stderr_line(SHORT_READINESS_SECONDS)
         raiser()
 
     assert type(excinfo.value) is expected_type
     assert "the original complaint" in str(excinfo.value)
     notes = "".join(getattr(excinfo.value, "__notes__", []))
     assert "argv:" in notes
-    # The child's real frame, not a placeholder: this is what distinguishes an
-    # attachment that captured the stream from one that captured an empty one.
-    assert "alpha" in notes
+    # The child's real frame, not a placeholder, and read from the *stderr*
+    # section rather than from the whole note: `--emit-frame alpha` puts the
+    # word in the argv too, so a note-wide check passes against a report that
+    # captured nothing at all.
+    assert "alpha" in _captured_stderr(notes)
 
 
 @pytest.mark.subsystem
-def test_a_failure_between_spawn_and_setup_still_reaps_the_child() -> None:
+@pytest.mark.parametrize("refuse_after", [0, 1], ids=["first-pump", "second-pump"])
+def test_a_failure_between_spawn_and_setup_still_reaps_the_child(
+    refuse_after: int,
+) -> None:
     """Open the cleanup the moment the process exists, not once it is wired up
 
     Everything between ``Popen`` returning and the pipe pumps running can still
@@ -859,11 +945,43 @@ def test_a_failure_between_spawn_and_setup_still_reaps_the_child() -> None:
     enough, which is the shape this repository has already shipped untested
     once. A requirement belongs in a case or in the reviewer's guard list, and
     there is no third place.
+
+    **Both pumps are refused in turn, and the second is not a formality.** When
+    the first succeeds and the second raises, one thread is running and one was
+    never started -- and joining an unstarted thread raises ``RuntimeError``
+    from inside ``finally``, which would replace the failure that actually
+    happened with one about thread state. The child is reaped either way, so
+    that defect costs a diagnosis rather than a process, which is exactly the
+    kind a case has to catch because nothing else complains.
+
+    Args:
+        refuse_after: How many pumps to build before refusing.
     """
     spawned: list[int] = []
+    made = 0
 
-    def refuse(*_args: Any, **_kwargs: Any) -> threading.Thread:
-        raise RuntimeError("no threads available")
+    class _RefusingThread(threading.Thread):
+        """A thread that will not start, the way an exhausted process cannot."""
+
+        def start(self) -> None:
+            """Refuse to start.
+
+            Raises:
+                RuntimeError: Always.
+            """
+            raise RuntimeError("no threads available")
+
+    def refuse(*args: Any, **kwargs: Any) -> threading.Thread:
+        nonlocal made
+        made += 1
+        # The failure has to land on `start`, not on construction: a factory
+        # that raises while the list is being built leaves *no* thread started
+        # and none to join, which is the easy half. The interesting shape is one
+        # pump running and one never started, and only a thread object that
+        # refuses to start produces it.
+        if made > refuse_after:
+            return _RefusingThread(*args, **kwargs)
+        return threading.Thread(*args, **kwargs)
 
     with (
         pytest.raises(RuntimeError, match="no threads available"),
@@ -881,3 +999,119 @@ def test_a_failure_between_spawn_and_setup_still_reaps_the_child() -> None:
     assert wait_until_gone(spawned[0], timeout=DEATH_TIMEOUT_SECONDS), (
         "a failure before the pipe pumps started left the child running"
     )
+
+
+@pytest.mark.subsystem
+@pytest.mark.parametrize(
+    "failure",
+    [KeyboardInterrupt, SystemExit, asyncio.CancelledError],
+    ids=["keyboard-interrupt", "system-exit", "cancelled"],
+)
+def test_the_caller_giving_up_is_not_annotated_as_a_child_failure(
+    failure: type[BaseException],
+) -> None:
+    """Leave a control-flow signal alone, however it is spelled
+
+    These three are not reports about the child. They are somebody pressing
+    Ctrl-C, the interpreter exiting, and an event loop cancelling a task, and a
+    paragraph of captured browser stderr stapled to one is noise attached to a
+    signal that has nothing to do with the child.
+
+    **``CancelledError`` has to be named, and this is the case that says so.**
+    It derives from ``BaseException`` and from nothing else, so a handler
+    written as ``except (KeyboardInterrupt, SystemExit)`` misses it and annotates
+    it like an ordinary failure. That mattered enough to test because the whole
+    suite is scheduled to become ``asyncio``, at which point a cancelled task is
+    an ordinary way for one of these blocks to end.
+
+    Asserted as the **absence** of a note, which is the only observable
+    difference: the exception's class and message are unchanged either way.
+
+    Args:
+        failure: The class to raise inside the block.
+    """
+    with (
+        pytest.raises(failure) as excinfo,
+        spawned_child(
+            [sys.executable, str(FIXTURE_CHILD), "--emit-frame", "alpha", "--hang"],
+            readiness_marker=b"fixture.ready",
+            readiness_timeout=SHORT_READINESS_SECONDS,
+            deadline=SHORT_DEADLINE_SECONDS,
+        ),
+    ):
+        raise failure()
+
+    assert not getattr(excinfo.value, "__notes__", [])
+
+
+@pytest.mark.subsystem
+def test_a_port_wait_stops_when_the_process_serving_it_has_died() -> None:
+    """Blame the dead server, not the clock, when nothing is going to listen
+
+    The socket half of the same diagnosis the pipe half makes. A server given a
+    bad command line exits at once, and a wait that only watches the port spends
+    its whole budget and then reports a timeout -- which sends the next reader
+    to look for a slow machine rather than at the two lines of ``argparse``
+    output the process already produced.
+
+    The port is one nothing will ever listen on, so the only way this can
+    return early is by noticing the process. Bounded generously for the same
+    reason: the assertion is that it gave up **before** the budget, so a slow
+    machine can only make the case more true.
+    """
+    port = reserve_ephemeral_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "raise SystemExit(3)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert proc.wait(timeout=REAP_TIMEOUT_SECONDS) == 3
+
+        started = time.monotonic()
+        with pytest.raises(AssertionError) as excinfo:
+            wait_for_accepting_port(
+                "127.0.0.1", port, timeout=DEATH_TIMEOUT_SECONDS, proc=proc
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=REAP_TIMEOUT_SECONDS)
+
+    assert "exited with code 3" in str(excinfo.value)
+    assert elapsed < DEATH_TIMEOUT_SECONDS
+
+
+@pytest.mark.subsystem
+def test_a_failure_report_quotes_what_the_child_said_before_it_announced() -> None:
+    """Keep the lines that came before readiness, which are usually the ones that matter
+
+    An artefact that logs before it announces itself has already said the useful
+    thing by the time anything goes wrong -- a port it could not bind, a
+    configuration it could not read. Those lines are consumed by the readiness
+    wait, so unless it keeps them they are gone from every later report, and the
+    failure reads as though the child said nothing at all.
+
+    Separate from the readiness case, which asserts the lines were *kept*; this
+    one asserts they are *rendered*. A report that collected them and then
+    dropped them on the way into the note is a different defect and one the
+    other case cannot see.
+    """
+    with (
+        pytest.raises(AssertionError) as excinfo,
+        spawned_child(
+            [sys.executable, "-c", CHATTY_SOURCE],
+            readiness_marker=b"harness.ready",
+            readiness_timeout=SHORT_READINESS_SECONDS,
+            deadline=SHORT_DEADLINE_SECONDS,
+        ),
+    ):
+        raise AssertionError("something went wrong later")
+
+    # Read from the stderr section alone: the child's whole program is in the
+    # argv, and both of these strings are in that program.
+    captured = _captured_stderr("".join(getattr(excinfo.value, "__notes__", [])))
+    assert "starting up, not ready yet" in captured
+    assert "harness.ready" in captured

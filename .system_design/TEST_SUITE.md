@@ -1090,7 +1090,7 @@ production's topology rather than a simplification: Chromium `setsid`s itself an
 its renderers stay in the group it leads.
 
 `--pid-file`'s record gained one **unconditional** key, `chain` — a list of
-`{pid, ppid}`, empty when no descendant was asked for. Unconditional rather than
+`{pid, ppid, generation}`, empty when no descendant was asked for. Unconditional rather than
 present only above depth 1: a schema whose shape follows a flag is worse for its
 two readers than a key that is sometimes empty. `pid` and `grandchild_pid` are
 unchanged, and `grandchild_pid` is still the **only** generation the readiness
@@ -1498,8 +1498,11 @@ double will serve, and fail with a sentence naming the loop.
 ### 5.4a The anti-flake harness — built in E3-4
 
 `tests/harness/anti_flake.py`, imported by the tests that start something real.
-Its calibration is `tests/test_anti_flake_harness.py` — twenty-five cases, five
-of which are hermetic and spawn nothing at all, for a reason given below.
+Its calibration is `tests/test_anti_flake_harness.py` — thirty-one cases, of
+which **eleven spawn no process and open no socket**, for a reason given below.
+(Counted as collected node ids, which is the unit `pytest -q` reports; by test
+function it is nine and twenty-two. Where this document gives a case count, it is
+node ids.)
 
 | Helper | What it does |
 |---|---|
@@ -1528,12 +1531,15 @@ spawned after the walk is not reached by this harness. Stated rather than hidden
 and the reason the calibration asserts, over the harness's own syntax trees,
 that it names no group primitive at all.
 
-**Five cases are hermetic and that is not a preference.** The walk, its stat
+**Eleven cases are hermetic and that is not a preference.** The walk, its stat
 parse and the kill set it produces are driven against injected values with no
 process in existence, because the obvious mutation of a tree reaper — one that
 loses its own-pid and pid-1 exclusions — ends the test session when run against a
 real tree and produces no report at all. Same argument `_signal_descendants`
-makes for injecting its signal primitives.
+makes for injecting its signal primitives. One of them is a syntax-tree sweep for
+group-signalling names, and its forbidden set includes `getpgrp` and `setsid`
+alongside `killpg`, `setpgid` and `getpgid`: `os.kill(-os.getpgrp(), SIGKILL)`
+reaches the caller's own group while naming none of the first three.
 
 **The parent-pid parse and the walk are deliberate duplicates of production's.**
 `worker_runner.py` ships both, and E7-2 exists to test them; a harness that
@@ -1549,12 +1555,19 @@ spawn is what keeps it a bound on the *block*: from the spawn it would have to
 exceed the readiness budget, or a slow start would be killed mid-handshake and
 reported as a deadline. Nothing is lost — a handshake that never completes is
 already bounded and reaped by the same `finally`. The thread brings the pid-reuse
-hazard with it, and what closes that is the `poll()` the watchdog takes before it
-signals anything: the guard CPython puts inside `Popen.send_signal` for the same
-reason. A reaped child answers with a code and nothing is signalled; an unreaped
-child cannot have had its pid recycled, because the `Popen` still holds it.
-Cancelling the timer in `finally` is thread hygiene and determinism, **not** the
-safety mechanism — and a case drives each half separately, because a disarmed
+hazard with it, and what closes that is a `poll()` taken **under a lock the kill
+is taken under too**. 🔴 **The poll alone is not enough, and the earlier draft of
+this paragraph said it was.** CPython's `Popen.send_signal` polls and signals with
+nothing in between; this one has a `/proc` walk between them, measured at 8 ms
+median and 14 ms worst on an idle machine, and a caller reaping in that window
+frees the pid before the signal lands — **13 of 120 runs** issued the deadline's
+kill against an already-reaped pid before the lock existed. Every reaping call in
+the harness therefore goes through one `poll_under_lock`, and the lock is held
+only for that poll, never across a blocking wait: held across a wait it would
+block the watchdog for exactly the interval the deadline exists to fire in. A
+caller reaching past the object for `child.proc.wait()` is outside the lock and
+back in the window; nothing in the harness does. Cancelling the timer in
+`finally` is thread hygiene and determinism, **not** the safety mechanism — and a case drives each half separately, because a disarmed
 watchdog and a guarded one are indistinguishable unless the deadline is allowed
 to expire *inside* the block.
 
@@ -1564,7 +1577,16 @@ arbitrary exception cannot be rebuilt with a longer message —
 keep the class" is not implementable by wrapping, and a handler written against
 `AssertionError` misses `pytest.fail`, which raises `Failed` from
 `BaseException`. Consequence for a reader: notes are not part of
-`str(exception)`.
+`str(exception)`. The pass-through set is
+`KeyboardInterrupt`, `SystemExit` and `asyncio.CancelledError` — the last named
+explicitly because it derives from `BaseException` and from nothing else, so the
+other two do not cover it, and E11 makes a cancelled task an ordinary way for one
+of these blocks to end. **A failure report must be read from its `stderr:`
+section, not from the whole note**: the note also quotes the argv, and a fixture
+child is usually *told on its command line* what to say, so `"alpha" in note` is
+satisfied by the flag that asked for the frame whether or not anything was
+captured. Measured — with the captured lines dropped from the report entirely,
+the whole-note assertion still passed.
 
 **Platform reach, stated because two of the three are untested.** Linux
 enumerates from `/proc/<pid>/stat`. Windows has no standard-library enumeration,
@@ -1573,8 +1595,7 @@ so `descendants_of` returns nothing there and the reap goes through
 ignored, because it returns 128 whenever any member of the tree has already
 exited, which is the ordinary outcome. Every other platform reaches the root
 only — the same degradation production accepts, and a `ps` fallback is a guess at
-an output format no lane here checks. **The Windows half is unmeasured**: see
-§5.4b.
+an output format no lane here checks. The Windows half **is** measured: see §5.4b.
 
 **Two things §5.4 asks for are deliberately not in the harness.** *Isolated
 profile directories* are `tmp_path_factory.mktemp`, which already returns a
@@ -1595,9 +1616,53 @@ collection time, writing frames onto the runner's stderr and possibly hanging.
 Nothing under `tests/harness/` is spawnable, and no filename there matches
 pytest's collection pattern, so the same guard would assert nothing.
 
-### 5.4b Windows: what E3-4 measured, and what it did not
+### 5.4b Windows: what E3-4 measured
 
-placeholder-windows-status
+The harness ships Windows branches — `taskkill /F` for one pid, `tasklist` for
+liveness, and `taskkill /F /T` standing in for an enumeration the standard
+library does not offer — and this repository still has no standing lane on any
+platform. So the branches were run, in the instrument E1-6 used: a throwaway
+branch carrying one temporary workflow, `git diff --stat` confirming the workflow
+file was the only difference from the merge candidate, and both deleted after.
+
+**Result, `windows-latest`, 2026-09-05.** `Python 3.13.15 (tags/v3.13.15:4061bc4)
+[MSC v.1944 64 bit (AMD64)]`, `Windows-2025Server-10.0.26100-SP0`. The three
+modules this step touches: **80 passed, 1 skipped, 0 failed** in 31.97 s. The
+whole suite: **813 passed, 3 skipped, 16 subtests, 0 failed** in 145.53 s.
+
+The one-test difference from Linux's 814/2 is
+`test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
+skips where `os.getpgid` does not exist. Nothing else diverges.
+
+**Which case reaches which branch**, because a green run over code nothing
+exercises proves less than it looks:
+
+| Windows branch | Reached by |
+|---|---|
+| `kill_pid` → `taskkill /F /PID` | the fixture child's own teardown, and the depth-chain case reaping its record |
+| `pid_is_alive` → `tasklist` | every `wait_until_gone` assertion in §5.4a's reaping cases |
+| `kill_process_tree` → `taskkill /F /T` | the deadline case and the identical-command-line case |
+
+**What Windows does not get is a descendant *list*.** `descendants_of` returns
+nothing there, so the deadline case's "the walk found exactly these three" is
+asserted on Linux only; the "each of them is gone" half runs on both, against
+pids read from the fixture child's `--pid-file` rather than from the walk. Two
+`taskkill` facts the reap must not re-learn: it returns **128** whenever any
+member of the tree has already exited, which is the ordinary outcome, so nothing
+may gate on its status — liveness is what a caller keys on; and `/T` enumerates
+from the parent id in the process snapshot, which Windows neither maintains after
+a parent dies nor refuses to recycle, so an intermediate death can put deeper
+generations out of reach.
+
+**One claim in §5.4's amendment is narrower than it reads**, and is corrected
+here rather than restated. "A recycled pid cannot enter the set" holds for the
+**root**, which the caller owns and the `Popen` pins. It does not hold for a
+*descendant*: one that exits between the walk and its own `kill` can have its pid
+recycled in that window, which is the same 8–14 ms the lock above closes for the
+root and cannot close here, because nothing holds a descendant's pid. Production
+has the identical window. It is safe in this suite only because every descendant
+the fixture builds is a five-minute sleep loop — a property of the fixture, not of
+the harness.
 
 ---
 

@@ -48,6 +48,7 @@ Platform reach, stated rather than implied:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import pathlib
@@ -173,7 +174,7 @@ def pid_is_alive(pid: int, *, timeout: float = REAP_TIMEOUT_SECONDS) -> bool:
     # Field three, after the comm field, which is parenthesised and may itself
     # contain spaces -- so split after the last ")" rather than on whitespace.
     _, _, rest = stat.rpartition(")")
-    return bool(rest.split()) and rest.split()[0] != "Z"
+    return rest.split()[0] != "Z"
 
 
 def wait_until_gone(pid: int, *, timeout: float = REAP_TIMEOUT_SECONDS) -> bool:
@@ -393,10 +394,18 @@ def kill_process_tree(
     """
     resolved_own = os.getpid() if own_pid is None else own_pid
 
-    # Windows: no enumeration, so the tree kill is the primitive. Still keyed on
-    # the pid the caller spawned, never on a name.
-    if sys.platform == "win32" and parent_map is None and kill is kill_pid:
-        if root != resolved_own:
+    # Windows has no descendant enumeration in the standard library, so the
+    # platform's own tree kill stands in for one. The injected killer is called
+    # for the root anyway, so a caller observing what gets signalled sees the
+    # same pid it would see on Linux -- and `taskkill /T` runs regardless of what
+    # that killer does, because the alternative is a Windows-only leak whenever a
+    # case injects one. What a Windows caller does *not* get is a list of the
+    # descendants; `descendants_of` says so by returning nothing.
+    if sys.platform == "win32" and parent_map is None:
+        order = build_kill_order([], root=root, own_pid=resolved_own)
+        for pid in order:
+            kill(pid)
+        if order:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(root)],
@@ -404,7 +413,7 @@ def kill_process_tree(
                     check=False,
                     timeout=REAP_TIMEOUT_SECONDS,
                 )
-        return [root] if root != resolved_own else []
+        return order
 
     snapshot = read_parent_map() if parent_map is None else parent_map
     order = build_kill_order(
@@ -414,6 +423,14 @@ def kill_process_tree(
         kill(pid)
     return order
 
+
+#: Failures that pass through the capture untouched. Not reports about the
+#: child: the caller interrupting, the interpreter exiting, and an event loop
+#: cancelling a task. ``CancelledError`` has to be named explicitly -- it derives
+#: from ``BaseException`` and from nothing else, so the other two do not cover
+#: it, and E11 converts this suite to ``asyncio``, after which a cancelled task
+#: is an ordinary way for one of these blocks to end.
+PASS_THROUGH_EXCEPTIONS = (KeyboardInterrupt, SystemExit, asyncio.CancelledError)
 
 #: Ceiling on one connection attempt while waiting for a port to accept. Short,
 #: because the loop's own bound is what governs how long the caller waits; this
@@ -444,9 +461,12 @@ def reserve_ephemeral_port(host: str = "127.0.0.1") -> int:
         A port that was unused at the moment of the call.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        # Deliberately no `SO_REUSEADDR`: with it the kernel may hand back a
-        # port another socket still holds, which is the one thing this must
-        # never do.
+        # Deliberately no `SO_REUSEADDR`. With it, a bind can succeed on a port
+        # another socket is still holding down, which is the one answer this must
+        # never give. **Unchecked**: the case here proves a live listener's port
+        # is never returned, and that holds with or without the option, so the
+        # option's absence rests on the documented semantics rather than on a
+        # measurement.
         probe.bind((host, 0))
         return int(probe.getsockname()[1])
 
@@ -549,6 +569,12 @@ class CapturedChild:
             that asks for a deadline is usually asserting that it fired.
         killed_while_running: Whether teardown had to kill a child that had not
             finished, which makes its stdout payload untrustworthy.
+        reap_lock: Serialises every call that could reap the child against the
+            deadline watchdog's guard-then-kill. See :meth:`poll_under_lock`.
+        seen_stderr: Every line taken off the queue so far, by any reader, in
+            order. The queue is destructive, so without this a line consumed to
+            synchronise on -- or by an earlier failure report -- would be missing
+            from every report afterwards, and the child would read as silent.
     """
 
     proc: subprocess.Popen[bytes]
@@ -559,6 +585,36 @@ class CapturedChild:
     preamble: list[bytes] = field(default_factory=list)
     deadline_fired: bool = False
     killed_while_running: bool = False
+    reap_lock: threading.Lock = field(default_factory=threading.Lock)
+    seen_stderr: list[bytes] = field(default_factory=list)
+
+    def poll_under_lock(self) -> int | None:
+        """Reap the child if it has finished, without racing the watchdog.
+
+        **Every reaping call in this module goes through here**, and the reason
+        is a window that was measured rather than reasoned about. The watchdog
+        guards itself with a ``poll()`` before it signals -- the guard CPython
+        puts inside ``Popen.send_signal`` -- but unlike CPython's, this one is
+        separated from the kill by a whole ``/proc`` walk, which takes about
+        8 ms and up to 14 ms on an idle machine. A caller reaping inside that
+        window frees the pid, and the signal that follows lands on whoever
+        inherited it. Measured on the unmodified code: **13 of 120 runs** issued
+        the deadline's kill against a pid that had already been reaped.
+
+        The lock closes it by making the watchdog's guard-and-kill atomic
+        against every reap this module performs. It is held only for a
+        ``poll()``, never across a blocking wait -- a lock held for the duration
+        of a wait would block the watchdog for exactly the interval the deadline
+        is meant to fire in.
+
+        A caller that reaches past this object for ``child.proc.wait()`` is
+        outside the lock and back in the window; nothing in this module does.
+
+        Returns:
+            The exit code, or ``None`` while the child is still running.
+        """
+        with self.reap_lock:
+            return self.proc.poll()
 
     def stdout_bytes(self) -> bytes:
         """Give the child's whole standard output, once the stream has closed.
@@ -586,6 +642,11 @@ class CapturedChild:
     def wait_for_exit(self, timeout: float = REAP_TIMEOUT_SECONDS) -> int:
         """Wait for a child that is expected to finish on its own.
 
+        Polls rather than calling ``Popen.wait``, which is not a preference:
+        ``wait`` reaps, and reaping has to happen under the lock that the
+        deadline watchdog also takes. See :meth:`poll_under_lock`. The cost is
+        one poll slice of latency on a child that has already exited.
+
         Args:
             timeout: Seconds to wait.
 
@@ -595,13 +656,17 @@ class CapturedChild:
         Raises:
             AssertionError: If the child is still running at the deadline.
         """
-        try:
-            return self.proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise AssertionError(
-                f"the child was still running after {timeout}s when it was "
-                f"expected to exit.{self.captured_report()}"
-            ) from None
+        deadline = time.monotonic() + timeout
+        while True:
+            code = self.poll_under_lock()
+            if code is not None:
+                return code
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"the child was still running after {timeout}s when it was "
+                    f"expected to exit.{self.captured_report()}"
+                )
+            time.sleep(POLL_SLICE_SECONDS)
 
     def next_stderr_line(self, timeout: float) -> bytes:
         """Take the next complete stderr line, waiting up to ``timeout``.
@@ -638,7 +703,7 @@ class CapturedChild:
             except queue.Empty:
                 # An exited child will never produce the awaited line, so there
                 # is nothing to gain by waiting out the rest of the deadline.
-                if self.proc.poll() is not None:
+                if self.poll_under_lock() is not None:
                     raise AssertionError(
                         f"the child exited with code {self.proc.returncode} "
                         f"before writing the expected stderr line."
@@ -648,8 +713,9 @@ class CapturedChild:
             if line is None:
                 raise AssertionError(
                     "the child's stderr closed before the expected line "
-                    f"(exit code {self.proc.poll()}).{self.captured_report()}"
+                    f"(exit code {self.poll_under_lock()}).{self.captured_report()}"
                 )
+            self.seen_stderr.append(line)
             return line
 
     def captured_report(self) -> str:
@@ -664,10 +730,12 @@ class CapturedChild:
             A block naming the argv and quoting the captured streams, ready to
             append to a failure.
         """
-        seen: list[bytes] = [self.ready_line] if self.ready_line else []
-        seen = [*self.preamble, *seen]
         # Non-blocking: this runs on a failure path and must not add a second
-        # wait to a case that is already failing.
+        # wait to a case that is already failing. Whatever it takes off the queue
+        # joins everything already read, because the queue is destructive: a line
+        # consumed by the readiness wait, by a caller synchronising on it, or by
+        # an earlier report would otherwise be absent from this one.
+        fresh: list[bytes] = []
         while True:
             try:
                 line = self.stderr_lines.get_nowait()
@@ -675,37 +743,13 @@ class CapturedChild:
                 break
             if line is None:
                 break
-            seen.append(line)
+            self.seen_stderr.append(line)
         stdout = self.stdout_sink[0] if self.stdout_sink else b"<still open>"
         return (
             f"\n  argv:   {self.argv}"
-            f"\n  stderr: {b''.join(seen)!r}"
+            f"\n  stderr: {b''.join(self.seen_stderr)!r}"
             f"\n  stdout: {stdout!r}"
         )
-
-    def drain_stderr(self, timeout: float) -> list[bytes]:
-        """Collect every remaining stderr line until the stream closes.
-
-        Args:
-            timeout: Seconds to wait for each individual line.
-
-        Returns:
-            The remaining lines, in order.
-
-        Raises:
-            AssertionError: If the stream did not close in time.
-        """
-        lines: list[bytes] = []
-        while True:
-            try:
-                line = self.stderr_lines.get(timeout=timeout)
-            except queue.Empty:
-                raise AssertionError(
-                    f"the child's stderr did not close within {timeout}s"
-                ) from None
-            if line is None:
-                return lines
-            lines.append(line)
 
 
 def _await_marker(child: CapturedChild, marker: bytes, timeout: float) -> None:
@@ -774,13 +818,14 @@ def spawned_child(
     other bound here is a caller-side wait, which cannot help when the block's
     own body is what blocks. The thread can, and it brings the pid-reuse hazard
     with it: once a child is reaped its pid is free, immediately on Windows and
-    quickly on Linux under a container's low ``pid_max``. What closes that is
-    the ``poll()`` the watchdog takes before it kills anything -- the same guard
-    CPython puts inside ``Popen.send_signal``, and it is complete rather than
-    defensive. A reaped child returns a code from ``poll()`` and nothing is
-    signalled; a child that has *not* been reaped cannot have had its pid
-    recycled, because the ``Popen`` still holds it. Cancelling the timer in
-    ``finally`` is thread hygiene and determinism, **not** the safety mechanism.
+    quickly on Linux under a container's low ``pid_max``. What closes that is a
+    ``poll()`` taken **under a lock the kill is taken under too** -- see
+    :meth:`CapturedChild.poll_under_lock`, which records what the window
+    measured. The poll on its own is not enough, and the claim that it was is one
+    a probe falsified: CPython's ``Popen.send_signal`` polls and signals with
+    nothing in between, while this one has a ``/proc`` walk between them.
+    Cancelling the timer in ``finally`` is thread hygiene and determinism,
+    **not** the safety mechanism.
 
     **The reap walks while the child is alive.** A child that has already exited
     took its walkability with it: its descendants reparent to init and no longer
@@ -833,19 +878,23 @@ def spawned_child(
 
     def fire_deadline() -> None:
         """Kill the child's tree, unless it has already been reaped."""
-        # The whole safety argument, in one call: a reaped child reports a code
-        # here and nothing is signalled, and an unreaped child's pid cannot have
-        # been recycled because this `Popen` still holds it.
-        if proc.poll() is not None:
-            return
-        child.deadline_fired = True
-        kill_process_tree(proc.pid, kill=kill)
+        # Guard and kill under one lock, because they are not one operation: a
+        # `/proc` walk sits between them. Taken elsewhere only around a `poll()`,
+        # so nothing in this module can reap the child -- and free its pid --
+        # between the check and the signal. `CapturedChild.poll_under_lock`
+        # records what that window measured.
+        with child.reap_lock:
+            if proc.poll() is not None:
+                return
+            child.deadline_fired = True
+            kill_process_tree(proc.pid, kill=kill)
 
     # The `try` opens the moment the process exists, not once it is fully set
     # up. Everything between those two points can still fail -- `Thread.start`
     # raises under thread exhaustion -- and a failure there leaves a running
     # child with nothing to reap it but its own five-minute backstop.
     threads: list[threading.Thread] = []
+    running_pumps: list[threading.Thread] = []
     timer: threading.Timer | None = None
     try:
         assert proc.stdout is not None and proc.stderr is not None
@@ -857,8 +906,13 @@ def spawned_child(
                 target=_pump_all, args=(proc.stdout, child.stdout_sink), daemon=True
             ),
         ]
+        # Recorded one at a time. If the *second* `start()` raises -- which is
+        # the thread-exhaustion case this whole ordering exists for -- joining an
+        # unstarted thread below raises `RuntimeError` from inside `finally` and
+        # replaces the failure that actually happened.
         for thread in threads:
             thread.start()
+            running_pumps.append(thread)
 
         try:
             _await_marker(child, readiness_marker, readiness_timeout)
@@ -884,9 +938,11 @@ def spawned_child(
             timer.start()
         try:
             yield child
-        except (KeyboardInterrupt, SystemExit):
-            # Never annotated and never swallowed: these are the caller giving
-            # up, not the child misbehaving.
+        except PASS_THROUGH_EXCEPTIONS:
+            # Never annotated and never swallowed: these are the caller, the
+            # interpreter or an event loop giving up, not the child
+            # misbehaving, and a paragraph of captured stderr stapled to one is
+            # noise attached to a signal about something else.
             raise
         except BaseException as failure:
             # Section 5.4 requires child output on failure. Added as a *note*
@@ -904,6 +960,9 @@ def spawned_child(
         # reaching end of file does not mean it has exited, so a caller that
         # drained the stream can arrive here microseconds early and record a
         # kill that did not need to happen.
+        # Below the timer's join, so the watchdog is provably gone and these
+        # calls need no lock -- which is why they may block where
+        # `CapturedChild.wait_for_exit` may not.
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=EXIT_GRACE_SECONDS)
         # Only reap a child that is still running. One that has already exited
@@ -915,12 +974,12 @@ def spawned_child(
             kill_process_tree(proc.pid, kill=kill)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=REAP_TIMEOUT_SECONDS)
-        for thread in threads:
+        for thread in running_pumps:
             thread.join(timeout=REAP_TIMEOUT_SECONDS)
         # Only close a pipe whose pump has finished with it. Reachable when the
         # reap above timed out and a pump is still inside `read`; closing under
         # it there would raise in a thread nothing is watching.
-        if all(not thread.is_alive() for thread in threads):
+        if all(not thread.is_alive() for thread in running_pumps):
             for stream in (proc.stdout, proc.stderr):
                 if stream is not None:
                     stream.close()

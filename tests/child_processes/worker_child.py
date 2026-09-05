@@ -245,7 +245,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--grandchild-depth",
         type=int,
-        default=1,
+        # A sentinel rather than `1`, so an explicit `--grandchild-depth 1` can
+        # be told from the default. With `1` as the default the check below
+        # cannot fire for it, and the flag is silently ignored in exactly the
+        # case a caller is most likely to try first.
+        default=None,
         metavar="N",
         help="Length of the descendant chain; needs --spawn-grandchild.",
     )
@@ -286,9 +290,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     # flag that arms it was forgotten is the shape of an afternoon lost to a
     # tree that was never built, and `argparse`'s exit 2 is a diagnosis a caller
     # already knows how to read.
-    if parsed.grandchild_depth != 1 and not parsed.spawn_grandchild:
+    if parsed.grandchild_depth is not None and not parsed.spawn_grandchild:
         parser.error("--grandchild-depth needs --spawn-grandchild")
-    if parsed.grandchild_depth < 1:
+    if parsed.grandchild_depth is None:
+        parsed.grandchild_depth = 1
+    elif parsed.grandchild_depth < 1:
         parser.error("--grandchild-depth must be at least 1")
     return parsed
 
@@ -563,6 +569,14 @@ def _report_incomplete_chain(
         expected: How many generations were asked for.
         grandchild_pid: The first generation, which this process started and can
             therefore always name.
+
+    **Two limits, stated rather than left to be found.** A generation that has
+    started but not yet recorded itself is in neither list and survives to its
+    own :data:`MAX_LIFETIME_SECONDS` backstop -- reachable only above depth one,
+    which is why the case driving this path uses depth one. And the caller
+    removes the record directory immediately after this returns, which can land
+    while a generation is inside its own ``open``; that generation has already
+    been signalled by then, and its traceback goes to ``DEVNULL``.
 
     Returns:
         :data:`CHAIN_INCOMPLETE_EXIT_CODE`, for the caller to exit with.

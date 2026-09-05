@@ -170,6 +170,10 @@ class _RunningChild:
         stdout_sink: Single-element list receiving the whole stdout payload.
         killed_while_running: Whether teardown had to kill a child that had not
             finished, which makes its stdout payload untrustworthy.
+        seen_stderr: Every line taken off the queue so far, in order. The queue
+            is destructive, so a line a case consumed in order to *synchronise*
+            on it would otherwise be missing from every later failure report,
+            and the child would read as though it had said nothing.
     """
 
     proc: subprocess.Popen[bytes]
@@ -179,6 +183,7 @@ class _RunningChild:
     stdout_sink: list[bytes] = field(default_factory=list)
     ready: dict[str, Any] = field(default_factory=dict)
     killed_while_running: bool = False
+    seen_stderr: list[bytes] = field(default_factory=list)
 
     @property
     def grandchild_pid(self) -> int | None:
@@ -283,6 +288,7 @@ class _RunningChild:
                     "the fixture child's stderr closed before the expected line "
                     f"(exit code {self.proc.poll()}).{self.captured_report()}"
                 )
+            self.seen_stderr.append(line)
             return line
 
     def captured_report(self) -> str:
@@ -297,9 +303,9 @@ class _RunningChild:
             A block naming the argv and quoting the captured streams, ready to
             append to an assertion message.
         """
-        seen: list[bytes] = []
         # Non-blocking: this runs on a failure path and must not add a second
-        # wait to a case that is already failing.
+        # wait to a case that is already failing. Joined to everything already
+        # read rather than replacing it -- see `seen_stderr`.
         while True:
             try:
                 line = self.stderr_lines.get_nowait()
@@ -307,11 +313,11 @@ class _RunningChild:
                 break
             if line is None:
                 break
-            seen.append(line)
+            self.seen_stderr.append(line)
         stdout = self.stdout_sink[0] if self.stdout_sink else b"<still open>"
         return (
             f"\n  argv:   {self.argv}"
-            f"\n  stderr: {b''.join(seen)!r}"
+            f"\n  stderr: {b''.join(self.seen_stderr)!r}"
             f"\n  stdout: {stdout!r}"
         )
 
@@ -1012,16 +1018,29 @@ def test_a_failure_inside_the_block_carries_the_childs_own_output() -> None:
     """
     with (
         pytest.raises(AssertionError) as excinfo,
-        _fixture_child("--emit-frame", "alpha", "--hang"),
+        _fixture_child("--emit-frame", "alpha", "--hang") as child,
     ):
+        # Waited for, not assumed. The frame is written immediately after
+        # readiness, but the reader thread need not have queued it when the body
+        # runs -- and the report's drain is non-blocking by design, because it
+        # runs on a failure path. Measured: without this wait the case failed
+        # four runs in ten under twelve spinner processes on four cores. The line
+        # is consumed here and still reaches the report, which is what
+        # `seen_stderr` is for.
+        assert b"alpha" in child.next_stderr_line(READINESS_TIMEOUT_SECONDS)
         raise AssertionError("the original complaint")
 
     message = str(excinfo.value)
     assert "the original complaint" in message
     assert "argv:" in message
-    # The child's real frame, not a placeholder: this is what distinguishes an
-    # attachment that captured the stream from one that captured an empty one.
-    assert "alpha" in message
+    # The child's real frame, not a placeholder -- and read from the *stderr*
+    # section rather than from the whole message. `--emit-frame alpha` puts that
+    # word on the command line, which the report also quotes, so a message-wide
+    # check is satisfied by the flag that asked for the frame whether or not the
+    # frame was ever captured. Measured on the harness's twin of this case: with
+    # the captured lines dropped from the report entirely, it still passed.
+    captured = message.split("stderr:", 1)[1].split("stdout:", 1)[0]
+    assert "alpha" in captured
 
 
 @pytest.mark.subsystem
@@ -1165,6 +1184,10 @@ def test_a_depth_without_the_flag_that_arms_it_is_refused() -> None:
     """
     for flags, expected in (
         (["--grandchild-depth", "2"], "needs --spawn-grandchild"),
+        # Depth one specifically, because it is the value a caller reaches for
+        # first and the one a plain default would swallow: with `default=1` the
+        # arming check cannot tell an explicit 1 from no flag at all.
+        (["--grandchild-depth", "1"], "needs --spawn-grandchild"),
         (["--spawn-grandchild", "--grandchild-depth", "0"], "at least 1"),
     ):
         completed = subprocess.run(
