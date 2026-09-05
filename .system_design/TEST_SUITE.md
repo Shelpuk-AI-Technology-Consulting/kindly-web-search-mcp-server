@@ -525,10 +525,12 @@ gate.
   (a table, a code block, nested lists, an entity edge case) carry the bulk of
   assertions; a limited set of sanitized real-page snapshots covers
   whole-document behaviour.
-- **Provenance and licensing.** Each corpus file has a sidecar `.meta.json`. A
-  snapshot's names source URL, capture date, and licence or rationale; a
-  fragment's names why the fragment exists, and may name neither a source URL
-  nor a capture date, because a fragment is authored here rather than captured.
+- **Provenance and licensing.** Each HTML page has a sidecar `.meta.json`. A
+  snapshot's sidecar names source URL, capture date, and licence or rationale;
+  a fragment's sidecar names why the fragment exists, and may name neither a
+  source URL nor a capture date, because a fragment is authored here rather than
+  captured. `README.md`, admitted by name, is the only corpus file without a
+  sidecar — the pairing rule asks for one beside an HTML page, and nothing else.
   Do not snapshot pages whose terms forbid redistribution.
 - **Sanitization before commit.** Strip cookies, tokens, session identifiers,
   personal data, analytics and third-party script bodies. A committed snapshot is
@@ -801,10 +803,14 @@ names no source, no date and no licence — but it holds the slot to one known
 filename per tier directory instead of every `.md` anybody adds, and the size
 cap, the sanitation sweep and the encoding rules still apply to it. A step that needs another Markdown file in the corpus —
 E5-5's goldens are the expected case — has to widen `allowed_filenames`, which is
-a reviewed two-file edit and says out loud what pairs it. And because the snapshot tier ships
-**empty** — every snapshot rule is proven against synthetic input only — the
-first real snapshot committed here is the first time those rules run on committed
-bytes, and should be reviewed as such. There is deliberately **no waiver
+a reviewed two-file edit and says out loud what pairs it. And because no snapshot
+*page* is committed, the rules that need a page or its sidecar — pairing, the
+required fields, the either-or field, the field patterns — are proven against
+synthetic input only, so the first real snapshot committed here is the first time
+*those* run on committed bytes and should be reviewed as such. The file-level
+rules are not waiting: `snapshots/README.md` is committed, so the 200 KB cap, the
+sanitation sweep and the encoding rules are measured against committed bytes in
+that tier today. There is deliberately **no waiver
 mechanism**: a documentation page that legitimately shows an `Authorization`
 header would today have to be trimmed rather than exempted. That is the right
 default while the tier is empty, and the wrong one the moment it costs a real

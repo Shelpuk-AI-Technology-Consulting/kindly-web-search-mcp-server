@@ -40,17 +40,24 @@ is why :func:`test_a_conforming_synthetic_corpus_has_no_violations` is not
 decoration: an implementation that reported one spurious violation on every file
 would otherwise be invisible in both directions.
 
-**Three committed-tree claims are vacuous today, and a reader should know which
-before trusting a green run.** The snapshot tier ships empty, so no committed
-file is ever measured against the 200 KB cap and no committed sidecar ever
-exercises ``required_any_of`` -- fragments declare that list empty. The third is
-stronger than "unexercised": ``field_patterns`` covers exactly ``source_url``
-and ``capture_date``, both of which the fragments tier *forbids*, and the field
-check skips a forbidden key, so on a fragments-only corpus
+**Two committed-tree claims are vacuous today, and a reader should know which
+before trusting a green run.** No snapshot *page* is committed, so no committed
+sidecar exercises ``required_any_of`` -- fragments declare that list empty. The
+second is stronger than "unexercised": ``field_patterns`` covers exactly
+``source_url`` and ``capture_date``, both of which the fragments tier *forbids*,
+and the field check skips a forbidden key, so with no snapshot sidecar committed
 :func:`test_every_committed_provenance_field_is_well_formed` is **structurally**
-unreachable rather than merely untriggered. All three are carried by the
-synthetic cases alone until the first real snapshot lands, which is therefore
-the first time they run on committed bytes.
+unreachable rather than merely untriggered. Both are carried by the synthetic
+cases alone until the first real snapshot lands.
+
+**The tier directory is not empty, and the file-level rules do run there.**
+``snapshots/README.md`` is committed, so the size cap -- 200 KB, for that tier --
+along with the sanitation sweep, the CRLF and decode rules and the tier and
+extension checks are all measured against committed bytes in ``snapshots/``
+today. An earlier draft of this paragraph said the tier "ships empty, so no
+committed file is ever measured against the 200 KB cap", which was false from
+the first commit: what ships empty is the set of snapshot *pages*, and only the
+rules that need a page or its sidecar are waiting for one.
 """
 
 from __future__ import annotations

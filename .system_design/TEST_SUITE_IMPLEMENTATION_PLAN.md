@@ -727,9 +727,13 @@ it carries no X-number.
   mechanism from the setting's name. The floor is enforced here because fragment
   content is chosen here.
 
-  **The snapshot tier ships empty**, so its committed-tree cases are vacuous and
-  only the synthetic cases carry those claims. The first real snapshot is the
-  first time they run on committed bytes and should be reviewed as such.
+  **No snapshot *page* ships**, so the committed-tree cases for the rules that
+  need a page or its sidecar are vacuous, and only the synthetic cases carry
+  those claims until the first real snapshot lands. Say it that way and not
+  "the tier ships empty": `snapshots/README.md` *is* committed, so the size cap,
+  the sanitation sweep and the encoding rules are measured against committed
+  bytes in that tier today. The looser phrasing stood through four review rounds
+  before it was caught.
 - **E3-4.** §5.4: readiness handshake, ephemeral ports, isolated profile
   directories, PID-tree cleanup keyed on spawned PIDs, child log capture on
   failure. Test-only. Blocked by E3-1, whose fixture child is the only thing in
