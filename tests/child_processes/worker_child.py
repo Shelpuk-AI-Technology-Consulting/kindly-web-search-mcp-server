@@ -51,7 +51,9 @@ can never observe a half-built tree. If the chain does not complete within
 :data:`CHAIN_TIMEOUT_SECONDS` the script says so in a frame and exits
 :data:`CHAIN_INCOMPLETE_EXIT_CODE` rather than announcing a tree that is not
 there -- and rather than hanging, which would surface as the caller's readiness
-timeout and name neither the chain nor the count. The pid file is written in that same window, and for a
+timeout and name neither the chain nor the count.
+
+The pid file is written in that same window, and for a
 stronger reason: a parent that is **cancelled** never receives this script's
 frames at all -- ``_run_worker_command`` appends them to the caller's
 diagnostics on the timeout path and on no other -- so the file is the only
@@ -459,8 +461,9 @@ def _spawn_grandchild(*, new_session: bool, record_dir: str, depth: int) -> int:
     every POSIX platform (``nodriver_worker.py:608`` spells it
     ``start_new_session=(os.name == "posix")``), which makes it its own session
     and group leader and puts it outside any process group a reaper could aim at
-    the worker; the default here inherits this process's group instead. A reaper has to survive both, and a single
-    flag producing only one of them would let half a fix look complete. The
+    the worker; the default here inherits this process's group instead. A reaper
+    has to survive both, and a single flag producing only one of them would let
+    half a fix look complete. The
     argument is POSIX-only in ``subprocess`` and is ignored on Windows, which
     has no session to start -- so both settings describe the same topology
     there, and the Windows tree-walk this fixture serves keys on parentage
@@ -564,12 +567,6 @@ def _report_incomplete_chain(
     surface as the caller's readiness timeout, whose message names neither the
     chain nor how much of it arrived.
 
-    Args:
-        record_dir: Directory the generations were recording into.
-        expected: How many generations were asked for.
-        grandchild_pid: The first generation, which this process started and can
-            therefore always name.
-
     **Two limits, stated rather than left to be found.** A generation that has
     started but not yet recorded itself is in neither list and survives to its
     own :data:`MAX_LIFETIME_SECONDS` backstop -- reachable only above depth one,
@@ -577,6 +574,12 @@ def _report_incomplete_chain(
     removes the record directory immediately after this returns, which can land
     while a generation is inside its own ``open``; that generation has already
     been signalled by then, and its traceback goes to ``DEVNULL``.
+
+    Args:
+        record_dir: Directory the generations were recording into.
+        expected: How many generations were asked for.
+        grandchild_pid: The first generation, which this process started and can
+            therefore always name.
 
     Returns:
         :data:`CHAIN_INCOMPLETE_EXIT_CODE`, for the caller to exit with.

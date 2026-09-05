@@ -1498,11 +1498,11 @@ double will serve, and fail with a sentence naming the loop.
 ### 5.4a The anti-flake harness — built in E3-4
 
 `tests/harness/anti_flake.py`, imported by the tests that start something real.
-Its calibration is `tests/test_anti_flake_harness.py` — thirty-one cases, of
-which **eleven spawn no process and open no socket**, for a reason given below.
+Its calibration is `tests/test_anti_flake_harness.py` — thirty-five cases, of
+which **thirteen spawn no process and open no socket**, for a reason given below.
 (Counted as collected node ids, which is the unit `pytest -q` reports; by test
-function it is nine and twenty-two. Where this document gives a case count, it is
-node ids.)
+function it is ten hermetic of twenty-eight. Where this document gives a case
+count, it is node ids.)
 
 | Helper | What it does |
 |---|---|
@@ -1531,12 +1531,17 @@ spawned after the walk is not reached by this harness. Stated rather than hidden
 and the reason the calibration asserts, over the harness's own syntax trees,
 that it names no group primitive at all.
 
-**Eleven cases are hermetic and that is not a preference.** The walk, its stat
+**Thirteen cases are hermetic and that is not a preference.** The walk, its stat
 parse and the kill set it produces are driven against injected values with no
 process in existence, because the obvious mutation of a tree reaper — one that
 loses its own-pid and pid-1 exclusions — ends the test session when run against a
 real tree and produces no report at all. Same argument `_signal_descendants`
-makes for injecting its signal primitives. One of them is a syntax-tree sweep for
+makes for injecting its signal primitives. Two of them pin the **lock** the
+watchdog and every reap share, by holding it and asserting the reaping call
+blocks — a property of the code rather than of a race, so it needs no process and
+cannot flake, and it is what the 13-in-120 measurement above does *not* say: that
+measurement shows the lock was needed, not that it is still there. Another is a
+syntax-tree sweep for
 group-signalling names, and its forbidden set includes `getpgrp` and `setsid`
 alongside `killpg`, `setpgid` and `getpgid`: `os.kill(-os.getpgrp(), SIGKILL)`
 reaches the caller's own group while naming none of the first three.
@@ -1651,22 +1656,6 @@ exercises proves less than it looks:
 | Windows branch | Reached by |
 |---|---|
 | `kill_pid` → `taskkill /F /PID` | the fixture child's own teardown, the depth-chain case reaping its record, and the root of every tree reap |
-| `pid_is_alive` → `tasklist` | every `wait_until_gone` assertion in §5.4a's reaping cases |
-| `kill_process_tree` → `taskkill /F /T` | the deadline case and the identical-command-line case |
-
-**What Windows does not get is a descendant *list*.** `descendants_of` returns
-nothing there, so the deadline case's "the walk found exactly these three" is
-asserted on Linux only; the "each of them is gone" half runs on both, against
-pids read from the fixture child's `--pid-file` rather than from the walk. Two
-`taskkill` facts the reap must not re-learn: it returns **128** whenever any
-member of the tree has already exited, which is the ordinary outcome, so nothing
-may gate on its status — liveness is what a caller keys on; and `/T` enumerates
-from the parent id in the process snapshot, which Windows neither maintains after
-a parent dies nor refuses to recycle, so an intermediate death can put deeper
-generations out of reach.
-
----|---|
-| `kill_pid` → `taskkill /F /PID` | the fixture child's own teardown, and the depth-chain case reaping its record |
 | `pid_is_alive` → `tasklist` | every `wait_until_gone` assertion in §5.4a's reaping cases |
 | `kill_process_tree` → `taskkill /F /T` | the deadline case and the identical-command-line case |
 

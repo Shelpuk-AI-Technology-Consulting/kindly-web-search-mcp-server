@@ -809,6 +809,7 @@ def spawned_child(
     deadline: float | None = None,
     kill: Callable[[int], None] = kill_pid,
     thread_factory: Callable[..., threading.Thread] = threading.Thread,
+    timer_factory: Callable[..., threading.Timer] = threading.Timer,
     on_spawn: Callable[[int], None] | None = None,
 ) -> Iterator[CapturedChild]:
     """Spawn a child, hand-shake with it, and reap its whole tree afterwards.
@@ -865,6 +866,10 @@ def spawned_child(
         thread_factory: Builds the pipe pumps; injected so a case can make
             thread creation fail, which is the only way to reach the window
             between spawning and wiring up.
+        timer_factory: Builds the deadline watchdog; injected for the same
+            reason and separately, because the two fail at different points and
+            a timer that will not start leaks the child rather than only
+            confusing the report.
         on_spawn: Called with the child's pid the moment it exists, for a case
             that must reason about a child the context manager never yielded.
 
@@ -898,10 +903,13 @@ def spawned_child(
             child.deadline_fired = True
             kill_process_tree(proc.pid, kill=kill)
 
-    # The `try` opens the moment the process exists, not once it is fully set
-    # up. Everything between those two points can still fail -- `Thread.start`
-    # raises under thread exhaustion -- and a failure there leaves a running
-    # child with nothing to reap it but its own five-minute backstop.
+    # The `try` opens as close to the spawn as anything can: the two statements
+    # above it cannot fail in a way that leaves the child unreaped -- one is a
+    # caller's callback, given the pid precisely so it can reap what this helper
+    # never yields, and the other builds a dataclass. Everything after it can:
+    # `Thread.start` raises under thread exhaustion, and a failure there would
+    # otherwise leave a running child with nothing to reap it but its own
+    # five-minute backstop.
     threads: list[threading.Thread] = []
     running_pumps: list[threading.Thread] = []
     timer: threading.Timer | None = None
@@ -942,9 +950,17 @@ def spawned_child(
         )
         # Armed only now, so the interval it bounds is the caller's block.
         if deadline is not None:
-            timer = threading.Timer(deadline, fire_deadline)
-            timer.daemon = True
-            timer.start()
+            # Recorded only once it is *running*, for the same reason the pumps
+            # are. `Thread.join` before `start` raises `RuntimeError`, and here
+            # that fires inside `finally` and skips everything after it -- the
+            # wait, the tree kill, the pump joins. Measured with
+            # `Timer.start` made to raise: the child was still alive after the
+            # helper unwound. One statement away from the defect the pumps
+            # already carry a case for, and this one costs a process.
+            pending = timer_factory(deadline, fire_deadline)
+            pending.daemon = True
+            pending.start()
+            timer = pending
         try:
             yield child
         except PASS_THROUGH_EXCEPTIONS:
@@ -969,20 +985,26 @@ def spawned_child(
         # reaching end of file does not mean it has exited, so a caller that
         # drained the stream can arrive here microseconds early and record a
         # kill that did not need to happen.
-        # Below the timer's join, so the watchdog is provably gone and these
-        # calls need no lock -- which is why they may block where
-        # `CapturedChild.wait_for_exit` may not.
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=EXIT_GRACE_SECONDS)
-        # Only reap a child that is still running. One that has already exited
-        # is a zombie until waited for, so its pid is still signallable -- and a
-        # caller asserting the exit code it chose should not have to reason
-        # about whether teardown replaced it.
-        if proc.poll() is None:
-            child.killed_while_running = True
-            kill_process_tree(proc.pid, kill=kill)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=REAP_TIMEOUT_SECONDS)
+        # Under the lock, not merely after the join. The join above is
+        # *bounded*, and the watchdog can legitimately outlast it: on Windows
+        # `fire_deadline` holds the lock across a `taskkill /T` and then a
+        # `taskkill /F`, either of which may take the whole reap budget. Saying
+        # "the watchdog is provably gone here" was therefore wrong, and it
+        # reopened the exact window the lock exists to close. Blocking calls are
+        # fine inside it here -- unlike in `wait_for_exit` -- because by this
+        # point no case is waiting on the deadline to fire.
+        with child.reap_lock:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=EXIT_GRACE_SECONDS)
+            # Only reap a child that is still running. One that has already
+            # exited is a zombie until waited for, so its pid is still
+            # signallable -- and a caller asserting the exit code it chose
+            # should not have to reason about whether teardown replaced it.
+            if proc.poll() is None:
+                child.killed_while_running = True
+                kill_process_tree(proc.pid, kill=kill)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=REAP_TIMEOUT_SECONDS)
         for thread in running_pumps:
             thread.join(timeout=REAP_TIMEOUT_SECONDS)
         # Only close a pipe whose pump has finished with it. Reachable when the

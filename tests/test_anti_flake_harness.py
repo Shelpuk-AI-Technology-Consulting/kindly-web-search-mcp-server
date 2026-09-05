@@ -32,13 +32,14 @@ import ast
 import asyncio
 import json
 import os
+import queue
 import socket
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from _pytest.outcomes import Failed
@@ -53,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 # both instruments are measured against.
 from tests.harness.anti_flake import (
     REAP_TIMEOUT_SECONDS,
+    CapturedChild,
     build_kill_order,
     collect_descendants,
     descendants_of,
@@ -113,6 +115,19 @@ CHATTY_SOURCE = (
     "time.sleep(60)\n"
 )
 
+def _raise_assertion_error() -> None:
+    """Raise the failure the capture cases drive.
+
+    A named function rather than a lambda, because a ``lambda`` cannot contain a
+    ``raise`` and the generator-``throw`` idiom that works around that is unreadable
+    in a parameter table.
+
+    Raises:
+        AssertionError: Always.
+    """
+    raise AssertionError("the original complaint")
+
+
 def _captured_stderr(notes: str) -> str:
     """Take just the child's stderr out of a failure note.
 
@@ -154,6 +169,12 @@ def _recording_killer(seen: list[int]) -> Any:
 
     return record_and_kill
 
+
+#: How long to give a call that must block before concluding that it has. Not a
+#: race: the lock cases hold the lock for the whole assertion, so a call that
+#: takes it can never complete inside this window however long or short it is,
+#: and one that does not take it completes in microseconds.
+LOCK_PROBE_SECONDS = 0.5
 
 #: How long to keep watching for a signal that must never arrive. Twice the
 #: deadline, so a watchdog that fires late is still caught -- and, in the case
@@ -675,12 +696,13 @@ def test_a_process_with_an_identical_command_line_survives_the_reap(
     """
     pid_file = tmp_path / "pids.json"
     # The control runs the descendants' **own program**, taken from the script
-    # rather than written out again here, and with an argv of the same shape.
+    # rather than written out again here, with generation 2's exact arguments:
+    # `("2", "1")` is the last generation of a depth-2 chain, so the only thing
+    # separating this command line from a real descendant's is the directory.
     # A control merely called `python` only exercises a reaper that matches on
     # the executable name; this one also fails a reaper matching on the command
-    # line, which is the mutant AC-7 names. The single difference is the
-    # directory it records into, which has to differ or it would be counted as
-    # part of the chain.
+    # line, which is the mutant that matters. The directory has to differ, or the
+    # chain wait would count this process as one of its own generations.
     control_dir = tmp_path / "control"
     control_dir.mkdir()
     descendant_source = _fixture_child_module()._DESCENDANT_SOURCE
@@ -691,7 +713,7 @@ def test_a_process_with_an_identical_command_line_survives_the_reap(
             descendant_source,
             descendant_source,
             str(control_dir),
-            "1",
+            "2",
             "1",
         ],
         stdin=subprocess.DEVNULL,
@@ -810,7 +832,7 @@ def test_the_deadline_watchdog_does_not_outlive_the_block_it_bounds() -> None:
 
     # The child was still hanging when the block ended, so teardown reaped it --
     # that is one signal, and it is not the watchdog's.
-    assert signalled == [child.proc.pid] or child.proc.pid in signalled
+    assert child.proc.pid in signalled
     reaped_at_teardown = list(signalled)
 
     time.sleep(PAST_DEADLINE_SECONDS)
@@ -867,7 +889,7 @@ def test_a_payload_past_the_pipe_capacity_neither_blocks_nor_is_truncated() -> N
 @pytest.mark.parametrize(
     ("raiser", "expected_type"),
     [
-        (lambda: (_ for _ in ()).throw(AssertionError("the original complaint")), AssertionError),
+        (_raise_assertion_error, AssertionError),
         (lambda: pytest.fail("the original complaint"), Failed),
     ],
     ids=["assertion-error", "pytest-fail"],
@@ -1115,3 +1137,204 @@ def test_a_failure_report_quotes_what_the_child_said_before_it_announced() -> No
     captured = _captured_stderr("".join(getattr(excinfo.value, "__notes__", [])))
     assert "starting up, not ready yet" in captured
     assert "harness.ready" in captured
+
+
+class _ExitedProcess:
+    """A stand-in for a child that has already finished.
+
+    Enough of ``Popen`` for the two lock cases and nothing more: they are about
+    which calls take :attr:`CapturedChild.reap_lock`, not about what a real
+    process does, and a real one would make the claim racy instead of exact.
+
+    Attributes:
+        returncode: The exit status, as ``Popen`` reports it once reaped.
+    """
+
+    returncode = 0
+
+    def poll(self) -> int:
+        """Report the exit status.
+
+        Returns:
+            Zero, always: this stand-in is a process that has already exited.
+        """
+        return self.returncode
+
+
+def _blocked_on(target: Any) -> threading.Thread:
+    """Start ``target`` on a thread and give it a moment to get stuck.
+
+    Args:
+        target: The callable to run.
+
+    Returns:
+        The running thread, joined for :data:`LOCK_PROBE_SECONDS` first so a
+        caller may ask whether it is still alive.
+    """
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(timeout=LOCK_PROBE_SECONDS)
+    return worker
+
+
+def test_a_poll_waits_for_the_lock_the_watchdog_holds() -> None:
+    """Make the reaping call take the lock, rather than merely documenting it
+
+    The lock is what stops the deadline watchdog signalling a pid somebody else
+    now owns: it makes the watchdog's guard-and-kill atomic against every reap
+    this harness performs. Without it the guard and the kill are separated by a
+    whole ``/proc`` walk -- 8 ms median -- and a caller reaping in that window
+    frees the pid first. Measured on the unguarded code: **13 of 120 runs**
+    signalled an already-reaped pid.
+
+    That measurement says the lock was *needed*. This case says it is *held*,
+    which is a different claim and the one nothing else made: with
+    ``poll_under_lock`` reduced to a bare ``proc.poll()``, all forty-nine cases
+    in these two modules still passed.
+
+    Hermetic and deterministic. The assertion is "this call blocks while the
+    lock is held", which is a property of the code and not of any race, so it
+    needs no process and cannot flake. Holding the lock here stands in for the
+    watchdog holding it; a real watchdog would make the case race the thing it
+    is trying to pin.
+    """
+    child = CapturedChild(
+        proc=cast(Any, _ExitedProcess()), argv=[], stderr_lines=queue.Queue()
+    )
+    polled: list[int | None] = []
+
+    with child.reap_lock:
+        worker = _blocked_on(lambda: polled.append(child.poll_under_lock()))
+
+        assert worker.is_alive(), (
+            "poll_under_lock returned while the lock was held, so it does not "
+            "take it -- and a reap can then land inside the watchdog's guard"
+        )
+        assert polled == []
+
+    worker.join(timeout=REAP_TIMEOUT_SECONDS)
+    assert polled == [0]
+
+
+def test_waiting_for_exit_reaps_through_the_lock_and_not_around_it() -> None:
+    """Keep the polling wait, which exists only to serve the lock
+
+    ``wait_for_exit`` polls rather than calling ``Popen.wait``, and that is not
+    a stylistic choice: ``wait`` reaps, so it would have to hold the lock, and a
+    lock held across a blocking wait blocks the watchdog for exactly the
+    interval the deadline is supposed to fire in. Polling is what lets the lock
+    be held for a single ``poll()`` at a time.
+
+    Restoring the obvious ``return self.proc.wait(timeout=timeout)`` therefore
+    breaks the invariant while looking simpler -- and, measured, left all
+    forty-nine cases passing. This is the case that notices.
+    """
+    child = CapturedChild(
+        proc=cast(Any, _ExitedProcess()), argv=[], stderr_lines=queue.Queue()
+    )
+    exited: list[int] = []
+
+    with child.reap_lock:
+        worker = _blocked_on(lambda: exited.append(child.wait_for_exit()))
+
+        assert worker.is_alive(), (
+            "wait_for_exit returned while the lock was held, so it reaps "
+            "outside the lock the watchdog takes"
+        )
+
+    worker.join(timeout=REAP_TIMEOUT_SECONDS)
+    assert exited == [0]
+
+
+@pytest.mark.subsystem
+def test_the_watchdog_holds_the_lock_across_its_whole_kill() -> None:
+    """Cover the walk *and* the signal, not just the check before them
+
+    The hazard is not that the watchdog polls without a lock; it is that it
+    polls, then walks ``/proc``, then signals, and a reap landing anywhere in
+    between frees the pid. So the lock has to span the whole of that, and a
+    guard-only lock would satisfy the two cases above while leaving the window
+    open.
+
+    Driven by making the *kill itself* block: the injected killer announces that
+    it has been reached and then waits. While it waits, a reap is attempted from
+    this thread and must not complete.
+
+    A real child, because this is the only one of the three that needs the
+    watchdog to genuinely fire.
+    """
+    reached = threading.Event()
+    release = threading.Event()
+
+    def blocking_kill(_pid: int) -> None:
+        """Signal that the kill was entered, then wait to be let go."""
+        reached.set()
+        release.wait(timeout=REAP_TIMEOUT_SECONDS)
+
+    with spawned_child(
+        [sys.executable, str(FIXTURE_CHILD), "--hang"],
+        readiness_marker=b"fixture.ready",
+        readiness_timeout=SHORT_READINESS_SECONDS,
+        deadline=BRIEF_DEADLINE_SECONDS,
+        kill=blocking_kill,
+    ) as child:
+        assert reached.wait(timeout=DEATH_TIMEOUT_SECONDS), (
+            "the deadline never fired, so this case never reached its subject"
+        )
+        polled: list[int | None] = []
+        worker = _blocked_on(lambda: polled.append(child.poll_under_lock()))
+        still_blocked = worker.is_alive()
+        release.set()
+        worker.join(timeout=REAP_TIMEOUT_SECONDS)
+
+    assert still_blocked, (
+        "a reap completed while the watchdog was inside its kill, so the lock "
+        "covers the guard alone and not the walk and the signal after it"
+    )
+
+
+@pytest.mark.subsystem
+def test_a_watchdog_that_will_not_start_still_leaves_no_live_child() -> None:
+    """Record the timer only once it is running, or lose the whole teardown
+
+    The same shape as the refused pipe pump, one statement later and with a
+    worse outcome. ``Thread.join`` before ``start`` raises ``RuntimeError``, and
+    here it raises *inside* ``finally`` -- so it does not merely replace a
+    diagnosis, it skips the wait, the tree kill, the pump joins and the stream
+    closes that follow it, and the child is left running.
+
+    Measured against the helper with ``Timer.start`` made to raise: the child was
+    still alive after the helper had unwound. Nothing else in the suite reaches
+    that path, because every other case has a watchdog that starts.
+    """
+    spawned: list[int] = []
+
+    class _RefusingTimer(threading.Timer):
+        """A watchdog that cannot be started."""
+
+        def start(self) -> None:
+            """Refuse to start.
+
+            Raises:
+                RuntimeError: Always.
+            """
+            raise RuntimeError("no timers available")
+
+    with (
+        pytest.raises(RuntimeError, match="no timers available"),
+        spawned_child(
+            [sys.executable, str(FIXTURE_CHILD), "--hang"],
+            readiness_marker=b"fixture.ready",
+            readiness_timeout=SHORT_READINESS_SECONDS,
+            deadline=SHORT_DEADLINE_SECONDS,
+            timer_factory=_RefusingTimer,
+            on_spawn=spawned.append,
+        ),
+    ):
+        pass
+
+    assert spawned, "the child was never spawned, so this case proves nothing"
+    assert wait_until_gone(spawned[0], timeout=DEATH_TIMEOUT_SECONDS), (
+        "a watchdog that failed to start took the teardown down with it and "
+        "left the child running"
+    )

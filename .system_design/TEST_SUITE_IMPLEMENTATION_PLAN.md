@@ -747,13 +747,13 @@ it carries no X-number.
   *Verify:* a hanging fixture child is killed at the deadline and its PID tree is
   gone; cleanup never matches processes by name.
 
-  **Landed.** `tests/harness/anti_flake.py` plus thirty-one cases in
+  **Landed.** `tests/harness/anti_flake.py` plus thirty-five cases in
   `tests/test_anti_flake_harness.py`, and three new flags on the fixture child
   with five cases beside them; the surface, its rationale and its measured
-  limits are §5.4a. Every rule was mutation-checked — **thirty distinct mutants,
-  no survivors** — but five of those survived their *first* form, and what that
-  cost is the most useful thing recorded here. Seven things the build changed
-  about the clause above.
+  limits are §5.4a. Every rule was mutation-checked — **thirty-six distinct
+  mutants, no survivors** — but **eleven** of those survived their *first* form,
+  and what that cost is the most useful thing recorded here. Seven things the build
+  changed about the clause above.
 
   **The decision the clause asked for is "yes, walk"**, and it is forced rather
   than chosen: production's tree is worker → Chromium → renderers, only the
@@ -772,7 +772,9 @@ it carries no X-number.
   caller's readiness timeout, whose message names neither the chain nor the
   count.
 
-  **Five mutants survived their first form, and each named a real weakness.**
+  **Eleven mutants survived their first form. Six named a weakness in a case;
+  four named a fix that had shipped with no case at all** (the lock, below); one
+  named a mutation that did not reproduce the scenario it was written for.
   A wait that stopped one generation early still observed the complete chain,
   because a quarter-second poll slice is ten times longer than a whole generation
   takes to start — the slice is now 10 ms, and the granularity is load-bearing
@@ -795,6 +797,16 @@ it carries no X-number.
   median, 14 ms worst — and a caller reaping in that window frees the pid.
   Measured on the unmodified code, **13 of 120 runs** issued the kill against an
   already-reaped pid. Every reaping call now goes through one `poll_under_lock`.
+
+  **And then that fix shipped untested, which the second review pass caught.**
+  Three mutations — dropping the lock from the poll, from the watchdog, and
+  restoring the obvious blocking `Popen.wait` — each left all forty-nine cases in
+  the two modules passing. A measurement showing a fix was *needed* is not a case
+  holding that it is still *there*, and the distinction is easy to miss precisely
+  because the probe felt like evidence. Three hermetic cases now hold the lock and
+  assert that a reaping call blocks, which is a property of the code rather than of
+  a race; a fourth pins that the lock spans the walk and the signal and not the
+  guard alone, since a guard-only lock passes the first three.
 
   **The deadline is timed from the handshake, not from the spawn.** Timed from
   the spawn it must exceed the readiness budget, or a slow start is killed
