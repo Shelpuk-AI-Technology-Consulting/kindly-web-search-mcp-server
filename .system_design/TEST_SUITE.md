@@ -1630,18 +1630,24 @@ platform. So the branches were run, in the instrument E1-6 used: a throwaway
 branch carrying one temporary workflow, `git diff --stat` confirming the workflow
 file was the only difference from the merge candidate, and both deleted after.
 
-**Result, `windows-latest`, 2026-09-05, merge candidate `59cf861`.**
+**Result, `windows-latest`, 2026-09-05, merge candidate `8ab4a38`.**
 `Python 3.13.15 (tags/v3.13.15:4061bc4) [MSC v.1944 64 bit (AMD64)]`,
 `Windows-2025Server-10.0.26100-SP0`, pytest 9.1.1. The three modules this step
-touches: **86 passed, 1 skipped, 0 failed** in 36.33 s. The whole suite:
-**819 passed, 3 skipped, 16 subtests, 0 failed** in 136.59 s.
+touches: **90 passed, 1 skipped, 0 failed** in 38.84 s. The whole suite:
+**823 passed, 3 skipped, 16 subtests, 0 failed** in 145.14 s.
 
-The one-test difference from Linux's 820/2 is
+The one-test difference from Linux's 824/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
 skips where `os.getpgid` does not exist. Nothing else diverges.
 
-🔴 **The re-run is not a formality, and this step is the evidence.** An earlier
-run of an earlier commit was green; a review then asked for a change to the very
+This is the **third** run. The first covered an earlier commit; the second
+covered `59cf861` and is the one described below; this one covers the lock cases
+and the timer fix that the second review pass produced. Every one of them was a
+re-run after a review-driven change, which is the rule — and the second is why
+the rule exists.
+
+🔴 **The re-run is not a formality, and this step is the evidence.** The first
+run was green; a review then asked for a change to the very
 branch the run covered, and the re-run failed two cases with *"generation pid N
 outlived the tree kill"*. The change had reordered the Windows reap to kill the
 root and then sweep — which reads more naturally, and leaks the entire chain,
