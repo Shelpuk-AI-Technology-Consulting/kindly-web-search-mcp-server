@@ -529,7 +529,10 @@ def check_corpus(root: Path) -> list[Violation]:
         # filename per tier directory instead of every `.md` anybody adds, so a
         # second one cannot appear without widening `allowed_filenames` -- a
         # reviewed, two-file edit. The size cap, the sanitation sweep and the
-        # encoding rules do apply to it; only provenance does not.
+        # encoding rules do apply to it; only provenance does not -- and each
+        # of those three is pinned by a case below, because a promise made in a
+        # comment is the natural thing to carve away when somebody wants a
+        # Markdown page this table rejects.
         if (
             path.name not in POLICY["allowed_filenames"]
             and extension not in POLICY["allowed_extensions"]
@@ -1669,6 +1672,68 @@ def test_a_placeholder_provenance_value_is_reported(
 
     assert check_corpus(corpus) == [
         Violation("malformed_field", "snapshots/snapshot.meta.json", field)
+    ]
+
+
+def test_a_readme_is_swept_for_sanitation(corpus: Path) -> None:
+    """Assert the exempt filename is exempt from provenance and nothing else
+
+    The escape this closes is concrete: a contributor who wants a page carrying
+    a Markdown ``Authorization:`` heading needs only to name it ``README.md``,
+    and before this case the whole sanitation sweep could have been carved out
+    of the allowed-filename path with every other case still green.
+
+    One row rather than all ten. That every row is armed is a claim the page and
+    sidecar sweeps already own; the claim here is the different one that a file
+    admitted **by name** is swept at all, and it needs one row to make it.
+    """
+    specimen = POLICY["sanitation_patterns"]["authorization_header"]["matches"][0]
+    (corpus / "snapshots" / "README.md").write_text(
+        f"# Snapshot tier\n\n    {specimen}\n", encoding="utf-8", newline="\n"
+    )
+
+    assert check_corpus(corpus) == [
+        Violation("sanitation", "snapshots/README.md", "authorization_header")
+    ]
+
+
+@pytest.mark.parametrize("tier", sorted(POLICY["tiers"]))
+def test_an_oversized_readme_is_reported(corpus: Path, tier: str) -> None:
+    """Assert a README takes its tier's byte cap like any other corpus file
+
+    Driven per tier because the caps differ: a single case against the larger
+    one would pass unchanged if the allowed filename were given a cap of its
+    own, or none.
+    """
+    cap = POLICY["tiers"][tier]["max_bytes"]
+    (corpus / tier / "README.md").write_text("x" * (cap + 1), encoding="utf-8", newline="\n")
+
+    assert check_corpus(corpus) == [
+        Violation("over_size_cap", f"{tier}/README.md", f"{cap + 1} > {cap}")
+    ]
+
+
+def test_a_readme_with_crlf_line_endings_is_reported(corpus: Path) -> None:
+    """Assert the encoding rules reach the exempt filename too"""
+    (corpus / "snapshots" / "README.md").write_bytes(b"# Snapshot tier\r\n")
+
+    assert check_corpus(corpus) == [
+        Violation(
+            "crlf_line_ending", "snapshots/README.md", "corpus files are LF-only"
+        )
+    ]
+
+
+def test_a_readme_that_is_not_utf8_is_reported(corpus: Path) -> None:
+    """Assert an undecodable README is named rather than skipped
+
+    The other half of the encoding promise. A README is as published as the
+    pages beside it, so a byte nobody can read is as unreviewed there.
+    """
+    (corpus / "snapshots" / "README.md").write_bytes(b"# Caf\xe9 tier\n")
+
+    assert [(v.rule, v.path) for v in check_corpus(corpus)] == [
+        ("undecodable", "snapshots/README.md")
     ]
 
 

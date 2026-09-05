@@ -674,14 +674,16 @@ it carries no X-number.
   at least three handcrafted fragments.
 
   **Landed.** `tests/corpus/html/` with `fragments/` and `snapshots/`,
-  `.gitattributes`, four seeded fragments and 153 cases in
+  `.gitattributes`, four seeded fragments and 158 cases in
   `tests/test_corpus_policy.py`; the policy, its rationale and its known limits
   are §3.3, which now carries the machine-readable half of itself in one fenced
-  JSON block. Every rule was mutation-checked — **33 distinct mutants across
-  five rounds, no survivors**: twenty covering the rules as first built, nine
-  more after review found that a policy held in two co-edited copies is one
-  source and not two, three separating the conjuncts of a compound guard, and
-  one for the `fullmatch` fix the automatic review found. **This document does
+  JSON block. Every rule was mutation-checked — **37 distinct mutants across six
+  rounds, no survivors**: twenty covering the rules as first built, nine more
+  after review found that a policy held in two co-edited copies is one source
+  and not two, three separating the conjuncts of a compound guard, one for the
+  `fullmatch` fix, and four carving the allowed filename out of the size,
+  encoding and sanitation sweeps — the escape a contributor takes when this
+  table rejects a Markdown page they want. **This document does
   not claim anything about the pull request's own description**, which is the
   claim an earlier draft made and could not keep: an artefact outside the
   repository cannot be held true by anything inside it, and the description had
