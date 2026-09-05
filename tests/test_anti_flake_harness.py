@@ -1269,10 +1269,19 @@ def test_the_watchdog_holds_the_lock_across_its_whole_kill() -> None:
     reached = threading.Event()
     release = threading.Event()
 
-    def blocking_kill(_pid: int) -> None:
-        """Signal that the kill was entered, then wait to be let go."""
+    def blocking_kill(pid: int) -> None:
+        """Announce that the kill was entered, wait to be let go, then kill.
+
+        The last step is not decoration. A killer that only blocks leaves the
+        hanging child alive, so the context manager's own teardown cannot reap
+        it: the wait times out, both pipe pumps time out, and the child survives
+        to its five-minute backstop. Measured at 31.5 s for this case alone
+        before the kill was added -- the same trap `_recording_killer` exists to
+        avoid, in a case that could not use it because it also has to block.
+        """
         reached.set()
         release.wait(timeout=REAP_TIMEOUT_SECONDS)
+        kill_pid(pid)
 
     with spawned_child(
         [sys.executable, str(FIXTURE_CHILD), "--hang"],

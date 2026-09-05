@@ -601,8 +601,8 @@ class CapturedChild:
     def poll_under_lock(self) -> int | None:
         """Reap the child if it has finished, without racing the watchdog.
 
-        **Every reaping call in this module goes through here**, and the reason
-        is a window that was measured rather than reasoned about. The watchdog
+        **Every reaping call that can race a live watchdog goes through here**,
+        and the reason is a window that was measured rather than reasoned about. The watchdog
         guards itself with a ``poll()`` before it signals -- the guard CPython
         puts inside ``Popen.send_signal`` -- but unlike CPython's, this one is
         separated from the kill by a whole ``/proc`` walk, which takes about
@@ -612,13 +612,31 @@ class CapturedChild:
         the deadline's kill against a pid that had already been reaped.
 
         The lock closes it by making the watchdog's guard-and-kill atomic
-        against every reap this module performs. It is held only for a
-        ``poll()``, never across a blocking wait -- a lock held for the duration
-        of a wait would block the watchdog for exactly the interval the deadline
-        is meant to fire in.
+        against every reap this module performs **while a deadline can still
+        fire**. Through this method it is held for a ``poll()`` and nothing
+        more: held for the duration of a wait, it would block the watchdog for
+        exactly the interval the deadline is meant to fire in, which is why
+        :meth:`wait_for_exit` polls rather than calling ``Popen.wait``.
 
-        A caller that reaches past this object for ``child.proc.wait()`` is
-        outside the lock and back in the window; nothing in this module does.
+        The one place that *does* hold it across blocking calls is
+        :func:`spawned_child`'s teardown, deliberately and for the opposite
+        reason: by then the timer has been cancelled and joined, so nothing is
+        waiting on a deadline, and taking the lock there is what covers the case
+        where the bounded join returned while the watchdog was still inside a
+        Windows ``taskkill``.
+
+        One call in :func:`spawned_child` deliberately does neither: the wait in
+        the readiness-failure handler, which runs while a child that died talking
+        is still being diagnosed. It is unlocked because at that point the
+        watchdog has **not been armed** -- arming happens after the handshake
+        succeeds -- so there is no timer to race. That is a property of the
+        arming order rather than of the wait, and moving the arming earlier would
+        reopen the window; the invariant is stated this way so the next edit has
+        something to contradict.
+
+        A caller that reaches past this object for ``child.proc.wait()`` while a
+        deadline is pending is outside the lock and back in the window; nothing
+        in this module does.
 
         Returns:
             The exit code, or ``None`` while the child is still running.
@@ -934,6 +952,9 @@ def spawned_child(
         try:
             _await_marker(child, readiness_marker, readiness_timeout)
         except AssertionError as failure:
+            # Unlocked, and safe only because the watchdog is armed *below* this
+            # -- see `CapturedChild.poll_under_lock`, which names this call as
+            # the one exception and says what would break it.
             # A child that has already exited did not merely fail to announce
             # itself -- it died talking, which is a different diagnosis. Waited
             # for briefly first: `argparse` writes its usage and *then* exits,

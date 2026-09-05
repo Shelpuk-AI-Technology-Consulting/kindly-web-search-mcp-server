@@ -803,10 +803,11 @@ it carries no X-number.
   restoring the obvious blocking `Popen.wait` — each left all forty-nine cases in
   the two modules passing. A measurement showing a fix was *needed* is not a case
   holding that it is still *there*, and the distinction is easy to miss precisely
-  because the probe felt like evidence. Three hermetic cases now hold the lock and
-  assert that a reaping call blocks, which is a property of the code rather than of
-  a race; a fourth pins that the lock spans the walk and the signal and not the
-  guard alone, since a guard-only lock passes the first three.
+  because the probe felt like evidence. **Two** hermetic cases now hold the lock and
+  assert that a reaping call blocks, which is a property of the code rather than
+  of a race; a **third**, which needs a real child, pins that the lock spans the
+  walk and the signal and not the guard alone, since a guard-only lock passes the
+  other two. A fourth covers the watchdog that cannot start at all.
 
   **The deadline is timed from the handshake, not from the spawn.** Timed from
   the spawn it must exceed the readiness budget, or a slow start is killed
