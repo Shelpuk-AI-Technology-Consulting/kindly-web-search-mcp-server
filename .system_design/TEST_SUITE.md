@@ -795,9 +795,11 @@ shape it has not been taught passes — including a bearer token shorter than
 twelve characters, which clears both the `authorization_header` and
 `bearer_token` rows, measured. Markdown is admitted into the corpus **by name**
 (`README.md`) rather than by extension, because the pairing rule asks for a
-sidecar only beside an HTML page: a blanket `.md` allowance would be a
-provenance-free slot in which a capture pasted as Markdown would name no source,
-no date and no licence. A step that needs another Markdown file in the corpus —
+sidecar only beside an HTML page. That **narrows** the provenance-free slot
+rather than closing it — a capture pasted into a file called `README.md` still
+names no source, no date and no licence — but it holds the slot to one known
+filename per tier directory instead of every `.md` anybody adds, and the size
+cap, the sanitation sweep and the encoding rules still apply to it. A step that needs another Markdown file in the corpus —
 E5-5's goldens are the expected case — has to widen `allowed_filenames`, which is
 a reviewed two-file edit and says out loud what pairs it. And because the snapshot tier ships
 **empty** — every snapshot rule is proven against synthetic input only — the

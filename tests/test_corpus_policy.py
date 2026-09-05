@@ -521,11 +521,15 @@ def check_corpus(root: Path) -> list[Violation]:
             violations.append(
                 Violation("unknown_tier", relative, "not in a tier directory")
             )
-        # `README.md` is exempt by name rather than `.md` by extension: a
-        # Markdown file needs no sidecar under the pairing rule, so a blanket
-        # `.md` allowance would be a provenance-free slot inside `snapshots/`
-        # -- a capture pasted in as Markdown would get the size cap and the
-        # sanitation sweep and name no source, no date and no licence.
+        # `README.md` is exempt by name rather than `.md` by extension,
+        # which **narrows** the provenance-free slot rather than closing it: a
+        # Markdown file needs no sidecar under the pairing rule, so a capture
+        # pasted into a file called `README.md` still names no source, no date
+        # and no licence. What the exemption buys is that the slot is one known
+        # filename per tier directory instead of every `.md` anybody adds, so a
+        # second one cannot appear without widening `allowed_filenames` -- a
+        # reviewed, two-file edit. The size cap, the sanitation sweep and the
+        # encoding rules do apply to it; only provenance does not.
         if (
             path.name not in POLICY["allowed_filenames"]
             and extension not in POLICY["allowed_extensions"]

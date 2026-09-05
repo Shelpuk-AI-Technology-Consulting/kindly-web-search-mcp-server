@@ -681,8 +681,11 @@ it carries no X-number.
   five rounds, no survivors**: twenty covering the rules as first built, nine
   more after review found that a policy held in two co-edited copies is one
   source and not two, three separating the conjuncts of a compound guard, and
-  one for the `fullmatch` fix the automatic review found. Counted once, here;
-  the pull request quotes the same figure.
+  one for the `fullmatch` fix the automatic review found. **This document does
+  not claim anything about the pull request's own description**, which is the
+  claim an earlier draft made and could not keep: an artefact outside the
+  repository cannot be held true by anything inside it, and the description had
+  in fact gone stale while this sentence asserted otherwise.
   Five things the build changed about the clause above.
 
   **"At least three handcrafted fragments" became four fragments named by role.**
