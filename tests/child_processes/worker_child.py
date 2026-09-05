@@ -21,10 +21,11 @@ the code under test lets a defect hide -- and it should not be leaned on here,
 because the fidelity of these frames is pinned to the production decoder anyway
 (see the smoke test's decoder case).
 
-Nothing in the suite imports this file to *use* it. One case loads it to
-re-derive :func:`stdout_pattern_byte`, which is safe because everything here is
-under the ``__main__`` guard, and is preferable to a second copy of that
-generator: two copies edited together catch drift and never deletion.
+Nothing in the suite imports this file to *use* it. Three call sites across two
+test modules load it to re-derive values defined here -- the standard-output
+pattern, and the descendant program a reaping case needs a look-alike of -- which
+is safe because everything here is under the ``__main__`` guard, and is
+preferable to copies: two copies edited together catch drift and never deletion.
 
 Its behaviours are **orthogonal flags**, not exclusive modes, because the
 lifecycle tests need combinations: "emit frames and then hang" is how the claim

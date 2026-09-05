@@ -1566,13 +1566,28 @@ this paragraph said it was.** CPython's `Popen.send_signal` polls and signals wi
 nothing in between; this one has a `/proc` walk between them, measured at 8 ms
 median and 14 ms worst on an idle machine, and a caller reaping in that window
 frees the pid before the signal lands — **13 of 120 runs** issued the deadline's
-kill against an already-reaped pid before the lock existed. Every reaping call in
-the harness therefore goes through one `poll_under_lock`, and the lock is held
-only for that poll, never across a blocking wait: held across a wait it would
-block the watchdog for exactly the interval the deadline exists to fire in. A
-caller reaching past the object for `child.proc.wait()` is outside the lock and
-back in the window; nothing in the harness does. Cancelling the timer in
-`finally` is thread hygiene and determinism, **not** the safety mechanism — and a case drives each half separately, because a disarmed
+kill against an already-reaped pid before the lock existed. Every reaping call
+that can race a live watchdog therefore goes through one `poll_under_lock`, which
+holds the lock for that poll and nothing more: held across a wait it would block
+the watchdog for exactly the interval the deadline exists to fire in, which is
+why `wait_for_exit` polls instead of calling `Popen.wait`.
+
+**Two calls do not go through it, and both are exceptions with reasons rather
+than oversights.** `spawned_child`'s teardown takes the lock *directly* and holds
+it across blocking calls, deliberately: by then the timer has been cancelled and
+joined, so nothing waits on a deadline, and taking it there is what covers a
+bounded join returning while the watchdog is still inside a Windows `taskkill`.
+And the readiness-failure handler's wait is unlocked, safe only because the
+watchdog is armed **after** the handshake succeeds — a property of the arming
+order, not of the wait, so moving the arming earlier reopens the window. Stating
+it that way is the point: an absolute invariant leaves a future edit nothing to
+contradict, and this paragraph asserted one until a review round caught it in the
+document after it had been corrected in the code.
+
+A caller reaching past the object for `child.proc.wait()` while a deadline is
+pending is outside the lock and back in the window; nothing in the harness does.
+Cancelling the timer in `finally` is thread hygiene and determinism, **not** the
+safety mechanism — and a case drives each half separately, because a disarmed
 watchdog and a guarded one are indistinguishable unless the deadline is allowed
 to expire *inside* the block.
 

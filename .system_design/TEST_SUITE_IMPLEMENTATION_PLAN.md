@@ -749,7 +749,7 @@ it carries no X-number.
 
   **Landed.** `tests/harness/anti_flake.py` plus thirty-five cases in
   `tests/test_anti_flake_harness.py`, and three new flags on the fixture child
-  with five cases beside them; the surface, its rationale and its measured
+  with four cases beside them; the surface, its rationale and its measured
   limits are §5.4a. Every rule was mutation-checked — **thirty-six distinct
   mutants, no survivors** — but **eleven** of those survived their *first* form,
   and what that cost is the most useful thing recorded here. Seven things the build
