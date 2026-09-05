@@ -746,6 +746,91 @@ it carries no X-number.
   never made to *walk* a tree.
   *Verify:* a hanging fixture child is killed at the deadline and its PID tree is
   gone; cleanup never matches processes by name.
+
+  **Landed.** `tests/harness/anti_flake.py` plus thirty-five cases in
+  `tests/test_anti_flake_harness.py`, and three new flags on the fixture child
+  with four cases beside them; the surface, its rationale and its measured
+  limits are §5.4a. Every rule was mutation-checked — **thirty-six distinct
+  mutants, no survivors** — but **eleven** of those survived their *first* form,
+  and what that cost is the most useful thing recorded here. Seven things the build
+  changed about the clause above.
+
+  **The decision the clause asked for is "yes, walk"**, and it is forced rather
+  than chosen: production's tree is worker → Chromium → renderers, only the
+  worker announces, and a harness built on the announcement would be measured
+  against a fixture that never made it walk. `--grandchild-depth N` is the flag,
+  in the shape this step predicted.
+
+  **A depth-N chain is built asynchronously, which falsified a sentence two
+  documents already stated.** §5.2a and the script both promised that the
+  descendant is spawned before readiness is announced, so a harness reaping on
+  the frame can never see a half-built tree. True of one descendant the script
+  spawns itself; false of generations two and upward, which other processes
+  spawn after it has returned. The script now *awaits* the chain, and on expiry
+  says so in a frame and exits 70 rather than announcing or hanging — announcing
+  restores exactly the race the wait exists to close, and hanging surfaces as the
+  caller's readiness timeout, whose message names neither the chain nor the
+  count.
+
+  **Eleven mutants survived their first form. Six named a weakness in a case;
+  four named a fix that had shipped with no case at all** (the lock, below); one
+  named a mutation that did not reproduce the scenario it was written for.
+  A wait that stopped one generation early still observed the complete chain,
+  because a quarter-second poll slice is ten times longer than a whole generation
+  takes to start — the slice is now 10 ms, and the granularity is load-bearing
+  rather than cosmetic. A readiness helper that ignored its marker entirely
+  passed, because the fixture child announces on its *first* line; that case now
+  drives an artefact which logs before it announces. A watchdog stripped of its
+  pid-reuse guard passed, because the disarm in `finally` reached it first — two
+  sequential guards masking each other, so the case now lets the deadline expire
+  *inside* the block. A pump returning the **right number of wrong bytes** passed,
+  because the case checked a length where its own docstring claimed a byte-for-byte
+  comparison. And dropping the pre-readiness lines from a failure report passed,
+  because the report also quotes the argv and the assertion was reading the whole
+  note — the same reason the fixture child's own capture case was passing against
+  an entirely empty report, which is fixed in the same commit.
+
+  **The deadline's pid-reuse guard needed a lock, and a probe is what proved
+  it.** The first build guarded the watchdog with the `poll()` CPython puts inside
+  `Popen.send_signal` and called that complete. It is not: CPython polls and
+  signals with nothing in between, while this walks `/proc` between them — 8 ms
+  median, 14 ms worst — and a caller reaping in that window frees the pid.
+  Measured on the unmodified code, **13 of 120 runs** issued the kill against an
+  already-reaped pid. Every reaping call now goes through one `poll_under_lock`.
+
+  **And then that fix shipped untested, which the second review pass caught.**
+  Three mutations — dropping the lock from the poll, from the watchdog, and
+  restoring the obvious blocking `Popen.wait` — each left all forty-nine cases in
+  the two modules passing. A measurement showing a fix was *needed* is not a case
+  holding that it is still *there*, and the distinction is easy to miss precisely
+  because the probe felt like evidence. **Two** hermetic cases now hold the lock and
+  assert that a reaping call blocks, which is a property of the code rather than
+  of a race; a **third**, which needs a real child, pins that the lock spans the
+  walk and the signal and not the guard alone, since a guard-only lock passes the
+  other two. A fourth covers the watchdog that cannot start at all.
+
+  **The deadline is timed from the handshake, not from the spawn.** Timed from
+  the spawn it must exceed the readiness budget, or a slow start is killed
+  mid-handshake and reported as a deadline; that is a relation every caller would
+  have to reason about, and it dissolves rather than needing enforcement. Nothing
+  is lost — a handshake that never completes is already bounded and reaped by the
+  same `finally` — and it took the deadline cases from twelve seconds to one.
+
+  **The fixture child's calibration is deliberately NOT migrated onto the
+  harness**, though this step's clause reads as though it should be. That module
+  is what makes the script a fixed point, and the harness's own calibration
+  drives that script: routing it back would leave two instruments measuring each
+  other with no third point, and a failure unable to name which broke. It takes
+  `pid_is_alive` and `kill_pid` and nothing else.
+
+  **The Windows half is measured, not assumed — and the re-run earned its
+  place.** The harness has Windows branches — `taskkill /F`, `tasklist`, and a
+  `/T` tree reap standing in for an enumeration the standard library does not
+  offer — and this repository has no standing lane on any platform. A first run
+  was green; a review then asked for a change to the branch that run covered, the
+  re-run failed two cases with "generation pid N outlived the tree kill", and the
+  cause was a reordering that let `taskkill /T` walk from a root it had already
+  killed. No Linux case can see it. §5.4b records both runs.
 - **E3-5.** *Verify:* a file added there without `@pytest.mark.package` fails the
   policy test; source-checkout jobs pass `--ignore=tests/package`.
 - **E3-6.** **Production change**, not a test helper. E9-5 must observe a hostname

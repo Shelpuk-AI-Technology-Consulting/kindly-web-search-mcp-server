@@ -29,11 +29,10 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import importlib.util
 import json
 import os
-import pathlib
 import queue
-import signal
 import subprocess
 import sys
 import threading
@@ -51,6 +50,16 @@ from kindly_web_search_mcp_server.scrape.worker_runner import (
     _consume_stderr_line,
     _StderrAccumulator,
 )
+
+# Taken from the shared harness rather than defined here, which is the direction
+# the dependency runs. These two are platform probes and nothing more -- forty
+# lines of `taskkill`, `tasklist` and `/proc` reading with no opinion about how a
+# test is structured -- so importing them costs this module none of its
+# independence. The *rest* of the harness is deliberately not used here: this
+# module calibrates the fixture child, and driving that through a second
+# instrument would leave every failure unable to say which of the two broke.
+from tests.harness.anti_flake import kill_pid as _kill_pid
+from tests.harness.anti_flake import pid_is_alive as _pid_is_alive
 
 #: The script under test, addressed by path rather than imported. It is not part
 #: of any package and is never imported by the suite -- that is the point of it.
@@ -116,77 +125,6 @@ def _child_environment() -> dict[str, str]:
     return dict(os.environ)
 
 
-def _kill_pid(pid: int) -> None:
-    """Kill one process by pid, tolerating its having already exited.
-
-    Keyed on a pid this test spawned, never on a process name: a name scan is
-    vulnerable to pid reuse and would reach a developer's own processes.
-
-    Args:
-        pid: The process to kill.
-    """
-    # `SIGKILL` does not exist on Windows and `Popen.kill` is not available for a
-    # pid this process does not own as a `Popen`, so the platforms diverge here.
-    try:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/F", "/PID", str(pid)],
-                capture_output=True,
-                check=False,
-                timeout=REAP_TIMEOUT_SECONDS,
-            )
-        else:
-            os.kill(pid, signal.SIGKILL)
-    # Bounded and swallowed because this runs in `finally`: a `taskkill` stalled
-    # behind a scanner must fail the case that is already failing, not hang the
-    # suite in teardown.
-    except (OSError, subprocess.TimeoutExpired):
-        return
-
-
-def _pid_is_alive(pid: int) -> bool:
-    """Report whether a pid names a running process.
-
-    Args:
-        pid: The process to probe.
-
-    Returns:
-        ``True`` while the process is running. "Running" is exact on Windows and
-        on Linux; on other POSIX platforms it degrades to "exists in the process
-        table", because the signal-0 probe alone cannot exclude a zombie and
-        there is no ``/proc`` to consult. A ``False`` for a direct child is only
-        meaningful once that child has been waited for.
-    """
-    if sys.platform == "win32":
-        try:
-            completed = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=REAP_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            return False
-        return str(pid) in completed.stdout
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    # A signal-0 probe succeeds against a zombie, so on Linux the process state
-    # is read as well. Cheap -- one `open` -- and it is what lets the descendant
-    # case mean "running" rather than "exists in the process table". `/proc` is
-    # Linux-only; on other POSIX platforms the probe stays as strong as it was.
-    try:
-        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return True
-    # Field three, after the comm field, which is parenthesised and may itself
-    # contain spaces -- so split after the last ")" rather than on whitespace.
-    _, _, rest = stat.rpartition(")")
-    return rest.split()[0] != "Z"
-
-
 def _pump_lines(stream: Any, sink: queue.Queue[bytes | None]) -> None:
     """Move complete lines off a pipe onto a queue until the pipe closes.
 
@@ -232,6 +170,10 @@ class _RunningChild:
         stdout_sink: Single-element list receiving the whole stdout payload.
         killed_while_running: Whether teardown had to kill a child that had not
             finished, which makes its stdout payload untrustworthy.
+        seen_stderr: Every line taken off the queue so far, in order. The queue
+            is destructive, so a line a case consumed in order to *synchronise*
+            on it would otherwise be missing from every later failure report,
+            and the child would read as though it had said nothing.
     """
 
     proc: subprocess.Popen[bytes]
@@ -241,6 +183,7 @@ class _RunningChild:
     stdout_sink: list[bytes] = field(default_factory=list)
     ready: dict[str, Any] = field(default_factory=dict)
     killed_while_running: bool = False
+    seen_stderr: list[bytes] = field(default_factory=list)
 
     @property
     def grandchild_pid(self) -> int | None:
@@ -345,6 +288,7 @@ class _RunningChild:
                     "the fixture child's stderr closed before the expected line "
                     f"(exit code {self.proc.poll()}).{self.captured_report()}"
                 )
+            self.seen_stderr.append(line)
             return line
 
     def captured_report(self) -> str:
@@ -359,9 +303,9 @@ class _RunningChild:
             A block naming the argv and quoting the captured streams, ready to
             append to an assertion message.
         """
-        seen: list[bytes] = []
         # Non-blocking: this runs on a failure path and must not add a second
-        # wait to a case that is already failing.
+        # wait to a case that is already failing. Joined to everything already
+        # read rather than replacing it -- see `seen_stderr`.
         while True:
             try:
                 line = self.stderr_lines.get_nowait()
@@ -369,11 +313,11 @@ class _RunningChild:
                 break
             if line is None:
                 break
-            seen.append(line)
+            self.seen_stderr.append(line)
         stdout = self.stdout_sink[0] if self.stdout_sink else b"<still open>"
         return (
             f"\n  argv:   {self.argv}"
-            f"\n  stderr: {b''.join(seen)!r}"
+            f"\n  stderr: {b''.join(self.seen_stderr)!r}"
             f"\n  stdout: {stdout!r}"
         )
 
@@ -397,6 +341,32 @@ class _RunningChild:
             if line is None:
                 return lines
             lines.append(line)
+
+
+def _fixture_child_module() -> Any:
+    """Load the fixture child as a module, for the one case that needs a value from it.
+
+    The script is spawned by path everywhere else, and this is deliberately the
+    only exception. It exists so the generated standard-output payload has a
+    single source: a copy of the generator here and a copy in the script would
+    be edited together, which catches drift and never deletion -- a generator
+    replaced by a run of zeros satisfies two agreeing copies.
+
+    Safe because the script does nothing at import: every statement outside its
+    definitions is a constant, and ``main`` runs only under the ``__main__``
+    guard. Loaded under a name of its own so it cannot collide with a module the
+    suite imports normally.
+
+    Returns:
+        The imported module object.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "kindly_fixture_child_under_test", FIXTURE_CHILD
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _decode_frame(line: bytes) -> dict[str, Any]:
@@ -989,6 +959,22 @@ def test_the_pid_file_is_readable_once_readiness_has_arrived(
         assert recorded == {
             "pid": child.proc.pid,
             "grandchild_pid": child.grandchild_pid,
+            # Present whatever the flags said -- empty when no descendant was
+            # asked for, which this case does not exercise. A key whose presence
+            # depended on a flag would make the file's shape a function of the
+            # command line, which is worse for its readers than a key that is
+            # sometimes empty.
+            #
+            # Asserted here as well as in the depth case because this is the
+            # case that pins the file by whole-dict equality, and that is what
+            # notices a key nobody expected rather than a key that changed.
+            "chain": [
+                {
+                    "pid": child.grandchild_pid,
+                    "ppid": child.proc.pid,
+                    "generation": 1,
+                }
+            ],
         }
 
 
@@ -1032,13 +1018,223 @@ def test_a_failure_inside_the_block_carries_the_childs_own_output() -> None:
     """
     with (
         pytest.raises(AssertionError) as excinfo,
-        _fixture_child("--emit-frame", "alpha", "--hang"),
+        _fixture_child("--emit-frame", "alpha", "--hang") as child,
     ):
+        # Waited for, not assumed. The frame is written immediately after
+        # readiness, but the reader thread need not have queued it when the body
+        # runs -- and the report's drain is non-blocking by design, because it
+        # runs on a failure path. Measured: without this wait the case failed
+        # four runs in ten under twelve spinner processes on four cores. The line
+        # is consumed here and still reaches the report, which is what
+        # `seen_stderr` is for.
+        assert b"alpha" in child.next_stderr_line(READINESS_TIMEOUT_SECONDS)
         raise AssertionError("the original complaint")
 
     message = str(excinfo.value)
     assert "the original complaint" in message
     assert "argv:" in message
-    # The child's real frame, not a placeholder: this is what distinguishes an
-    # attachment that captured the stream from one that captured an empty one.
-    assert "alpha" in message
+    # The child's real frame, not a placeholder -- and read from the *stderr*
+    # section rather than from the whole message. `--emit-frame alpha` puts that
+    # word on the command line, which the report also quotes, so a message-wide
+    # check is satisfied by the flag that asked for the frame whether or not the
+    # frame was ever captured. Measured on the harness's twin of this case: with
+    # the captured lines dropped from the report entirely, it still passed.
+    captured = message.split("stderr:", 1)[1].split("stdout:", 1)[0]
+    assert "alpha" in captured
+
+
+@pytest.mark.subsystem
+def test_a_descendant_chain_is_complete_before_readiness_is_announced(
+    tmp_path: Path,
+) -> None:
+    """Build a tree deeper than one level, and announce only when all of it exists
+
+    The default descendant is one level deep and announces its own pid, so a
+    harness that reaps from the announcement is never made to *walk* anything --
+    and production's tree is worker -> browser -> renderers, where only the first
+    announces. ``--grandchild-depth`` is what makes an unannounced generation
+    exist, so the anti-flake harness's tree walk has something to find.
+
+    The ordering claim is the one worth pinning. Generations two and upward are
+    spawned by *other processes*, which this script does not supervise, so
+    without an explicit wait the readiness frame would arrive while the chain
+    was still being built and a reaper acting on it would observe a half-built
+    tree -- the exact property section 5.2a promises and, before this flag, got
+    for free from there being only one descendant.
+
+    **The record is read with no wait of any kind.** That is what makes the
+    mutant reachable: a case that retried the read would pass against a script
+    that announced first and completed the chain afterwards.
+
+    Parentage is asserted from what each generation reported about *itself*,
+    never from a process-table lookup. The only parent map in this tree is the
+    anti-flake harness's, and this module is deliberately not allowed to use it:
+    it calibrates the fixture child, and running that through a second
+    instrument would leave a failure unable to name which of the two broke.
+
+    Args:
+        tmp_path: Per-test directory for the pid file.
+    """
+    pid_file = tmp_path / "pids.json"
+
+    with _fixture_child(
+        "--pid-file",
+        str(pid_file),
+        "--spawn-grandchild",
+        "--grandchild-depth",
+        "3",
+        "--grandchild-new-session",
+        "--hang",
+    ) as child:
+        recorded = json.loads(pid_file.read_text(encoding="utf-8"))
+        chain = recorded["chain"]
+        try:
+            assert [entry["generation"] for entry in chain] == [1, 2, 3]
+            # Each generation reports the previous one as its parent, and the
+            # first reports this script. That is the chain the walk must find.
+            parents = [entry["ppid"] for entry in chain]
+            assert parents == [child.proc.pid, chain[0]["pid"], chain[1]["pid"]]
+            # Only the first generation is announced. The rest are what the
+            # harness has to discover, so announcing them here would retire the
+            # claim this flag exists to create.
+            assert recorded["grandchild_pid"] == chain[0]["pid"]
+            assert child.ready["data"]["grandchild_pid"] == chain[0]["pid"]
+
+            # New session on the first generation only, matching production:
+            # Chromium calls `setsid` for itself and its renderers inherit its
+            # group rather than leading one each.
+            if sys.platform != "win32":
+                assert os.getpgid(chain[0]["pid"]) == chain[0]["pid"]
+                assert os.getpgid(chain[1]["pid"]) == chain[0]["pid"]
+        finally:
+            # Reaped here, from the record, because this module's teardown knows
+            # only about the announced generation -- by design, since the
+            # unannounced ones are the harness's problem and not this script's.
+            for entry in reversed(chain):
+                _kill_pid(entry["pid"])
+
+
+@pytest.mark.subsystem
+def test_a_chain_that_cannot_complete_is_reported_rather_than_announced() -> None:
+    """Fail a half-built tree loudly, instead of announcing it or hanging
+
+    Three outcomes were available at the chain wait's expiry and two of them are
+    worse than this one. Announcing anyway restores the half-built tree the wait
+    exists to prevent, while the design document goes on claiming otherwise.
+    Hanging converts a chain bug into the caller's readiness timeout, whose
+    message reads "wrote no stderr line within 30s" -- a diagnosis three steps
+    from the cause, and the substitution that a separate case already exists to
+    forbid.
+
+    So the script exits, and the exit code is deliberately **not** 2: an unknown
+    flag already exits 2 through ``argparse``, and a chain failure that read as a
+    bad command line would send the next reader to the command line.
+
+    Driven with a zero bound rather than a slow chain, because a timing race is
+    not a test. The wait checks its deadline before its first read, so a bound of
+    zero expires deterministically.
+
+    Depth one, so the only process that can leak is the one the script holds a
+    handle to and kills. What this case therefore does *not* drive is the loop
+    that kills a partial record of deeper generations; that is stated here
+    rather than left for a reader to assume.
+    """
+    argv = [
+        sys.executable,
+        str(FIXTURE_CHILD),
+        "--spawn-grandchild",
+        "--chain-timeout",
+        "0",
+    ]
+    completed = subprocess.run(
+        argv,
+        capture_output=True,
+        check=False,
+        timeout=REAP_TIMEOUT_SECONDS,
+        env=_child_environment(),
+    )
+    stderr = completed.stderr.decode("utf-8", errors="replace")
+
+    assert completed.returncode not in (0, 2), stderr
+    assert "fixture.chain_incomplete" in stderr, stderr
+    assert READY_STAGE not in stderr, stderr
+    # The counts are what make the frame a diagnosis rather than a complaint.
+    frame = _decode_frame(
+        next(
+            line.encode("utf-8")
+            for line in stderr.splitlines()
+            if "chain_incomplete" in line
+        )
+    )
+    assert frame["data"] == {"expected": 1, "observed": 0}
+
+
+@pytest.mark.subsystem
+def test_a_depth_without_the_flag_that_arms_it_is_refused() -> None:
+    """Reject a chain nobody would get, rather than silently building one
+
+    ``--grandchild-depth`` does nothing without ``--spawn-grandchild``, and the
+    two spellings of "does nothing" are very different to debug. Ignoring it
+    costs an afternoon spent looking for a tree that was never built; refusing it
+    costs one line of ``argparse`` output that names the missing flag.
+
+    The floor is asserted in the same case because it is the same decision: a
+    depth of zero is a chain nobody can reap, and defaulting it to one silently
+    would be the same trap in the other direction.
+    """
+    for flags, expected in (
+        (["--grandchild-depth", "2"], "needs --spawn-grandchild"),
+        # Depth one specifically, because it is the value a caller reaches for
+        # first and the one a plain default would swallow: with `default=1` the
+        # arming check cannot tell an explicit 1 from no flag at all.
+        (["--grandchild-depth", "1"], "needs --spawn-grandchild"),
+        (["--spawn-grandchild", "--grandchild-depth", "0"], "at least 1"),
+    ):
+        completed = subprocess.run(
+            [sys.executable, str(FIXTURE_CHILD), *flags],
+            capture_output=True,
+            check=False,
+            timeout=REAP_TIMEOUT_SECONDS,
+            env=_child_environment(),
+        )
+
+        assert completed.returncode == 2, completed.stderr
+        assert expected in completed.stderr.decode("utf-8", errors="replace")
+
+
+@pytest.mark.subsystem
+def test_stdout_bytes_writes_exactly_the_payload_it_promises() -> None:
+    """Produce a payload too large to pass on a command line
+
+    ``--stdout`` carries its text as an argument, and Windows caps a whole
+    command line at 32767 characters, so the pipe-capacity claim -- which needs
+    more than the 64 KiB a Linux pipe buffers -- cannot be driven through it at
+    all. This flag generates the payload inside the child instead.
+
+    The expected bytes are re-derived from the script's own generator rather
+    than from a literal kept here. A copy in this file and a copy in the script
+    would be two things edited together, which catches drift and never deletion:
+    a generator quietly turned into a constant run of zeros would satisfy two
+    agreeing copies. Loading the function is safe because the script does
+    nothing at import -- everything is under its ``__main__`` guard.
+    """
+    size = 70_000
+    with _fixture_child("--stdout-bytes", str(size)) as child:
+        assert child.wait_for_exit() == 0
+
+    payload = child.stdout_bytes()
+
+    assert len(payload) == size
+    # Loaded once and bound, not called inside the comprehension: the generator
+    # re-evaluates its whole expression per item, so the inline form imported the
+    # script seventy thousand times and took twelve seconds. Measured.
+    script = _fixture_child_module()
+    expected = bytes(script.stdout_pattern_byte(i) for i in range(size))
+    assert payload == expected
+    # The pattern's *spread* is what makes the round-trip meaningful, and a
+    # single-source expectation cannot check it: a generator replaced by a run
+    # of zeros would satisfy the comparison above, and a payload with no
+    # carriage return or newline in it would not notice a text-mode write
+    # translating them. Asserted here so the generator's period is a property of
+    # the case rather than a claim in its docstring.
+    assert b"\r" in payload and b"\n" in payload
