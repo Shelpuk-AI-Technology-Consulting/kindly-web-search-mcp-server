@@ -43,24 +43,25 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-# Imported rather than copied from. `_pid_is_alive` and `_kill_pid` are forty
-# lines of platform-specific probing that already exist, already run on both
-# platforms, and already carry the reasoning for why a signal-0 probe is not
-# enough on Linux. Generalising them into a shared harness belongs to the
-# anti-flake harness step; taking a second committed consumer now is what tells
-# that step the helpers are load-bearing rather than local to the module that
-# introduced them.
+# `_pid_is_alive` and `_kill_pid` now come from the shared harness, which is
+# where the anti-flake step put them -- this module having been their second
+# consumer is what showed they were load-bearing rather than local to the module
+# that introduced them. `FIXTURE_CHILD` stays with that module, because it names
+# the fixture child and that is the module which calibrates it.
 #
-# Through the `tests.` package, which is the convention five other modules here
-# already use -- and not a bare name plus a `sys.path` entry for this directory.
-# Measured: pytest imports the file as `tests.test_worker_child_fixture`, so a
-# bare import leaves **two** module objects in `sys.modules`, executed twice. It
-# is harmless while that module has no state, and it means a future
-# `monkeypatch.setattr` against it would reach one copy and not the other.
+# Through the `tests.` package, which is the convention several other modules
+# here already use -- and not a bare name plus a `sys.path` entry for this
+# directory. Measured: pytest imports the file as
+# `tests.test_worker_child_fixture`, so a bare import leaves **two** module
+# objects in `sys.modules`, executed twice. It is harmless while that module has
+# no state, and it means a future `monkeypatch.setattr` against it would reach
+# one copy and not the other.
 from kindly_web_search_mcp_server.scrape import universal_html, worker_runner
 from kindly_web_search_mcp_server.scrape.worker_runner import _run_worker_command
 from kindly_web_search_mcp_server.utils.diagnostics import Diagnostics
-from tests.test_worker_child_fixture import FIXTURE_CHILD, _kill_pid, _pid_is_alive
+from tests.harness.anti_flake import kill_pid as _kill_pid
+from tests.harness.anti_flake import pid_is_alive as _pid_is_alive
+from tests.test_worker_child_fixture import FIXTURE_CHILD
 
 #: The markup the fixture child writes. Byte-identical to
 #: `tests/test_universal_html_loader.py`'s `WORKER_STDOUT`: that file asserts the
