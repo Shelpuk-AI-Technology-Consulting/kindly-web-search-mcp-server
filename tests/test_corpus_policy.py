@@ -744,11 +744,18 @@ def _field_violations(
     # A field its tier forbids is skipped here, so one defect produces one
     # violation rather than a forbidden-field and a malformed-field report for
     # the same key.
+    #
+    # `fullmatch`, not `search`: without `re.MULTILINE`, Python's `$` also
+    # matches immediately before a final newline, so `re.search` accepted
+    # `"2026-01-02\n"` -- and `"https://example.com/x\n"` too, since `\S+`
+    # simply stops at the newline. `_is_filled` passes such a value as well,
+    # because `strip()` removes it. Measured: `search` True and `fullmatch`
+    # False for both patterns.
     for field, pattern in POLICY["field_patterns"].items():
         if field in spec["forbidden"]:
             continue
         value = data.get(field)
-        if _is_filled(value) and not re.search(pattern, value):
+        if _is_filled(value) and not re.fullmatch(pattern, value):
             violations.append(Violation("malformed_field", relative, field))
 
     return violations
@@ -889,8 +896,12 @@ def test_every_sanitation_row_carries_both_kinds_of_specimen() -> None:
 
     Every firing case below is generated from these lists, so emptying one in
     both copies of the policy deletes the cases that would have noticed.
-    Measured: emptying ``bearer_token``'s positives dropped the module from 135
-    cases to 132, green.
+    Measured by collecting the module with and without them: emptying
+    ``bearer_token``'s positives removes exactly three cases, and before this
+    case existed the remainder stayed green. The drop is recorded rather than a
+    pair of totals -- a total is stale the next time a case is added, and this
+    is the module whose whole subject is a number that drifts the moment one of
+    its copies is edited.
     """
     for row_id, row in sorted(POLICY["sanitation_patterns"].items()):
         for kind in ("matches", "does_not_match"):
@@ -1650,6 +1661,27 @@ def test_a_placeholder_provenance_value_is_reported(
     checkable shape carry a pattern for exactly that reason.
     """
     data = {**CONFORMING_SNAPSHOT_SIDECAR, field: placeholder}
+    _rewrite_sidecar(_sidecar_path(corpus, "snapshots", "snapshot"), data)
+
+    assert check_corpus(corpus) == [
+        Violation("malformed_field", "snapshots/snapshot.meta.json", field)
+    ]
+
+
+@pytest.mark.parametrize("field", sorted(POLICY["field_patterns"]))
+def test_a_provenance_value_with_a_trailing_newline_is_reported(
+    corpus: Path, field: str
+) -> None:
+    r"""Assert a stray newline inside a value does not satisfy its pattern
+
+    Both patterns are anchored `^...$`, which under `re.search` is not the same
+    as "the whole value": without `re.MULTILINE`, `$` matches immediately before
+    a final newline. `_is_filled` cannot catch it either, since `strip()` removes
+    the newline. Driven for **both** fields -- `source_url` is not exempt by
+    virtue of `\S`, because `\S+` simply stops at the newline and `$` matches
+    there.
+    """
+    data = {**CONFORMING_SNAPSHOT_SIDECAR, field: f"{CONFORMING_SNAPSHOT_SIDECAR[field]}\n"}
     _rewrite_sidecar(_sidecar_path(corpus, "snapshots", "snapshot"), data)
 
     assert check_corpus(corpus) == [

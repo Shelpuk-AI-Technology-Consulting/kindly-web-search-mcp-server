@@ -674,10 +674,15 @@ it carries no X-number.
   at least three handcrafted fragments.
 
   **Landed.** `tests/corpus/html/` with `fragments/` and `snapshots/`,
-  `.gitattributes`, four seeded fragments and 135 cases in
+  `.gitattributes`, four seeded fragments and 153 cases in
   `tests/test_corpus_policy.py`; the policy, its rationale and its known limits
   are §3.3, which now carries the machine-readable half of itself in one fenced
-  JSON block. Every rule was mutation-checked — twenty mutants, no survivors.
+  JSON block. Every rule was mutation-checked — **33 distinct mutants across
+  five rounds, no survivors**: twenty covering the rules as first built, nine
+  more after review found that a policy held in two co-edited copies is one
+  source and not two, three separating the conjuncts of a compound guard, and
+  one for the `fullmatch` fix the automatic review found. Counted once, here;
+  the pull request quotes the same figure.
   Five things the build changed about the clause above.
 
   **"At least three handcrafted fragments" became four fragments named by role.**
