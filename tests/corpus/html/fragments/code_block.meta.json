@@ -1,0 +1,3 @@
+{
+  "rationale": "Handcrafted. A fenced-code case: a pre/code block carrying a language class and significant leading whitespace, next to an inline code span. Holds a Markdown transform to preserving indentation inside the fence while still unescaping entities, and to not confusing the inline span with the block."
+}

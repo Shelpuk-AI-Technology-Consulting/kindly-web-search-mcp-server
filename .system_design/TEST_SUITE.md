@@ -525,13 +525,18 @@ gate.
   (a table, a code block, nested lists, an entity edge case) carry the bulk of
   assertions; a limited set of sanitized real-page snapshots covers
   whole-document behaviour.
-- **Provenance and licensing.** Each snapshot has a sidecar `.meta.json` naming
-  source URL, capture date, and licence or rationale. Do not snapshot pages whose
-  terms forbid redistribution.
+- **Provenance and licensing.** Each HTML page has a sidecar `.meta.json`. A
+  snapshot's sidecar names source URL, capture date, and licence or rationale;
+  a fragment's sidecar names why the fragment exists, and may name neither a
+  source URL nor a capture date, because a fragment is authored here rather than
+  captured. `README.md`, admitted by name, is the only corpus file without a
+  sidecar — the pairing rule asks for one beside an HTML page, and nothing else.
+  Do not snapshot pages whose terms forbid redistribution.
 - **Sanitization before commit.** Strip cookies, tokens, session identifiers,
   personal data, analytics and third-party script bodies. A committed snapshot is
   published.
-- **Size cap.** 200 KB per snapshot, trimmed to the region under test.
+- **Size cap.** 200 KB per snapshot, trimmed to the region under test, and 8 KB
+  per fragment — the bound that makes the two tiers mechanically distinguishable.
 - **Assertion style.** Structural by default (headings preserved, code fences
   intact, no raw HTML left, length within cap). Golden-file matching only for the
   small handcrafted fragments, where a diff is readable.
@@ -540,6 +545,282 @@ gate.
   broke); a deliberate extractor change (update the affected expectations in the
   same PR); a live canary failure showing a real page changed shape. Never an
   automatic overwrite.
+
+**Built in E3-3.** `tests/corpus/html/` with two tier directories, `.meta.json`
+sidecars, and `tests/test_corpus_policy.py` as the guard. The bullets above are
+the policy as a human reads it; the block below is the **mechanically checkable
+subset** of it, in the form the guard reads. The guard holds the same block as a
+module constant and compares the two in both directions, so editing either alone
+turns the suite red. Naming a sidecar: the suffix replaces the page's extension,
+so `table_basic.html` is described by `table_basic.meta.json`, never
+`table_basic.html.meta.json`.
+
+Everything in the bullets that the block does not cover stays a human check —
+"personal data" beyond an email address, "third-party script bodies" beyond four
+named vendors, whether a page's terms actually permit redistribution, and whether
+a `capture_date` is true rather than merely well-formed.
+
+```json
+{
+  "sidecar_suffix": ".meta.json",
+  "allowed_extensions": [
+    ".html",
+    ".meta.json"
+  ],
+  "allowed_filenames": [
+    "README.md"
+  ],
+  "required_fragments": [
+    "code_block",
+    "html_entities",
+    "nested_lists",
+    "table_basic"
+  ],
+  "min_fragment_text_chars": 250,
+  "tiers": {
+    "fragments": {
+      "max_bytes": 8192,
+      "required": [
+        "rationale"
+      ],
+      "required_any_of": [],
+      "forbidden": [
+        "source_url",
+        "capture_date"
+      ]
+    },
+    "snapshots": {
+      "max_bytes": 204800,
+      "required": [
+        "source_url",
+        "capture_date"
+      ],
+      "required_any_of": [
+        "licence",
+        "rationale"
+      ],
+      "forbidden": []
+    }
+  },
+  "field_patterns": {
+    "source_url": "^https?://\\S+$",
+    "capture_date": "^\\d{4}-\\d{2}-\\d{2}$"
+  },
+  "sanitation_patterns": {
+    "set_cookie": {
+      "regex": "(?i)(?:set-cookie\\s*[:=]|document\\.cookie\\s*=|http-equiv\\s*=\\s*[\\\"'\\\\]{0,2}set-cookie)",
+      "matches": [
+        "Set-Cookie: sid=EXAMPLE-NOT-REAL; Path=/",
+        "<meta http-equiv=\"Set-Cookie\" content=\"sid=EXAMPLE-NOT-REAL\">",
+        "document.cookie = \"pref=dark; path=/\";"
+      ],
+      "does_not_match": [
+        "<p>This site uses cookies to set your preferences.</p>"
+      ]
+    },
+    "session_identifier": {
+      "regex": "(?i)\\b(?:phpsessid|jsessionid|asp\\.net_sessionid|sessionid|session_id)\\b\\s*[:=]\\s*\\S",
+      "matches": [
+        "PHPSESSID=EXAMPLE-NOT-REAL",
+        "JSESSIONID: EXAMPLE-NOT-REAL"
+      ],
+      "does_not_match": [
+        "<p>The JSESSIONID cookie is set by the container.</p>",
+        "<p>Session identifiers are stripped before commit.</p>"
+      ]
+    },
+    "authorization_header": {
+      "regex": "(?i)\\bauthorization\\s*[:=]\\s*[\\\"'\\\\]{0,2}(?:bearer|basic|digest|token|apikey|api[_-]key)\\s+[A-Za-z0-9._~+/=-]{12,}",
+      "matches": [
+        "Authorization: Basic RVhBTVBMRQ==NOTREAL",
+        "authorization = \"Digest username=EXAMPLE0000\""
+      ],
+      "does_not_match": [
+        "<h2>Authorization: Bearer tokens</h2>",
+        "<p>Authorization is required before publishing.</p>"
+      ]
+    },
+    "bearer_token": {
+      "regex": "(?i)\\bbearer\\s+[A-Za-z0-9._~+/-]{16,}",
+      "matches": [
+        "Bearer RVhBTVBMRS1OT1QtQS1SRUFMLVRPS0VO"
+      ],
+      "does_not_match": [
+        "<p>Bearer of the standard</p>",
+        "<p>Please bear with us.</p>"
+      ]
+    },
+    "jwt": {
+      "regex": "\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}",
+      "matches": [
+        "eyJhbGciOiJIUzI1NiJ9.RVhBTVBMRV9OT1RfUkVBTA.c2lnbmF0dXJlX2V4YW1wbGU"
+      ],
+      "does_not_match": [
+        "<code>eyJ is the base64 prefix of a JSON object.</code>"
+      ]
+    },
+    "email_address": {
+      "regex": "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]++@(?!\\d+[xX]\\b)[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+      "matches": [
+        "contact reader@example.com for more details",
+        "<a href=\"mailto:info@example.org\">write to us</a>",
+        "reach us at reader&#64;example.com any time"
+      ],
+      "does_not_match": [
+        "<p>Follow @example on social media.</p>",
+        "<img src=\"logo@2x.png\" srcset=\"logo@2x.png 2x, logo@3x.png 3x\">"
+      ]
+    },
+    "google_analytics": {
+      "regex": "(?i)(?:google-analytics\\.com/analytics\\.js|googletagmanager\\.com/(?:gtag/js|gtm\\.js|ns\\.html)|\\bgtag\\s*\\(|\\b_gaq\\.push\\s*\\()",
+      "matches": [
+        "<script src=\"https://www.googletagmanager.com/gtag/js?id=G-EXAMPLE\"></script>",
+        "gtag('config', 'G-EXAMPLE');",
+        "<iframe src=\"https://www.googletagmanager.com/ns.html?id=GTM-EXAMPLE\"></iframe>",
+        "_gaq.push(['_setAccount', 'UA-EXAMPLE']);"
+      ],
+      "does_not_match": [
+        "<p>We removed Google Analytics in 2019.</p>"
+      ]
+    },
+    "segment_analytics": {
+      "regex": "(?i)(?:cdn\\.segment\\.com/analytics\\.js|\\banalytics\\.load\\s*\\()",
+      "matches": [
+        "analytics.load('EXAMPLE_WRITE_KEY');",
+        "<script src=\"https://cdn.segment.com/analytics.js/v1/EXAMPLE/x.js\"></script>"
+      ],
+      "does_not_match": [
+        "<p>The analytics team load-tests weekly.</p>"
+      ]
+    },
+    "facebook_pixel": {
+      "regex": "(?i)(?:connect\\.facebook\\.net/\\S*fbevents\\.js|\\bfbq\\s*\\()",
+      "matches": [
+        "fbq('init', 'EXAMPLE');",
+        "<script src=\"https://connect.facebook.net/en_US/fbevents.js\"></script>"
+      ],
+      "does_not_match": [
+        "<p>The fbq abbreviation is not used here.</p>"
+      ]
+    },
+    "hotjar": {
+      "regex": "(?i)(?:static\\.hotjar\\.com/c/hotjar|\\b_hjSettings\\b)",
+      "matches": [
+        "window._hjSettings={hjid:0,hjsv:0};",
+        "<script src=\"https://static.hotjar.com/c/hotjar-0.js\"></script>"
+      ],
+      "does_not_match": [
+        "<p>Hotjar was evaluated and rejected.</p>"
+      ]
+    }
+  }
+}
+```
+
+**A file's tier is its directory, not a field inside the file it governs.** A
+sidecar that declared its own tier would make the cheapest escape from the
+provenance rules a one-word edit in the same file the rules apply to. Deriving
+the tier from `fragments/` or `snapshots/` makes that escape a file move, which
+is visible in a diff.
+
+**What `forbidden` closes, and what it does not.** A fragment may not name a
+`source_url` or a `capture_date`, so a page already committed under `snapshots/`
+cannot be moved into `fragments/` while keeping its provenance — the provenance
+has to be deleted first, and the deletion is what a reviewer sees. That argument
+**does not extend to a fresh commit**, which is the route a real page actually
+takes into this repository: a new file has no prior provenance to delete, so
+nothing is visible, and `forbidden` makes that route marginally *cheaper* rather
+than harder. The per-tier size cap is what stands in for review there. 8 KB is
+about eight and a half times the largest fragment this step seeds —
+`table_basic.html`, at 961 bytes — and a twenty-fifth of a trimmed real page at
+the snapshot cap, so a captured page filed as a fragment fails on its bytes
+without a reviewer having to recognise it. That is a weaker
+guarantee than the moved-file case and is stated as one.
+
+**The caps are per tier, and the prose bullet's "200 KB per snapshot" is the
+snapshot half of it.** They are given in bytes rather than kilobytes so nobody
+has to guess which kilobyte was meant: 204800 is 200 * 1024, 8192 is 8 * 1024.
+The cap applies to every file in a tier, sidecars included, because every one of
+them is published.
+
+**Fragments carry a prose floor because a shorter one pins the wrong extractor.**
+`extract_content_as_markdown` tries trafilatura first and falls back to
+BeautifulSoup whenever the result is falsy. There is **no exception handling
+around that call** — the three `except Exception`s in `scrape/extract.py` guard
+its three imports — so the fallback is selected by an empty result, not by an
+error, and nothing is logged either way.
+
+**The floor is a measured margin, not a documented threshold, and the difference
+matters.** Measured on trafilatura 2.2.0 with production's exact argument set,
+the result went falsy below roughly **112** extracted characters, not 250: at 10
+and 37 extracted characters the output was byte-identical to
+`_bs4_markdownify_fallback`, and at 627 it was byte-identical to trafilatura's.
+`MIN_EXTRACTED_SIZE` — documented as 250, "used to trigger fallbacks" — governs
+that cliff in one direction only: lowering it to 10 moved the cliff down to about
+23 characters, and raising it to 600 did not move it at all, because above the
+default trafilatura's own internal fallbacks (readability, justext, baseline)
+produce output that then clears `MIN_OUTPUT_SIZE`. So 250 is kept as
+`min_fragment_text_chars` because it is roughly 2.2x the measured cliff and is
+the number a reader of trafilatura's documentation will recognise — **not**
+because 250 is where the fallback begins. Anyone lowering it should re-measure
+rather than reason from the setting's name. The measure strips tags, script and
+style bodies before counting, so a fragment padded with attributes still fails.
+
+**The corpus is UTF-8 with LF endings, checked as well as declared.** Two rules
+are measured in bytes — the size cap, and the goldens E5-5 takes from these
+fragments — and a CRLF checkout changes both. `.gitattributes` pins
+`tests/corpus/** text eol=lf`; the guard's own rule is what notices a file that
+arrived before the attribute covered it.
+
+**Every sanitation row carries positive and negative specimens, as lists.** The
+positive specimens prove the row is armed, per shape: `Set-Cookie:` is a
+*response header* and a saved page is a body, so a row armed only against the
+header form passes both ways a cookie actually reaches committed HTML — the
+`http-equiv` meta and a `document.cookie` assignment. Each shape is therefore its
+own specimen and its own case. The negative specimens pin the nearest miss the
+author could think of; they do not prove a row is not over-broad in general, only
+against the false positives that were measured. Two were: `Authorization: Bearer
+tokens` in an API documentation heading, which is the archetypal page this
+project scrapes, and `logo@2x.png`, the retina asset naming convention. Both now
+pass, and both are committed as negative specimens.
+
+**The email row is anchored for cost, not only for correctness.** Measured on a
+single 200 KB page, the unanchored form took 57.9 s, because the leading `+`
+retries from every position in a long run of word characters; the anchored,
+possessive form takes 0.004 s with identical results on every specimen. A guard
+whose cost is quadratic in page size is a guard somebody switches off the first
+time a real snapshot lands.
+
+**What this guard does not do.** It is a policy check over a small curated
+directory, not a secret scanner: it knows ten patterns, and a credential in a
+shape it has not been taught passes — including a bearer token shorter than
+twelve characters, which clears both the `authorization_header` and
+`bearer_token` rows, measured. Markdown is admitted into the corpus **by name**
+(`README.md`) rather than by extension, because the pairing rule asks for a
+sidecar only beside an HTML page. That **narrows** the provenance-free slot
+rather than closing it — a capture pasted into a file called `README.md` still
+names no source, no date and no licence — but it holds the slot to one known
+filename per tier directory instead of every `.md` anybody adds, and the size
+cap, the sanitation sweep and the encoding rules still apply to it. A step that needs another Markdown file in the corpus —
+E5-5's goldens are the expected case — has to widen `allowed_filenames`, which is
+a reviewed two-file edit and says out loud what pairs it. And because no snapshot
+*page* is committed, the rules that need a page or its sidecar — pairing, the
+required fields, the either-or field, the field patterns — are proven against
+synthetic input only, so the first real snapshot committed here is the first time
+*those* run on committed bytes and should be reviewed as such. The file-level
+rules are not waiting: `snapshots/README.md` is committed, so the 200 KB cap, the
+sanitation sweep and the encoding rules are measured against committed bytes in
+that tier today. There is deliberately **no waiver
+mechanism**: a documentation page that legitimately shows an `Authorization`
+header would today have to be trimmed rather than exempted. That is the right
+default while the tier is empty, and the wrong one the moment it costs a real
+capture; the decision to add `sanitation_exemptions` belongs to whoever hits it,
+with the exempting-file count pinned so waivers stay countable.
+
+**Corpus content authored here is subject to the same table.** The handcrafted
+fragments are scanned exactly as a capture is, so a `curl` example carrying an
+`Authorization:` header cannot be used as sample content — write examples that
+contain no credential-shaped text.
 
 ---
 

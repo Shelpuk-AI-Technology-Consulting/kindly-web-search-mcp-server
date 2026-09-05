@@ -1,0 +1,3 @@
+{
+  "rationale": "Handcrafted. Named, decimal and hexadecimal character references, a non-breaking space, and a double-escaped ampersand. Holds a Markdown transform to decoding each form exactly once: decoding twice turns the double-escaped case into a bare ampersand, and decoding zero times leaves raw entity text in output that claims to be plain Markdown."
+}

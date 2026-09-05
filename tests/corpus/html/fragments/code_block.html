@@ -1,0 +1,16 @@
+<article>
+  <h2>Using the resolver</h2>
+  <p>The resolver takes a single URL and returns the page as text. Call
+  <code>resolve(url)</code> and read what comes back; the inline code span in
+  this sentence and the block below are different things, and a Markdown
+  transform has to keep them different. Indentation inside the block is
+  significant, so a transform that reflows it changes the meaning of the code it
+  is supposed to be reproducing verbatim.</p>
+  <pre><code class="language-python">def resolve(url: str) -&gt; str:
+    if not url:
+        raise ValueError("empty url")
+    return fetch(url)
+</code></pre>
+  <p>The block carries a language class, which a transform may either preserve on
+  the fence or drop. Either is defensible; doing it inconsistently is not.</p>
+</article>

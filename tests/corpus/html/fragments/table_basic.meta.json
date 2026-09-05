@@ -1,0 +1,3 @@
+{
+  "rationale": "Handcrafted. A three-column table with a thead/tbody split, so a Markdown transform can be held to emitting a header row, a delimiter row and one row per record, in document order. Authored here rather than captured because a real page's table arrives wrapped in layout markup that would make a golden-file diff unreadable."
+}

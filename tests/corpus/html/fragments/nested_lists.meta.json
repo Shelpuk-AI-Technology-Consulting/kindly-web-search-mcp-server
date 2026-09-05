@@ -1,0 +1,3 @@
+{
+  "rationale": "Handcrafted. An unordered list containing both an ordered and an unordered sublist, with text on the parent item beside the nested list. Holds a Markdown transform to the indentation depth and to keeping ordered and unordered markers distinct one level down, which is where flattening bugs show up."
+}
