@@ -1524,12 +1524,14 @@ duplicating tests or touching the same files.
   step's notes — and note that E4-3 will by then have replaced the single broad
   job with the `fast` and `subsystem` pair, so the floor to lower may be two
   floors in two files. The first `chromium`-marked case this step adds is
-  deselected by that selection and drops the count below the floor. Since the
-  floor became an equality this surfaces as
-  `tests/test_ci_collection_floors.py` naming both numbers and the line to
-  write, rather than as the job exiting 4 with *"check the -m expression against
-  the registered markers"* — a message that named the wrong cause on a step
-  whose selector was fine.
+  deselected by that selection and drops the count below the floor. **That is
+  the direction in which the guard cannot help**, and knowing so in advance is
+  the point of this note: a shrink trips pytest's own `--min-selected` check
+  during collection, so the job exits 4 with *"check the -m expression against
+  the registered markers"* — a message naming the wrong cause on a step whose
+  selector is fine — and `tests/test_ci_collection_floors.py` never runs to say
+  otherwise. Run that guard locally, where no floor is passed, and it names both
+  numbers and the line to write.
   *Verify, added:* each affected floor is re-measured in the same pull request
   and written from that observed run. **Not** computed by subtracting the number
   of cases this step marks: arithmetic on a measurement invents a number nobody

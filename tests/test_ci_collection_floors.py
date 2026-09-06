@@ -151,9 +151,14 @@ def _run_commands(text: str) -> list[str]:
             steps_indent, step_key_indent = len(steps.group("indent")), None
             index += 1
             continue
+        # A comment is a structural no-op wherever it sits, so it must not end
+        # the region: one at column 0 between two steps would otherwise hide
+        # every floor below it, silently, which is the failure this module exists
+        # to refuse rather than commit.
         if (
             steps_indent is not None
             and line.strip()
+            and not line.lstrip().startswith("#")
             and _indent_of(line) <= steps_indent
         ):
             steps_indent = step_key_indent = None
@@ -628,6 +633,15 @@ jobs:
       - run: python -m pytest -m "fast"
 """
 
+A_COMMENT_BETWEEN_STEPS = """\
+jobs:
+  a:
+    steps:
+      - run: python -m pytest -m "not live" --min-selected 12
+# A comment is a structural no-op wherever it sits, column 0 included.
+      - run: python -m pytest -m "subsystem" --min-selected 34
+"""
+
 AN_ACTION_INPUT_NAMED_RUN = """\
 jobs:
   a:
@@ -698,6 +712,19 @@ def test_two_floors_in_one_file_are_both_recovered() -> None:
     """
 
     assert [floor for _, floor in _declared_floors(TWO_FLOORS)] == [12, 34]
+
+
+def test_a_comment_between_steps_does_not_end_the_scan() -> None:
+    """Measured: a comment at column 0 hid the second floor entirely.
+
+    The region ended on the first non-blank line indented no further than
+    ``steps:``, and a comment is such a line. The floor below it was not
+    refused and not reported -- it simply was not there, and the recorded-set
+    check could not see it either, because that compares only *which files*
+    declare at least one floor.
+    """
+
+    assert [floor for _, floor in _declared_floors(A_COMMENT_BETWEEN_STEPS)] == [12, 34]
 
 
 def test_an_action_input_named_run_is_not_a_command() -> None:

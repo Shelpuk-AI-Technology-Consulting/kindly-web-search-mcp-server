@@ -3261,7 +3261,8 @@ first, and nothing rechecked it at merge time.** The two merges were
 twenty-eight seconds apart, so the gate went live forty tests short; two further
 merges the same evening took the gap to seventy-three before anyone measured it.
 Either figure is room for a whole subsystem to leave the gate while it stayed
-green, and the second is the one that shows the gap *widens* on its own. Reviewer attention cannot see a conflict between two branches no reviewer
+green, and the second is the one that shows the gap *widens* on its own.
+Reviewer attention cannot see a conflict between two branches no reviewer
 read together, so the rule is enforced by a test rather than stated.
 
 `tests/test_ci_collection_floors.py` recovers every `--min-selected` declared
