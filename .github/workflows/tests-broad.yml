@@ -63,8 +63,11 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     # 🔴 Measured, not guessed, and strictly below the runner's ceiling. The
-    # selection takes 8m39s on a developer's Linux machine (785 passed, 2
-    # skipped, 787 selected); this cap is roughly seven times that, because it
+    # selection took 8m39s on a developer's Linux machine when this cap was set,
+    # at 785 passed, 2 skipped, 787 selected. That reading is left as it was
+    # taken rather than renumbered as the suite grows: the runtime beside it has
+    # not been re-measured, and substituting today's count would fabricate a
+    # provenance for the cap. This cap is roughly seven times that, because it
     # must also cover Windows -- where a suite that spawns child processes and
     # shells out to mypy commonly runs two to three times slower -- plus a cold
     # dependency install. Both labels above are ordinary GitHub-hosted runners
@@ -121,17 +124,32 @@ jobs:
         # The floor is enforced inside pytest, where collection is authoritative
         # and the test exit code is preserved.
         #
-        # ⚠️ **Update this number in the same pull request that deliberately adds
-        # tests to, or removes them from, this selection** -- and read it from
-        # the run, never from a number written down earlier. Note the shape that
-        # is NOT an addition to the selection: the first test carrying a
-        # `chromium`, `live` or `package` marker is deselected here, so it lowers
-        # this count. Today those three markers select zero of the 787, so this
-        # floor is the whole suite; the step that adds the first browser test
-        # owns lowering it, and the failure message it would otherwise get names
-        # the wrong cause.
+        # 🔴 **This number is held to EQUALITY by
+        # `tests/test_ci_collection_floors.py`, not merely to "at least".** It
+        # went live 40 tests short and nothing said so: two pull requests
+        # merged 28 seconds apart, the one adding 40 tests first and this one
+        # second, carrying a count read from the tree before that merge. Two
+        # further merges the same evening took the gap to 73 before anyone
+        # measured it.
+        # A floor calibrated in one branch is invalidated by any other branch
+        # that merges first, so the rule "update it in the same pull request"
+        # cannot be kept by attention alone -- it is enforced now.
+        #
+        # ⚠️ **Update this line in the same pull request that changes what this
+        # selection collects, for any reason** -- not only a deliberate addition
+        # of tests, and not only a change under `tests/`: the count moves when a
+        # parametrization source moves, including one held in a design document.
+        # Read the new value from the guard's own failure message, which names
+        # it, and never from a number written down earlier. Two branches that
+        # both change it now collide on this line, which is the point.
+        #
+        # ⚠️ Note the shape that is NOT an addition to the selection: the first
+        # test carrying a `chromium`, `live` or `package` marker is deselected
+        # here, so it lowers this count. Those three markers select zero today,
+        # so this floor is currently the whole suite; the step that adds the
+        # first browser test owns lowering it.
         run: >-
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 787
+          --min-selected 885

@@ -101,7 +101,7 @@ concurrency:
 
 jobs:
   review-scripts:
-    # The Claude review system's own tests -- 551 of them, covering the rule
+    # The Claude review system's own tests -- 555 of them, covering the rule
     # selector, the result classifier, the failure notices, the prompt redactor,
     # the findings schema, the workflow's own wiring, the workflow parser behind
     # the runner-ceiling guard, and the `ci-required` aggregation.

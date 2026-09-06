@@ -1,7 +1,7 @@
 """Child-process pytest plugin recording one run's outcomes as JSON.
 
 Loaded with ``-p`` by :mod:`tests.test_baseline_failure_ledger` into the child
-process it spawns, and by nothing else. It exists because the human-readable
+process it spawns, and by :mod:`tests.test_ci_collection_floors`, which loads it into a ``--collect-only`` child to read a CI job's selected count without parsing pytest's summary line. It exists because the human-readable
 short summary is not a usable channel for this: measured on pytest 9.1.1, a
 failing ``unittest`` subtest prints a **passing** dot in the progress line and a
 ``SUBFAILED(i=2) <nodeid>`` line in the summary, never the word ``FAILED``. A
