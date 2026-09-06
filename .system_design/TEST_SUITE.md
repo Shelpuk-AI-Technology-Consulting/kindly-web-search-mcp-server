@@ -472,9 +472,18 @@ can state. The per-parser properties are instead:
   rejection does not depend on trailing slashes, case in the scheme, or
   query-string order. **Scoped to the branches each parser's own guards reach**,
   which is narrower than "never a bare `Exception`" and is narrower for a
-  measured reason: two inputs escape every parser *before* any guard runs, and
-  §14 records them. **Asserted over all twenty-one of those branches, minus one
-  named pair that does not hold** — see the landing note below; an earlier draft
+  measured reason: two inputs escape the claim, in **different** ways, and §14
+  records both. A malformed URL escapes **all five** parsers *before any guard
+  runs*, because `urlsplit` raises inside `parsed.hostname`. An oversized
+  StackExchange id escapes **one** parser, *after* its guards have run, because
+  only that parser's conversion is unwrapped — both GitHub parsers wrap the same
+  conversion and raise their own class, arXiv never converts an identifier to an
+  integer at all, and Wikipedia treats the digits as an article title. An earlier
+  draft compressed the two into "two inputs escape every parser before any guard
+  runs", which is true of the first and of neither half of the second, and
+  contradicted §14's own record three sections down.
+  **Asserted over all twenty-one of those branches, minus one named pair that
+  does not hold** — see the landing note below; an earlier draft
   varied one rejected URL per parser while this sentence read as though it
   covered the branches, which is a gap the shipped rows now close.
 
@@ -769,8 +778,11 @@ module with work `tests/test_github_issues.py` was already doing.
 
 **One mutation survives this module, and it is recorded rather than closed.**
 Narrowing `_derive_site_parameter`'s `*.stackexchange.com` branch — dropping the
-`.split(".")[0]` so the whole prefix becomes the slug — leaves all 88 cases
-green. The only allowlisted host with a two-label prefix there is
+`.split(".")[0]` so the whole prefix becomes the slug — leaves all **149** cases
+green. Re-measured against the widened module rather than carried over from the
+88-case measurement it was first written against: none of the rows added by the
+widening reaches a two-label prefix under `stackexchange.com`, and the run
+confirms it rather than the reasoning standing alone. The only allowlisted host with a two-label prefix there is
 `math.meta.stackexchange.com`, whose slug is the **characterised defect** three
 paragraphs above: `test_second_level_meta_community_derives_the_wrong_slug_today`
 in `tests/test_url_parser_exclusivity.py` pins `math`, and that is what kills the
@@ -789,8 +801,11 @@ everything until a percent-encoded legacy identifier
 
 **One dimension is unkillable by construction, and says so.** No parser reads
 `parsed.scheme`, and `urlsplit` lowercases `hostname` regardless, so the
-upper-case-scheme variation has no mutation that can fail it. Five rows of
-regression armour. Named here so a mutation report is not read as coverage.
+upper-case-scheme variation has no mutation that can fail it. **Twenty-three
+rows** of regression armour — eighteen on the rejection side and five on the
+acceptance side, counted after the widening rather than left at the five the
+figure named when the rejection half varied one URL per parser. Named here so a
+mutation report is not read as coverage.
 
 **Two defects are characterised rather than repaired, and both are in §14.**
 A malformed URL escapes all five parsers as `ValueError` before any guard runs;
