@@ -1802,9 +1802,16 @@ jobs:
             # nothing, and it needs none of the deferred work: making the notice
             # and the job summary able to say "not timed" needs `Resolve outcome`
             # to emit a `measured` output, which those two render from and cannot
-            # see. That residual is unfixed and deliberate; this comment is its
-            # only record, because this repository has no design document to
-            # carry it.
+            # see. That residual is unfixed and deliberate, and this comment is
+            # its record. ⚠️ It used to add a clause denying that this repository
+            # has any design document to carry such a note -- described rather
+            # than quoted, for the reason the paragraph below gives. That clause
+            # is false: `.system_design/` exists and holds the test-suite design
+            # and its implementation plan
+            # -- and the honest position is narrower: those documents are about
+            # the test suite, this residual is about the review workflow, and
+            # nobody has yet decided where review-workflow decisions belong. The
+            # comment stays the record until they do.
             #
             # ⚠️ The retired drafts are PARAPHRASED above, never quoted: the
             # wiring test reads this whole step including its comments, on

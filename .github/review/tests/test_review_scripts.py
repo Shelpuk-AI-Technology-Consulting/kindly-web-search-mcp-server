@@ -492,8 +492,12 @@ SCHEMA_PATH = REVIEW_DIR / "schemas" / "review_findings.schema.json"
 
 # Every reviewed pull request must be judged against this, not against the diff
 # alone. Upstream this is a tuple of three `.system_design/` documents; **this
-# repository has none of them**, and `README.md` is what stands in their place --
-# the tool contract, the client setup, the transport and allowlist behaviour.
+# repository has a `.system_design/` of its own but does not always-read it**,
+# and `README.md` is what the always-read set holds -- the tool contract, the
+# client setup, the transport and allowlist behaviour. ⚠️ This comment used to
+# say the repository had none of those documents. It has two, about the test
+# suite; they are large and each change touches a section of one, so they are
+# read where a change touches them rather than in full on every pull request.
 #
 # 🔴 The tuple survives with one entry rather than collapsing to a string,
 # because what it holds is not "the specification is README.md" but "whatever the
@@ -12643,6 +12647,16 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             re.compile(r"(?:has no|is no|no) `?\.system_design/?`? ?(?:directory|here)"),  # noqa: ci-claim
             "`.system_design/` exists and holds the test-suite design",
         ),
+        # 🔴 The same belief in different words, and the automated review found
+        # it surviving in two files after the first pass swept only the
+        # `.system_design/` spelling. That is the argument for a pattern per
+        # PHRASING rather than per belief: a sweep is only as wide as its
+        # vocabulary, and this one's documentation claimed the belief was gone
+        # from the tree while the tree still carried it.
+        (
+            re.compile(r"(?:has no|is no|no) design document"),  # noqa: ci-claim
+            "`.system_design/` exists; say which documents are always-read instead",
+        ),
     )
 
     #: Suppress a deliberate match with this marker on the line, exactly as the
@@ -12697,6 +12711,7 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "**This repository has no `.system_design/` directory today.**",  # noqa: ci-claim
             "fourth by section. This repository has no `.system_design/` directory.",  # noqa: ci-claim
             "There is no `.system_design/` here; the README carries the contract",  # noqa: ci-claim
+            "this comment is its only record, because this repository has no design document",  # noqa: ci-claim
         )
         for specimen in specimens:
             with self.subTest(specimen=specimen):
@@ -12721,6 +12736,7 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "no CI runner group has to be granted",
             "`.system_design/` holds the test-suite design and its plan",
             "it is deliberately not in the always-read set",
+            "do not report a missing design document as a finding",
         ):
             with self.subTest(sentence=sentence):
                 firing = [

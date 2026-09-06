@@ -27,8 +27,12 @@ Do not review the diff in isolation.
 > directory. It has one**, holding the test-suite design and its implementation
 > plan. What survives is the narrower rule: those documents are large and each
 > change touches a section of one, so they are not read whole on every pull
-> request — read the part the change actually touches, and do not report "there
-> is no design document" as a finding.
+> request — read the part the change actually touches, and do not report a
+> missing design document as a finding. <!-- The phrasing this sentence used to
+> quote is described rather than reproduced: the sweep guard in
+> `tests/test_review_scripts.py` reads every file here, so quoting a retired
+> claim reintroduces it as far as that guard can tell. Same convention as the
+> runner-claim guard. -->
 
 **Additionally, based on what the pull request touches:**
 

@@ -63,6 +63,17 @@ name: CI
 # fork pull request, whose head branch produces no upstream `push` run, so
 # nothing else would cover it.
 #
+# ⚠️ **`labeled` and `unlabeled` are in the list because §10.3 specifies them,
+# and the cost is worth stating since nothing keys off a label yet.** A label
+# toggle re-runs the whole two-platform gate and, with the `concurrency` block
+# below, cancels any run already in flight for the ref. Today no job has a
+# label-dependent `if:`, so that spend buys nothing; they are kept anyway because
+# the design puts them here for the jobs that will (a `live` opt-in is the
+# expected first), and because dropping an event from a `types:` list is the
+# category of edit this whole comment exists to warn about -- silent, and worst
+# on the pull requests nobody is watching. Revisit when the first label-gated
+# job lands, not before.
+#
 # ⚠️ `branches: [main]` is KEPT rather than dropped. The design's snippet shows
 # only `types:`, and the filter is orthogonal to the point it makes: a fork pull
 # request targeting `main` still triggers this workflow, which is the failure
