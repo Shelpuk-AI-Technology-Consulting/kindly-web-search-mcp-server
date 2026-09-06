@@ -47,20 +47,32 @@ five, and ``pytest.raises`` alone is an ``isinstance`` check. That is precisely
 the mis-typing this module exists to catch, so every ``pytest.raises`` here is
 followed by ``assert type(caught.value) is …``.
 
-**Every rejection row also asserts a fragment of the message its branch
-produces, and that is what makes the row count falsifiable.** Each parser has
-between three and seven ``raise`` sites, and a table of rejection URLs that all
-happened to trip the *host* guard would look exactly like coverage of all of
-them. The fragment names which branch the row reached. It is a mild coupling to
-a literal in the source, taken knowingly. No fragment quotes anything but static
-English and the hostname already present in the URL under test.
+**Every row of the twenty-one-branch table also asserts a fragment of the
+message its branch produces, and that is what makes the row count falsifiable.**
+Each parser has between three and seven ``raise`` sites, and a table of rejection
+URLs that all happened to trip the *host* guard would look exactly like coverage
+of all of them. The fragment names which branch the row reached. It is a mild
+coupling to a literal in the source, taken knowingly. No fragment quotes anything
+but static English and the hostname already present in the URL under test.
+
+**The other eighty-four rejection rows assert the class only, and inherit their
+branch attribution rather than restating it.** The eighty surface rows vary a URL
+whose branch the table above already pinned, and the four suffix rows are about
+*which host* is refused rather than which branch refuses it. Scoped here because
+the paragraph above, written as "every rejection row", was an overclaim inside
+this module's own scope — and a reader auditing which claims are self-asserting
+cannot tell the two kinds apart from a sentence that covers both.
 
 The parsers are pure functions of a string, so nothing here reads the clock, the
 network or the environment — with one deliberate exception, the interpreter's
 integer-string conversion ceiling, which **two** fixtures manage and restore.
-Three cases depend on that ceiling and all three take a fixture; a case that
-merely read it would pass or fail on an environment variable nobody in the pull
-request chose.
+**Four** cases depend on it, in **both** directions, and each takes the fixture
+for its direction: three need the documented default restored, and would fail
+under ``PYTHONINTMAXSTRDIGITS=0``; one needs the ceiling *removed*, and would
+fail under the default ambient CI actually runs. Counting only the first three —
+as an earlier draft did — describes the design correctly in one ambient and
+misdescribes it in the other. A case that merely read the setting would pass or
+fail on an environment variable nobody in the pull request chose.
 """
 
 from __future__ import annotations
