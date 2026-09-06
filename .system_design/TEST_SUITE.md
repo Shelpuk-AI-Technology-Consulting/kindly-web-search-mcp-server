@@ -1696,19 +1696,36 @@ functions: the runner module carries **38 ids from 33 functions**, ten of them
 `async def` and two parametrized into seven ids, so every cheaper way of counting
 lands short.
 
-Two wrong numbers were produced here and the second one is the instructive one.
+Three wrong statements were produced here, each correcting the last, and the
+sequence is worth more than any of the numbers.
+
 A review round put the three modules at 82. The commit answering it recorded the
-runner as 28 functions and said that 28 was "the count of `^def test_` lines" —
-and **it was not**: that count is 23, at every commit of this branch and on
-`main`, and no counting method in the tree yields 28 at all. 28 came from
-subtracting the round's own figures, `82 − 36 − 18`, and was then given a
-method that would plausibly have produced it, without measuring. Inventing a
-provenance for your own wrong number is worse than the number: the number is one
-error, the provenance is an error dressed as evidence, and a later reader
-re-deriving from the stated method finds 23 and cannot tell which part to
-distrust. Both figures are corrected here; the commit messages are left standing
-with their errors, because history is not the place to pretend a figure was
-right.
+runner as **28 functions** and said 28 was "the count of `^def test_` lines".
+That was wrong: the `^def test_` count is **23**, at every commit of this branch
+and on `main`, and the runner has **33** test functions. The number had come from
+subtracting the round's own figures, `82 − 36 − 18`, and was then handed a method
+that would plausibly have produced it, without measuring. Inventing a provenance
+for your own wrong number is worse than the number: one is an error, the other is
+an error dressed as evidence, and a reader re-deriving from the stated method
+finds 23 and cannot tell which part to distrust.
+
+The commit correcting *that* then over-reached in the same direction, asserting
+that **no counting method in the tree yields 28 at all**. One does, exactly:
+the runner's **non-async collected ids number 28** — 23 sync functions, two of
+them parametrized into seven ids, `23 − 2 + 7 = 28`, with the ten `async def`
+ids making up the remaining ten of 38. So 28 was never an arbitrary number; it is
+the count you get from a real method that happens to be the wrong unit here.
+
+What is true, and all that is: the runner holds **38 collected ids from 33
+functions**; 28 of those ids come from its non-async functions and 23 is its
+`^def test_` line count; and **which of those routes produced the original 28 is
+not known**, because it was not measured at the time. That sentence is the one
+that should have been written first. Correcting an over-claim with an
+absolute negative reproduces the original defect with the sign flipped — a
+finite check ("I tried five greps") does not license "no method exists".
+
+The figures are corrected here; the commit messages keep their errors, because
+history is not the place to pretend a figure was right.
 
 The one-test difference from Linux's 825/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
