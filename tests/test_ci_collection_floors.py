@@ -42,8 +42,17 @@ selection today rather than waiting for one.
 🔴 **Every check refuses what it cannot resolve rather than skipping it.** A
 guard that quietly stops checking is what this module was written to replace, so
 an unrecorded workflow, a ``run:`` step whose body cannot be read, a command that
-is not a pytest invocation and an option the parser does not model are each an
-error naming the thing, not a silent pass.
+is not a pytest invocation, an option the parser does not model, and **a child
+that exited non-zero** are each an error naming the thing, not a silent pass.
+The last of those is the least obvious and the most dangerous: a collection error
+still writes a probe file, so its smaller count looks exactly like a stale floor
+and the message would say to write it down.
+
+⚠️ **The child runs without pytest's own steering variables.** ``PYTEST_ADDOPTS``
+is prepended to a child's command line and its ``--ignore`` entries append rather
+than replace, so a value exported in a shell would shrink the child's collection
+below the job's -- in the shrink direction, where this guard's message is the
+only source of the number.
 """
 
 from __future__ import annotations
@@ -538,7 +547,12 @@ def _collect(argv: list[str], probe_path: Path) -> tuple[int, str]:
         The collected count and the child's standard output.
 
     Raises:
-        Failed: When the child does not finish in time, or wrote no probe output.
+        Failed: When the child does not finish in time, wrote no probe output, or
+            exited non-zero. A collection error still writes a probe file, with
+            the broken module's tests absent, so the count it carries is the
+            defect's shadow rather than this tree's -- and believing it would
+            instruct a maintainer to lower the floor by exactly the tests the
+            break removed.
     """
 
     try:

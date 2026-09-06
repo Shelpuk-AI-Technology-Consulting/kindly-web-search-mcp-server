@@ -3267,7 +3267,7 @@ read together, so the rule is enforced by a test rather than stated.
 
 `tests/test_ci_collection_floors.py` recovers every `--min-selected` declared
 under `.github/workflows/`, collects that job's own selection in a child process
-and requires the two numbers to be **equal**. Four things about that are
+and requires the two numbers to be **equal**. Six things about that are
 decisions rather than details:
 
 - **Equality rather than a bound, because the equality is what fixes the race.**
@@ -3288,6 +3288,16 @@ decisions rather than details:
   tests are selected" — stays accurate as written.
   `--min-selected` is a floor when pytest reads it. Only the *declared* value is
   an equality, and only a test enforces that.
+- **A child that exited non-zero is refused, not counted.** Measured: an
+  unimportable module makes the collecting child exit 2 while the probe file is
+  written anyway, with that module's tests absent. Read silently, the smaller
+  count is indistinguishable from a stale floor, and the guard's own message
+  would instruct lowering the gate by exactly the tests the break removed.
+- **The child runs without pytest's own steering variables.** `PYTEST_ADDOPTS`
+  is prepended to a child's command line and its `--ignore` entries append rather
+  than replace, so a value exported in a developer's shell shrinks the child's
+  collection below the job's — again in the shrink direction, which is the one
+  where this guard's message is the only source of the number.
 - **The count is read from `tests/_baseline_probe.py`, never from pytest's
   summary line.** Measured: with nothing deselected pytest prints `860 tests
   collected`; with anything deselected it prints `857/860 tests collected (3
