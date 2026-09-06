@@ -4204,14 +4204,45 @@ is nothing to test.
   credential was genuinely in flight — in the URL for the two providers that carry
   it there, in a header for the four that do not — because an absence assertion
   over a provider that never sends a credential proves nothing. The sweep rows
-  themselves assert absence only. Fifteen mutations, no survivor — with two
-  caveats that belong beside the number. **One mutation stopped applying** when
-  its target line gained a second operand: it printed "anchor absent" rather than
-  a death, which reads exactly like a kill if only the summary line is checked.
-  Its anchor was repaired and it was re-run. And **SearXNG's three
-  told-the-status rows are insensitive to two of the mutations** — it composes its
-  own message, which names the provider and the status whatever the router does —
-  so those two killed fifteen of the eighteen rows, not eighteen.
+  themselves assert absence only.
+
+  **The mutation run, reproduced here rather than cited.** The task's
+  `.requirements/` folder is gitignored by this repository's convention, so a
+  list that lives only there is not checkable by any reader of the tree — the
+  same reason §3.2's record reproduces its own table. Sixteen mutations, run one
+  at a time against a green tree, restoring from a scratchpad copy rather than by
+  `git checkout`:
+
+  | # | Mutation | What died |
+  |---|---|---|
+  | 1 | Delete the `except` from the router | 27, including all three SerpBase served rows and no other provider's |
+  | 2 | Re-raise without `from` | the three cause cases, and the router's no-fallback case |
+  | 3 | Drop the status from the message | 18: three status cases + **fifteen of eighteen** told-the-status rows |
+  | 4 | Use `name` where `label` is used | 20: the label case, the timeout case, three status cases, the same fifteen rows |
+  | 5 | Interpolate the original message into the new one | the three absence cases and the three SerpBase served rows |
+  | 6 | Narrow the catch to `HTTPStatusError` | the timeout case, and only it |
+  | 7 | Widen the catch to bare `Exception` | pass-through, malformed-base-URL, and SearXNG's told-the-status rows |
+  | 8 | Point the unit cases at Serper rather than SerpBase | the absence cases and the label case (mutates the *test*) |
+  | 9 | Flip SerpBase's "carried in the URL" flag | that row's in-flight control, and only it |
+  | 10 | Restore the echoed raw value in the configuration message | the malformed-base-URL case |
+  | 11 | Restore the rejected entry's value in its log line | the rejected-entry log case |
+  | 12 | Remove redaction from the `WARNING` log site | the log-record case and the logged-exception case |
+  | 13 | Remove redaction from the `INFO` log site | the log-record case |
+  | 14 | Empty the "configure one of" message | the unconfigured-server case |
+  | 15 | Remove redaction from the logged exception text | the logged-exception case |
+  | 16 | Remove redaction from the client-facing aggregate | the aggregate case |
+
+  **No survivor, with three caveats that belong beside the number.** One
+  mutation stopped applying when its target line gained a second operand: it
+  printed "anchor absent" rather than a death, which reads exactly like a kill if
+  only the summary line is checked — its anchor was repaired and it was re-run.
+  Mutations 3 and 4 kill fifteen of the eighteen served rows, not eighteen:
+  SearXNG composes its own message, which names the provider and the status
+  whatever the router does. And two of the planned mutations could not kill the
+  cases they were written for — one because the case asserts only what reached
+  the transport, the other because the no-provider raise sits *above* the `try` —
+  which left the unconfigured-server case as characterization until mutation 14
+  was added for it.
 
   **The log path is the exception path's sibling, and was repaired with it.**
   Three `searxng.py` log sites wrote the base URL, userinfo included: the `INFO`
@@ -4246,10 +4277,14 @@ is nothing to test.
   `f"... Last error: {last_error}"`, where `last_error` is whatever the client
   raised. `SearxngError` is not an `httpx.HTTPError`, so the router passes it
   through untouched. Measured across `ConnectError`, `UnsupportedProtocol` and
-  `InvalidURL`: none of their messages quotes the URL, so there is no live leak —
-  but this is the one place where the upstream change the family-wide catch
-  exists to survive would reopen the disclosure anyway. The provider rules now
-  name re-quoting an httpx message as the finding.
+  `InvalidURL`: none of their messages quotes the URL, so there was no live leak.
+  **Repaired anyway, on consistency grounds.** The log copy of that same operand
+  was already being redacted, so leaving the client copy raw would have fixed the
+  less exposed of the two surfaces — and this is the one client-visible place
+  where the upstream change the family-wide catch exists to survive would reopen
+  the disclosure. `redact_url_credentials` is used unchanged at that call site
+  too, so nothing widened. The provider rules also name re-quoting an httpx
+  message as the finding.
 
   **No plan step owns this change, deliberately.** It is a standalone repair of a
   defect an earlier step found and scoped out, which is the same shape as the

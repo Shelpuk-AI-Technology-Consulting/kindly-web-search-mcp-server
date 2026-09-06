@@ -126,14 +126,37 @@ async def search_searxng(
     num_results: int,
     http_client: httpx.AsyncClient | None = None,
 ) -> list[WebSearchResult]:
-    """
-    Query a SearXNG instance and return parsed results.
+    """Query the configured SearXNG instances in order and return parsed results
+
+    Instances are tried in configuration order and the first that answers wins.
+    Every per-instance failure is caught and the last one is re-raised inside a
+    single aggregate, chained so the arm that produced it stays inspectable.
 
     SearXNG endpoint:
     - GET {SEARXNG_BASE_URL}/search
     - Params: q=<query>, format=json, plus optional params like language/categories/engines/time_range/safesearch.
 
     SearXNG docs: https://docs.searxng.org/dev/search_api.html
+
+    Args:
+        query: The search query to run. A blank query returns no results
+            without a request.
+        num_results: Maximum number of results to return. Less than one returns
+            no results without a request.
+        http_client: Client to reuse for the request. A short-lived client is
+            created when omitted.
+
+    Returns:
+        The parsed results, at most ``num_results`` of them.
+
+    Raises:
+        SearxngConfigError: If ``SEARXNG_BASE_URL`` is unset or holds no entry
+            with both a scheme and a host, if ``SEARXNG_HEADERS_JSON`` is not a
+            JSON object, or if ``SEARXNG_TIMEOUT_SECONDS`` is not a number.
+        SearxngError: If every configured instance failed, or if the instance
+            that answered returned a body this parser cannot use. Both messages
+            are served to the MCP client, so neither quotes a request URL --
+            ``.system_design/TEST_SUITE.md`` section 14 records why.
     """
     if not query.strip():
         return []
@@ -210,16 +233,12 @@ async def search_searxng(
             continue
 
     if data is None:
-        # Chained to the last per-instance failure rather than only quoting it.
-        # The `raise` sits outside the `except` block, so without `from` neither
-        # `__cause__` nor `__context__` is set, and the branch that produced the
-        # message -- the 403 arm, whose whole purpose is to tell an operator to
-        # enable the `json` format -- reaches them as a substring with no
-        # traceback behind it. `last_error` is never None here: the loop runs at
-        # least once, since `_get_searxng_base_urls` raises on an empty list, and
-        # `data` stays None only if every iteration failed.
+        # Chained, not merely quoted: without `from` the arm that produced the message reaches a caller as a bare substring.
+        # Redacted like the log copy above: this is the same operand on the more
+        # exposed surface, since FastMCP serves this message to the MCP client.
         raise SearxngError(
-            f"All configured SearXNG instances failed. Last error: {last_error}"
+            "All configured SearXNG instances failed. Last error: "
+            f"{redact_url_credentials(str(last_error))}"
         ) from last_error
 
     raw_results = data.get("results", [])

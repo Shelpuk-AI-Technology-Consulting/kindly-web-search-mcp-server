@@ -671,3 +671,36 @@ async def test_a_logged_exception_message_is_redacted_too(
     quoted = [r for r in caplog.records if "failed connecting to" in r.getMessage()]
     assert quoted, "the exception was never logged, so the assertion below is vacuous"
     assert not [r for r in quoted if SENTINEL in r.getMessage()]
+
+
+async def test_the_searxng_aggregate_does_not_quote_a_credentialed_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The aggregate served to the client redacts the failure it quotes.
+
+    ``search_searxng`` interpolates its last per-instance failure into one
+    aggregate message, and that message is provider-authored -- so the router's
+    conversion passes it through untouched, ``SearxngError`` not being an
+    ``httpx.HTTPError``. It is therefore the one client-visible surface where an
+    httpx-formatted string survives, and redacting the *log* copy of the same
+    operand while leaving this one raw would fix the less exposed of the two.
+
+    No reachable ``httpx`` message quotes a credential today, so this is not a
+    live disclosure; the case drives an injected failure that does quote one, so
+    that the redaction cannot be removed as apparently redundant.
+
+    Args:
+        monkeypatch: pytest's environment patcher.
+    """
+    case = next(c for c in DISCLOSURE_CASES if c.name == "searxng")
+    build_environment(case.env, monkeypatch)
+
+    def fail_loudly(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"failed connecting to {request.url}", request=request)
+
+    raised, sent = await drive_router(case, fail_loudly)
+
+    assert sent, "no request was attempted, so nothing was quoted"
+    assert type(raised) is SearxngError
+    assert "failed connecting to" in str(raised), "the message was not quoted at all"
+    assert SENTINEL not in str(raised)
