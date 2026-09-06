@@ -868,6 +868,40 @@ SDK range (`mcp>=1.25,<2`) may reorder keys or rewrite generated text in a minor
 release. Run against the minimum (`1.25.0`) and the newest allowed release
 (§10.3).
 
+**Measured 2026-09-06 on `1.25.0` and `1.29.1`: the payload is identical, titles
+included, and no parameter carries a `description` at all.** Two consequences the
+implementer must not re-derive. First, "descriptions present" can only mean the
+**tool-level** description — asserting per-parameter descriptions would assert
+something that does not exist. Second, the normalization is a **forward guard,
+not a compatibility shim**: no input in the allowed range distinguishes a
+normalizer from a plain comparison, so the stripping rules must be exercised on a
+synthetic schema or they are untested by construction. That synthetic case is also
+the only place the `title` collision is reachable — `WebSearchResult` has a `title`
+field, so a walk that deletes any key named `title` would delete a *parameter* of
+that name and mask a real contract change.
+
+**(d) The ceiling the description states.** The `web_search` description tells the
+model that `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` is "clamped 1..5". That number is
+repeated in four places outside the code — the description itself, `README.md`,
+`.env.example` and `.github/review/rules/mcp-server.md` — and pinning three of them
+institutionalizes exactly the partial drift `test_provider_registry_consistency.py`
+exists to stop. All four are asserted against a ceiling **probed from the running
+resolver**, never against a constant restated in the test: a constant catches drift
+between documents but never deletion, because removing the clamp leaves the
+constant agreeing with every copy.
+
+The probe must use a result count *above* the environment value, since the
+resolver also bounds concurrency by `num_results` and a smaller count returns the
+same answer whether the ceiling exists or not. Each surface needs its own anchor —
+the documents name the environment variable, the review rule names
+`_resolve_web_search_max_concurrency` — and the claim may sit up to three lines
+below its anchor.
+
+> **Scope of E6-1.** That step covers (a) and (d). **(b) and (c) are not owned by
+> any step** — `model_json_schema()` tests for the response models, and runtime
+> validation of each tool's returned `dict` against them. They are deferred, not
+> discharged: E13-1 must not be read as covering them on E6-1's merge.
+
 **Note for the owner:** annotating the tools with their response models would
 give clients a real `outputSchema`. That is a production API change with client
 impact, not a test change, and is listed in §13.

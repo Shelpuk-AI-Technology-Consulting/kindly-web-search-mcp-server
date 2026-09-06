@@ -6,16 +6,21 @@ description from its docstring, then serves both over
 public API: renaming a parameter breaks every client, and until this file existed
 nothing in the suite noticed.
 
-The comparison is normalized before it is made. Generated ``title`` fields are
+The comparison is normalized before it is made. Generated ``title`` keywords are
 dropped and description *wording* is replaced by a sentinel, because the allowed
 SDK range (``mcp>=1.25,<2``) may reorder keys or rewrite generated text in a minor
 release. Nothing else is dropped: a key a future SDK adds fails the golden, which
-is what a golden over a public API is for.
+is what a golden over a public API is for. Measured on 2026-09-06, the payload is
+in fact byte-identical on ``1.25.0`` and ``1.29.1``, titles included, so the
+normalization is a forward guard rather than a compatibility shim -- which is why
+:func:`test_normalization_strips_keywords_but_never_a_parameter_named_like_one`
+exercises it on a synthetic schema instead.
 
 Both halves of this file assert facts about the same served payload. The schema
-half pins its shape; :func:`test_the_tool_description_states_the_enforced_concurrency_ceiling`
-and :func:`test_the_readme_states_the_enforced_concurrency_ceiling` pin the one
-documented knob whose ceiling that payload states to the calling model.
+half pins its shape;
+:func:`test_the_surface_states_the_enforced_concurrency_ceiling` pins the one
+documented knob whose ceiling that payload states to the calling model, across
+every surface that repeats the number.
 """
 
 from __future__ import annotations
@@ -85,32 +90,50 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
 )
 
 
-def _normalize(node: Any) -> Any:
+# JSON Schema keywords whose value is a mapping keyed by *parameter name* rather
+# than by keyword. Inside one of these, `title` is a parameter called "title" --
+# part of the contract -- not a generated label to be stripped. `WebSearchResult`
+# already has a `title` field, so the collision is live in this project rather
+# than hypothetical.
+SUBSCHEMA_MAPS = frozenset(
+    {"properties", "$defs", "definitions", "patternProperties", "dependentSchemas"}
+)
+
+
+def _normalize(node: Any, *, keyed_by_name: bool = False) -> Any:
     """Strip generated titles and description wording from a JSON Schema node.
 
     Recurses through dictionaries and lists. Keys are emitted in sorted order so
     that a failure renders both sides in the same order and the diff shows only
-    what actually differs; ``required`` is sorted because its order is incidental
-    to the contract.
+    what actually differs. That buys no correctness -- Python compares mappings by
+    content -- unlike sorting ``required``, whose order genuinely is incidental to
+    the contract.
 
     Args:
         node: Any fragment of a JSON Schema -- a mapping, a list, or a scalar.
+        keyed_by_name: ``True`` when ``node``'s keys are parameter names, as
+            inside ``properties``. Nothing is stripped at such a level, because a
+            parameter may legitimately be called ``title`` or ``description``.
 
     Returns:
-        The same fragment with every ``title`` key removed and every
-        ``description`` value replaced by :data:`DESCRIPTION_SENTINEL`.
+        The same fragment with every generated ``title`` keyword removed and every
+        ``description`` keyword's value replaced by :data:`DESCRIPTION_SENTINEL`.
     """
     if isinstance(node, dict):
         normalized: dict[str, Any] = {}
         for key, value in sorted(node.items()):
-            # `title` is generated from the parameter name by Pydantic and is
-            # explicitly reorderable/rewritable across the allowed SDK range.
-            if key == "title":
+            # `title` is generated from the parameter name by Pydantic, and
+            # description wording may be rewritten across the allowed SDK range.
+            # Both are cosmetic only where the key is a schema keyword.
+            if not keyed_by_name and key == "title":
                 continue
-            normalized[key] = (
-                DESCRIPTION_SENTINEL if key == "description" else _normalize(value)
+            if not keyed_by_name and key == "description":
+                normalized[key] = DESCRIPTION_SENTINEL
+                continue
+            normalized[key] = _normalize(
+                value, keyed_by_name=not keyed_by_name and key in SUBSCHEMA_MAPS
             )
-        if isinstance(normalized.get("required"), list):
+        if not keyed_by_name and isinstance(normalized.get("required"), list):
             normalized["required"] = sorted(normalized["required"])
         return normalized
     if isinstance(node, list):
@@ -204,6 +227,52 @@ async def test_the_tool_ships_a_description(contract: ToolContract) -> None:
     )
 
 
+def test_normalization_strips_keywords_but_never_a_parameter_named_like_one() -> None:
+    """Distinguish a generated ``title`` keyword from a parameter called ``title``.
+
+    The live payload cannot exercise this: neither tool has a parameter named
+    ``title`` or ``description``, and both SDK ends emit identical text, so the
+    stripping rules have no discriminating input there. This synthetic schema
+    supplies one, so removing either rule -- or making the walk blind to which
+    level it is on -- fails a case.
+    """
+    normalized = _normalize(
+        {
+            "title": "web_searchArguments",
+            "type": "object",
+            "properties": {
+                "title": {"title": "Title", "type": "string", "description": "A."},
+                "description": {"title": "Description", "type": "string"},
+            },
+            "required": ["title", "description"],
+        }
+    )
+
+    assert normalized == {
+        "properties": {
+            "description": {"type": "string"},
+            "title": {"description": DESCRIPTION_SENTINEL, "type": "string"},
+        },
+        "required": ["description", "title"],
+        "type": "object",
+    }
+
+
+def test_normalization_leaves_a_schema_without_required_unchanged_in_that_respect() -> (
+    None
+):
+    """Tolerate the absence of ``required`` rather than raising on it.
+
+    A tool whose every parameter has a default is served with no ``required`` key
+    at all. Sorting it unconditionally would turn that contract change into a
+    ``KeyError`` -- an error, not the legible golden mismatch it should be.
+    """
+    assert _normalize({"type": "object", "properties": {}}) == {
+        "type": "object",
+        "properties": {},
+    }
+
+
 CONCURRENCY_VARIABLE = "KINDLY_WEB_SEARCH_MAX_CONCURRENCY"
 
 # Both far above any plausible ceiling, and the result count above the environment
@@ -234,78 +303,108 @@ def _enforced_ceiling(monkeypatch: pytest.MonkeyPatch) -> int:
     return _resolve_web_search_max_concurrency(_CEILING_PROBE_RESULT_COUNT)
 
 
-def _stated_ceilings(text: str) -> list[int]:
-    """Return every ``1..N`` ceiling the text claims for the concurrency variable.
+# How many lines from an anchor the claim may sit, the anchor's own line included.
+# Measured, not guessed: the tool description and the README state the ceiling on
+# the anchor line itself, `.env.example` one line below the assignment, and the
+# review rule three lines below the function name -- the widest gap, so 4 is that
+# gap and no more. Widening it further weakens the scoping that stops another
+# knob's range being read as this one's; a claim that drifts beyond it fails
+# loudly as "states no ceiling" rather than passing silently.
+CEILING_CLAIM_WINDOW_LINES = 4
 
-    Scans line by line and keeps only lines naming the variable, so an unrelated
-    range elsewhere in the document cannot be mistaken for this claim.
+
+@dataclass(frozen=True)
+class CeilingSurface:
+    """One place that repeats the concurrency ceiling in prose.
+
+    Attributes:
+        name: Human-readable name, used in failure messages.
+        path: Repository-relative file to read, or ``None`` for the tool
+            description as it is served to clients.
+        anchor: Text that marks where this surface discusses the knob. Each
+            surface names the knob differently -- the documents by environment
+            variable, the review rule by resolver function -- so the anchor is
+            per surface rather than assumed.
+    """
+
+    name: str
+    path: str | None
+    anchor: str
+
+
+# Every surface that states the number. `.env.example` and the review rule were
+# both found stating `1..5` already, so a change to the clamp that updated only
+# the code, the docstring and the README would leave two copies wrong.
+CEILING_SURFACES: tuple[CeilingSurface, ...] = (
+    CeilingSurface("web_search's tool description", None, CONCURRENCY_VARIABLE),
+    CeilingSurface("README.md", "README.md", CONCURRENCY_VARIABLE),
+    CeilingSurface(".env.example", ".env.example", CONCURRENCY_VARIABLE),
+    CeilingSurface(
+        ".github/review/rules/mcp-server.md",
+        ".github/review/rules/mcp-server.md",
+        "_resolve_web_search_max_concurrency",
+    ),
+)
+
+
+def _stated_ceilings(text: str, anchor: str) -> list[int]:
+    """Return every ``1..N`` ceiling the text claims near its anchor.
+
+    Scans a short window starting at each line containing ``anchor``, so a range
+    documenting some other knob elsewhere in the file cannot be mistaken for this
+    claim. The window is needed because two surfaces separate the anchor from the
+    sentence carrying the number.
 
     Args:
         text: Document to scan.
+        anchor: Text marking where the document discusses this knob.
 
     Returns:
-        The upper bound of each ``1..N`` range stated alongside the variable, in
+        The upper bound of each ``1..N`` range found in an anchored window, in
         document order. Empty when the document states no ceiling.
     """
+    lines = text.splitlines()
     return [
         int(match.group(1))
-        for line in text.splitlines()
-        if CONCURRENCY_VARIABLE in line
-        for match in _STATED_CEILING.finditer(line)
+        for index, line in enumerate(lines)
+        if anchor in line
+        for window_line in lines[index : index + CEILING_CLAIM_WINDOW_LINES]
+        for match in _STATED_CEILING.finditer(window_line)
     ]
 
 
-def _assert_states_enforced_ceiling(text: str, source: str, enforced: int) -> None:
-    """Assert a document states the ceiling the code enforces, and only that one.
-
-    Args:
-        text: Document to check.
-        source: Human-readable name of the document, used in failure messages.
-        enforced: Ceiling measured from the running resolver.
-
-    Raises:
-        AssertionError: When the document states no ceiling, or states any value
-            other than ``enforced``.
-    """
-    stated = _stated_ceilings(text)
-
-    assert stated, (
-        f"{source} documents {CONCURRENCY_VARIABLE} without stating its ceiling. "
-        f"The code silently clamps to {enforced}, so a reader who sets a higher "
-        "value gets no indication it was ignored."
-    )
-    assert set(stated) == {enforced}, (
-        f"{source} states a 1..{sorted(set(stated))} ceiling for "
-        f"{CONCURRENCY_VARIABLE}; the code enforces 1..{enforced}."
-    )
-
-
-async def test_the_tool_description_states_the_enforced_concurrency_ceiling(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("surface", CEILING_SURFACES, ids=lambda s: s.name)
+async def test_the_surface_states_the_enforced_concurrency_ceiling(
+    surface: CeilingSurface, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """State the real concurrency ceiling in the text sent to the calling model.
+    """State the real concurrency ceiling everywhere the number is repeated.
 
-    Asserts against the served description rather than the source docstring,
+    The tool description is read as it is *served*, not from the source docstring,
     because the served text is what a client actually receives.
 
     Args:
+        surface: The document or served text under test.
         monkeypatch: Fixture used to probe the resolver's enforced ceiling.
-    """
-    description = (await _served_tool("web_search")).description or ""
 
-    _assert_states_enforced_ceiling(
-        description, "web_search's tool description", _enforced_ceiling(monkeypatch)
+    Raises:
+        AssertionError: When the surface states no ceiling, or states any value
+            other than the one the code enforces.
+    """
+    enforced = _enforced_ceiling(monkeypatch)
+    text = (
+        (await _served_tool("web_search")).description or ""
+        if surface.path is None
+        else (REPO_ROOT / surface.path).read_text(encoding="utf-8")
     )
 
+    stated = _stated_ceilings(text, surface.anchor)
 
-def test_the_readme_states_the_enforced_concurrency_ceiling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """State the real concurrency ceiling where users are told to set the variable.
-
-    Args:
-        monkeypatch: Fixture used to probe the resolver's enforced ceiling.
-    """
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-
-    _assert_states_enforced_ceiling(readme, "README.md", _enforced_ceiling(monkeypatch))
+    assert stated, (
+        f"{surface.name} discusses {CONCURRENCY_VARIABLE} without stating its "
+        f"ceiling. The code silently clamps to {enforced}, so a reader who sets a "
+        "higher value gets no indication it was ignored."
+    )
+    assert set(stated) == {enforced}, (
+        f"{surface.name} states a ceiling of {sorted(set(stated))} for "
+        f"{CONCURRENCY_VARIABLE}; the code enforces {enforced}."
+    )

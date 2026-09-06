@@ -1083,8 +1083,23 @@ duplicating tests or touching the same files.
 
 - **E6-1.** Normalized comparison asserting names, types, required-ness, defaults,
   description presence, and `outputSchema is None` (normative — §3).
-  *Verify:* renaming `num_results` fails it; a description reword does not; passes
+  **The verify clause below is wider than the one this step was written with**,
+  which named only the schema. Stated here rather than only in the pull request so
+  the next reader does not score the step against a clause it no longer matches.
+  The addition is §4.2(d): the ceiling the tool description states is pinned across
+  every surface repeating it, because the knob was found documented in four places
+  and correct in three.
+  *Verify:* renaming `num_results` fails it; a description reword does not; a
+  parameter *named* `title` survives normalization; deleting `min(value, 5)` fails
+  every ceiling surface; drifting any one surface fails that surface alone; passes
   on mcp 1.25.0 and the newest allowed release.
+
+  > **Deferred:** §4.2's **(b)** `model_json_schema()` tests for the response
+  > models and **(c)** runtime validation of each tool's returned `dict` against
+  > them are *not* covered by this step and have no step of their own. E6-1 is the
+  > only step attached to §4.2, so merging it would otherwise let E13-1 mark that
+  > section discharged with two-thirds of it unowned. They need a step; raising one
+  > is a sequencing call for the owner, not this step's to make.
 - **E6-2.** **Production change (small).** Sequenced after E2-3 because both touch
   the parent-side diagnostics path and would otherwise conflict. One
   encoder/decoder pair used by both sides.
