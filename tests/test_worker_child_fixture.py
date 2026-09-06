@@ -89,7 +89,7 @@ REAP_TIMEOUT_SECONDS = 10.0
 #: How long the hang case waits to prove the child is *still there*. A liveness
 #: bound, and the inverse of a startup budget: it fails only if the child dies,
 #: never if the machine is slow, so it cannot become the flake generator section
-#: 5.2a warns about. Short because the claim needs no longer.
+#: 5.4 warns about. Short because the claim needs no longer.
 HANG_LIVENESS_SECONDS = 0.5
 
 #: Bounded moment teardown gives a child that is already exiting, before
@@ -344,13 +344,16 @@ class _RunningChild:
 
 
 def _fixture_child_module() -> Any:
-    """Load the fixture child as a module, for the one case that needs a value from it.
+    """Load the fixture child as a module, for the cases that need a value from it.
 
     The script is spawned by path everywhere else, and this is deliberately the
-    only exception. It exists so the generated standard-output payload has a
-    single source: a copy of the generator here and a copy in the script would
-    be edited together, which catches drift and never deletion -- a generator
-    replaced by a run of zeros satisfies two agreeing copies.
+    only exception. Three call sites across two test modules come through here:
+    two re-derive the generated standard-output payload, and one re-derives the
+    descendant program the identical-command-line case needs a look-alike of.
+    Each exists so the value has a **single** source: a copy here and a copy in
+    the script would be edited together, which catches drift and never deletion
+    -- a generator replaced by a run of zeros satisfies any number of agreeing
+    copies.
 
     Safe because the script does nothing at import: every statement outside its
     definitions is a constant, and ``main`` runs only under the ``__main__``

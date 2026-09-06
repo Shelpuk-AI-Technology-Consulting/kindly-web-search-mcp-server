@@ -1071,11 +1071,18 @@ that is not expressible as a mode selector.
 | `--hang` | Block after all other output. |
 | `--exit-code N` | Exit status, default `0`. |
 
-`--grandchild-depth` and `--chain-timeout` arrived with E3-4, and they change
-the ordered sequence above: the chain is **awaited** before readiness is
-announced. Generations two and upward are spawned by processes this script does
-not supervise, so without that wait the frame would arrive mid-construction and
-the guarantee below would hold only for a chain of one. Each generation records
+**Readiness means the whole tree already exists.** The descendant chain is
+spawned *and awaited* before the readiness frame is written, so a harness that
+reaps the process tree the moment it sees that frame can never observe a
+half-built tree. That is the guarantee the lifecycle and anti-flake steps rest
+on, and it is stated here rather than only in the script because two other
+sections cite §5.2a as its home — a citation with no referent is how a
+guarantee quietly stops being one.
+
+`--grandchild-depth` and `--chain-timeout` arrived with E3-4, and they are what
+made the guarantee need stating. Generations two and upward are spawned by
+processes this script does not supervise, so before that wait existed the frame
+would arrive mid-construction and the promise held only for a chain of one. Each generation records
 its own pid *and its self-reported parent* into a directory the script creates —
 one file per generation, written under a temporary name and `os.replace`d into
 place, because an append shared by N processes is not atomic on Windows. On
@@ -1111,12 +1118,19 @@ case needs a look-alike of. It is safe because everything here is under the
 never imported.
 
 This sentence said "one case" for two review rounds after that stopped being
-true, and it is the **third** claim on this step to be corrected in one of its
-two homes and left standing in the other — the lock invariant and the importer
-count being the others. The cheap discipline, recorded here because the cost was
-paid three times: when a review names a count, `grep` the claim across
+true, and it was the third claim on this step to be corrected in one of its homes
+and left standing in another — the lock invariant and the importer count being
+the others. The discipline, recorded here because the cost was paid four times:
+when a review names a count or a rule, `grep` the **claim** across
 `.system_design/` and `tests/` before calling it fixed. Editing the file the
 reviewer pointed at is not the same as editing the claim.
+
+And grep the claim, not one **phrasing** of it. The sweep that closed the
+importer count searched for `forbids` and missed two sites saying `warns`; the
+sweep that closed the case count searched for `one case loads` and missed one
+saying `the one case that needs a value from it`. A claim that appears in three
+wordings takes three greps, or one that matches on the *subject* — the section
+number, the identifier, the figure — rather than on the sentence around it.
 
 The `--pid-file` and `--grandchild-new-session` flags arrived with the
 browser-orphan fix. `--grandchild-new-session`

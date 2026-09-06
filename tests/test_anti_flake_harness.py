@@ -881,9 +881,10 @@ def test_a_payload_past_the_pipe_capacity_neither_blocks_nor_is_truncated() -> N
     assert len(payload) == size
     # Byte for byte, not merely the right length. A pump that returned the right
     # number of wrong bytes is the mutation a length check cannot see -- measured:
-    # `sink.append(bytes(len(stream.read())))` left all eighty-one cases in these
-    # modules passing. Re-derived from the script's own generator, so the
-    # expectation has one source.
+    # `sink.append(bytes(len(stream.read())))` left passing every one of the
+    # eighty-one cases these modules and the runner's held at the time.
+    # Re-derived from the script's own generator, so the expectation has one
+    # source.
     script = _fixture_child_module()
     assert payload == bytes(script.stdout_pattern_byte(i) for i in range(size))
 
@@ -1229,9 +1230,9 @@ def test_waiting_for_exit_reaps_through_the_lock_and_not_around_it() -> None:
     be held for a single ``poll()`` at a time.
 
     Restoring the obvious ``return self.proc.wait(timeout=timeout)`` therefore
-    breaks the invariant while looking simpler -- and, measured, left all
-    every one of the forty-nine cases these two modules held at the time
-    passing. This is the case that notices.
+    breaks the invariant while looking simpler -- and, measured, left passing
+    every one of the forty-nine cases these two modules held at the time. This
+    is the case that notices.
     """
     child = CapturedChild(
         proc=cast(Any, _ExitedProcess()), argv=[], stderr_lines=queue.Queue()

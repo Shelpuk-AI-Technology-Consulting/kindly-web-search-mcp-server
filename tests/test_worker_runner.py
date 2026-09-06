@@ -432,7 +432,7 @@ async def test_runner_diagnostics_keep_their_order() -> None:
 #: Ceiling on waiting for the fixture child to announce itself by writing its
 #: pid file. Generous on purpose: it bounds a hang, it is not a measurement of
 #: how fast an interpreter starts, and a tight value here is the flake generator
-#: section 5.2a warns about.
+#: section 5.4 warns about.
 PID_FILE_TIMEOUT_SECONDS = 30.0
 
 #: Ceiling on waiting for a signalled process to actually be gone. `SIGKILL`
