@@ -928,13 +928,27 @@ would not serialize at all, so the worker emitted **nothing** in that case, whic
 is indistinguishable from the stage never having been reached. The worker gained
 that fallback by adopting the shared one.
 
-The copies that remain are deliberate and counted, not overlooked — **four
-sites across three files**, plus the definition itself. Two are
-`_split_worker_diagnostics`, until its removal. One is
-`tests/child_processes/worker_child.py`, a test instrument that must not import
-the package it calibrates, and one is that instrument's own calibration
-`tests/test_worker_child_fixture.py`, which reads the frames the script writes as
-raw bytes and so cannot import production either. `tests/test_worker_frame_contract.py` sweeps every
+The copies that remain are deliberate and counted, not overlooked — **five sites
+across four files**, plus the definition itself:
+
+| Sites | Where | Why it is exempt |
+|---|---|---|
+| 2 | `scrape/universal_html.py` | `_split_worker_diagnostics`, dead; both go when it does (§14) |
+| 1 | `tests/child_processes/worker_child.py` | a test instrument that must not import the package it calibrates |
+| 1 | `tests/test_worker_child_fixture.py` | that instrument's calibration, which reads the frames as raw bytes and so cannot import production either |
+| 1 | `tests/test_worker_frame_contract.py` | the independent literal anchor — see below |
+
+**The last one is not an oversight, it is what makes the rest checkable.** Once
+both sides of the protocol read one `FRAME_PREFIX`, every assertion computed
+through the codec moves with it, so changing the marker or the JSON separators
+breaks nothing: the format stops being observable from inside the code that owns
+it. One hand-written literal, compared against the constant and against a full
+encoded line, is what restores that.
+
+The table is given as a table because prose undercounted it **twice** — first
+omitting the fixture calibration, then omitting this anchor — while the
+executable allow-list `MARKER_ALLOWANCE` was right both times. Read the count
+off that dictionary, not off this paragraph. `tests/test_worker_frame_contract.py` sweeps every
 source file's *syntax tree* for the marker as a string or bytes literal and holds
 an exact per-file count, so a third copy fails and a vanished exemption fails
 too. The vocabulary is the marker **including its trailing space**: without it,
