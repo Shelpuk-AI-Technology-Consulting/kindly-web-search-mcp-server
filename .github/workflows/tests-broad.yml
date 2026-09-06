@@ -72,6 +72,20 @@ jobs:
     # number can actually fire and produce a diagnosis of its own rather than
     # dying at the same instant the platform kills the job.
     timeout-minutes: 60
+    # 🔴 Declared, not inherited, and complete rather than partial. This file has
+    # no workflow-level `permissions:`, so without this block the job takes the
+    # organisation default -- which is wider than anything here needs. `contents:
+    # read` is exactly what `actions/checkout` requires and nothing else: this job
+    # installs a package and runs tests, it writes nothing back to the repository
+    # and speaks to no API. Naming any permission zeroes the rest, so the one
+    # grant is the whole grant.
+    #
+    # ⚠️ A reusable workflow cannot be granted more than its caller holds, so this
+    # is a ceiling as well as a floor -- which is why the caller in `ci.yml`
+    # declares the same thing rather than leaving it to be inherited from
+    # whatever else calls this file later.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

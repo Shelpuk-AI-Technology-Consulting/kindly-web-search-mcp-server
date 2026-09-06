@@ -116,6 +116,14 @@ jobs:
     # its own instead of the platform killing the job at the same instant -- and still
     # ~2.9x the measured maximum above.
     timeout-minutes: 10
+    # 🔴 Declared, not inherited -- the same reasoning as `review_replies` below,
+    # which has carried its own block since it was written. This job checks out
+    # the repository and runs a test file; it needs `contents: read` and nothing
+    # more. ⚠️ The gap here predates the test jobs and was surfaced by the code
+    # scanner when they landed; it is closed while the file is open rather than
+    # left as the one job in it that inherits.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -198,6 +206,14 @@ jobs:
     # `runs-on:` nor `timeout-minutes:`, and GitHub's supported-keyword list for
     # such a job names neither. The cap that matters lives beside the matrix, in
     # the called workflow, where the runner it must clear is written.
+    #
+    # ⚠️ `permissions:` IS legal on a caller job -- it is in GitHub's supported
+    # keyword list for one, unlike `runs-on:` and `timeout-minutes:`, so
+    # declaring it does not forfeit the exemption those two checks grant. It
+    # bounds what the called workflow can be granted, which is why it is here as
+    # well as there.
+    permissions:
+      contents: read
     uses: ./.github/workflows/tests-broad.yml
 
   ci-required:
@@ -227,6 +243,11 @@ jobs:
     # but it is declared, and strictly below the ceiling, because a job with no
     # cap is checked against nothing.
     timeout-minutes: 10
+    # 🔴 Empty, deliberately, and it is the honest value rather than a cautious
+    # one. This job checks out nothing, calls no API and runs one shell builtin;
+    # every permission it inherited would be one it never used. An empty block
+    # grants none of them.
+    permissions: {}
     steps:
       - name: Fail unless every dependency succeeded
         # 🔴 **`success` is required explicitly, once per dependency, rather
