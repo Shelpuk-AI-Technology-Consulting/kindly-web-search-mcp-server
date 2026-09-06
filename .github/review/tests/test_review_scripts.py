@@ -763,10 +763,11 @@ class TestSelectRules(unittest.TestCase):
 
         The README is the always-read document: it carries the tool contract,
         the client-by-client setup for seven MCP clients, and the transport and
-        allowlist behaviour. (⚠️ This sentence used to open "there is no
-        `.system_design/` here". There is one, holding the test-suite design; it
-        is deliberately not in the always-read set because those documents are
-        large and each change touches a section of one.) A change to the README
+        allowlist behaviour. (⚠️ This sentence used to open by denying the
+        repository kept design documents of its own -- described rather than
+        reproduced, since the sweep guard reads this file. It keeps two, under
+        `.system_design/`; they are deliberately not in the always-read set
+        because they are large and each change touches a section of one.) A change to the README
         is a specification change and must
         load `docs.md`, which is what tells the reviewer to judge it as one.
 
@@ -12635,27 +12636,40 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             re.compile(r"the two (?:CI|`ci\.yml`) jobs"),
             "`ci.yml` has more than two jobs",
         ),
-        # 🔴 A different claim class, added for the same reason and swept by the
-        # same walk: four files stated this repository has no `.system_design/`
-        # directory. It has one, holding the design these very CI jobs implement
-        # -- and one of the four told the automated reviewer not to report a
-        # missing design document, so the belief was degrading every review
-        # rather than merely sitting there. Not caused by the CI work; found
-        # while sweeping for the claims above, which is the argument for
-        # sweeping rather than editing the files somebody remembered.
+        # 🔴 **A different claim class, and the one that taught this guard what
+        # a pattern should be about.** Four files stated this repository has no  # noqa: ci-claim
+        # `.system_design/` directory. It has one, holding the design these CI
+        # jobs implement -- and one of the four told the automated reviewer not
+        # to report a missing design document, so the belief was degrading every
+        # review rather than sitting inert.
+        #
+        # 🔴 **The first two attempts matched PHRASINGS and both went stale  # noqa: ci-claim
+        # within a day.** A pattern for "no `.system_design/` directory" missed  # noqa: ci-claim
+        # "no design document"; adding that missed "no separate design document"  # noqa: ci-claim
+        # and "has none today". Each round the guard's own documentation claimed
+        # the tree was clean, and each round the automated review found more --
+        # three times. The lesson is not "add another spelling": it is that a
+        # pattern per phrasing makes the guard's reach a function of the author's
+        # imagination. These two match the **belief** instead, by proximity in
+        # both directions, and they were validated against the true sentences
+        # they sit beside before being adopted -- `test_no_rule_fires_on_the_
+        # true_sentences_it_sits_beside` is where those live.
+        #
+        # ⚠️ `no` and `none` but deliberately NOT `not`: "do not report a missing  # noqa: ci-claim
+        # design document as a finding" is a real instruction in the guide, and a
+        # guard that fires on it gets the instruction deleted rather than the
+        # pattern fixed.
         (
-            re.compile(r"(?:has no|is no|no) `?\.system_design/?`? ?(?:directory|here)"),  # noqa: ci-claim
+            re.compile(r"\b(?:no|none|neither|without|lacks)\b[^.\n]{0,80}(?:design document|\.system_design)"),  # noqa: ci-claim
             "`.system_design/` exists and holds the test-suite design",
         ),
-        # 🔴 The same belief in different words, and the automated review found
-        # it surviving in two files after the first pass swept only the
-        # `.system_design/` spelling. That is the argument for a pattern per
-        # PHRASING rather than per belief: a sweep is only as wide as its
-        # vocabulary, and this one's documentation claimed the belief was gone
-        # from the tree while the tree still carried it.
         (
-            re.compile(r"(?:has no|is no|no) design document"),  # noqa: ci-claim
-            "`.system_design/` exists; say which documents are always-read instead",
+            # ⚠️ `none` only, NOT `no`. Measured: "the alternative is a design
+            # document landing with no rule file selected" is a true sentence in
+            # two files, and a reverse pattern accepting `no` fires on it. A
+            # guard that cries wolf on correct prose gets the prose deleted.
+            re.compile(r"(?:design document|\.system_design)[^.\n]{0,80}\bnone\b"),  # noqa: ci-claim
+            "`.system_design/` exists and holds the test-suite design",
         ),
     )
 
@@ -12712,6 +12726,13 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "fourth by section. This repository has no `.system_design/` directory.",  # noqa: ci-claim
             "There is no `.system_design/` here; the README carries the contract",  # noqa: ci-claim
             "this comment is its only record, because this repository has no design document",  # noqa: ci-claim
+            # 🔴 The three the SECOND pattern round still missed, found by the
+            # automated review after this guard's docstring said the tree was
+            # clean. They are kept as specimens precisely because nobody
+            # predicted them.
+            "read `README.md` in full: this repository has no separate design document",  # noqa: ci-claim
+            "There is no separate design document in this repository.",  # noqa: ci-claim
+            "`.system_design/` is matched although this repository has none today.",  # noqa: ci-claim
         )
         for specimen in specimens:
             with self.subTest(specimen=specimen):
@@ -12737,6 +12758,8 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "`.system_design/` holds the test-suite design and its plan",
             "it is deliberately not in the always-read set",
             "do not report a missing design document as a finding",
+            "`.system_design/` exists and holds the test-suite design and its plan",
+            "this repository has a `.system_design/` of its own but does not always-read it",
         ):
             with self.subTest(sentence=sentence):
                 firing = [
@@ -12769,11 +12792,39 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
                 # A binary file cannot carry a reviewable sentence, and failing
                 # on one would make this guard about file types.
                 continue
-            for lineno, line in enumerate(text.splitlines(), 1):
+            lines = text.splitlines()
+            for lineno, line in enumerate(lines, 1):
                 if self.MARKER in line:
                     continue
+                # 🔴 **The line AND the line joined to its successor.** A claim
+                # wrapped across a line break is invisible to a line-oriented
+                # sweep, and that is not hypothetical: `REVIEW_PROMPT.md` split
+                # "no separate design / document" over two lines and survived a
+                # round of this guard for exactly that reason, while the same
+                # sentence in an unwrapped file was caught. Prose in this tree is
+                # hard-wrapped at 80 columns, so every claim longer than a few
+                # words is a candidate. The successor is joined with a space so
+                # the two halves read as one sentence, and its own marker is
+                # honoured so a marked line cannot be dragged in by its
+                # neighbour.
+                # ⚠️ **Joined only when the line looks like a CONTINUATION.**
+                # Measured while writing this: fusing every line with its
+                # successor made two adjacent entries of a list read as one
+                # sentence and fire a rule neither of them contains. Hard-wrapped
+                # prose breaks mid-sentence, so a line that already ends in
+                # sentence-final punctuation, a closing quote or a comma is not a
+                # wrapped half and must not be extended.
+                joined = line
+                stripped = line.rstrip()
+                if (
+                    lineno < len(lines)
+                    and stripped
+                    and stripped[-1] not in '.!?:,"\''
+                    and self.MARKER not in lines[lineno]
+                ):
+                    joined = line + " " + lines[lineno].lstrip("#> ").strip()
                 for rule, correction in self.CLAIMS:
-                    if rule.search(line):
+                    if rule.search(line) or rule.search(joined):
                         # 🔴 The correction travels WITH the pattern. One sweep
                         # now holds two unrelated claim classes, and a shared
                         # message would tell whoever reintroduced the

@@ -2,8 +2,8 @@
 
 ## README.md is the specification
 
-There is no separate design document in this repository. **`README.md` is the
-closest thing it has to one**, and it is what every user reads before installing:
+**`README.md` is the specification a change is judged against**, and it is what
+every user reads before installing:
 the tool contract, the client-by-client setup for seven MCP clients, the
 transport and allowlist behaviour, the proxy configuration, and the
 troubleshooting that tells someone what a `403` or `421` actually means.

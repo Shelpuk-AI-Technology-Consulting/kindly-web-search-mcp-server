@@ -4,8 +4,8 @@ You are reviewing a pull request in this repository.
 
 **Start with the conversation, then the specification.** Read the pull request's
 discussion — included below, and described in the next section — before anything
-else. Then read `README.md` **in full**: this repository has no separate design
-document, and the README is the specification — the tool contract, the
+else. Then read `README.md` **in full**: it is the specification — the tool
+contract, the
 client-by-client setup, the transport and allowlist behaviour, and the
 troubleshooting that says what each error means. Do all of that **before** you
 look at the diff: every review here judges a change against its specification,
