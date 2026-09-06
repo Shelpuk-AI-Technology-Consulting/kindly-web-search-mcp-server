@@ -1686,6 +1686,15 @@ file was the only difference from the merge candidate, and both deleted after.
 touches: **91 passed, 1 skipped, 0 failed** in 41.06 s. The whole suite:
 **824 passed, 3 skipped, 16 subtests, 0 failed** in 169.86 s.
 
+The module-scoped figure is `pytest -v -p no:cacheprovider` over
+`tests/test_anti_flake_harness.py`, `tests/test_worker_child_fixture.py` and
+`tests/test_worker_runner.py` — recorded here because a figure a reader cannot
+re-derive is a figure they have to take on trust. It re-derives as
+**36 + 18 + 38 = 92** collected node ids, of which one — the POSIX-only
+process-group case — skips on Windows. Count the *collected ids*, not the `def
+test_` lines: the runner module carries 38 ids from 28 functions, and counting
+functions is what makes this figure look ten too high.
+
 The one-test difference from Linux's 825/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
 skips where `os.getpgid` does not exist. Nothing else diverges.
