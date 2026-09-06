@@ -911,11 +911,67 @@ duplicating tests or touching the same files.
 
 - **E5-1.** Hypothesis over generated URLs. *Verify:* fails if any parser's
   matching is widened to overlap another; the shrunk counterexample is readable.
+
+  **Landed.** `tests/test_url_parser_exclusivity.py` — the repository's first
+  Hypothesis module — with the property, two pinned `@example`s, and rows for
+  the claims the property is structurally blind to. **The property was false on
+  arrival**, so this step also shipped a production fix, on E5-8's precedent:
+  `_derive_site_parameter` ended with a catch-all making every `.com` host a
+  StackExchange community, so `github.com` derived the slug `github` and GitHub
+  issue URLs were answered with a StackExchange failure note. §3.1 of
+  `TEST_SUITE.md` carries the defect, the two exposure families, the allowlist,
+  and the falsified anchoring alternative that was tried first.
+
+  **Nine mutants tried, nine killed, one further mutation recorded as an
+  equivalent** — the five host guards, the allowlist widened and narrowed, the
+  separating dot, and the `mathoverflow.net` entry converted from an equivalent
+  mutant into a killed one. Stated as three numbers because E12-1 consults this
+  record and "no survivors" alone cannot be reconciled with the equivalents named
+  below: the equivalent is the `meta.<x>.com` branch, which is *not* counted
+  among the nine, and three further mutations survive **by construction** —
+  widening the non-StackExchange host guards into unclaimed space, which this
+  property cannot see and E5-2 now owns. Three findings came from hunting
+  survivors rather than from this bullet: the dot (`notstackoverflow.com` became
+  a community and every test passed), the generator crossing path prefixes
+  instead of identifier vocabularies (which left the arXiv and Wikipedia guards
+  surviving), and family B of the exposure (any owner, any repo).
+
+  **What this step does not own, stated because two reviews had to establish
+  it.** The property kills a host guard widened into space another parser
+  claims. It is blind to one widened into *unclaimed* space, because nothing
+  then accepts a URL twice — so `notarxiv.org` and `notwikipedia.org` pass. That
+  is a rejection claim, and it is handed to E5-2 below. **One** equivalent mutant
+  is recorded rather than removed: the `meta.<x>.com` branch, pre-existing and
+  dead weight once the gate is in place. `math.meta.stackexchange.com` is *not* a
+  second one — a characterisation test asserts its wrong slug, so the behaviour
+  is observable by definition; it is a recorded defect, filed in §3.1 under the
+  widenings left unfixed. An earlier draft called them two, contradicting this
+  bullet's own singular count three sentences above.
 - **E5-2.** For each of the five parsers: a generated URL built from known
   identifiers returns exactly those identifiers; a rejected URL raises that
   parser's own error type; rejection is stable across trailing slashes, scheme
   case and query order. *Verify:* each property fails if its parser's group
   extraction is off by one, and if the parser raises bare `Exception`.
+
+  **Also owns, handed over by E5-1: suffix-is-not-subdomain rejection for the
+  four non-StackExchange parsers.** *Verify additionally:* each parser rejects a
+  host that merely *ends with* the domain it accepts without being that domain
+  or a subdomain of it. The three guards are written three different ways and
+  only one is a subdomain test, so the clause is phrased against the behaviour
+  rather than the mutation: `wikipedia.py` guards with
+  `endswith(".wikipedia.org")` (a subdomain test, widenable), both GitHub
+  parsers with `host not in {"github.com", "www.github.com"}` (a set-membership
+  test, widenable to a suffix test), and `arxiv.py` with a bare
+  `endswith("arxiv.org")` that needs no mutation because it is already wrong.
+  Concretely `notarxiv.org` (`arxiv.py` matches `endswith("arxiv.org")` with no
+  leading dot **today**, so this one is a live defect rather than a mutant),
+  `notwikipedia.org`, and `notgithub.com` for both GitHub parsers. E5-1 fixed
+  and pinned this exact class on the StackExchange side and cannot reach the
+  others: its property is mutual exclusivity, and a widening into host space no
+  second parser claims produces no overlap for it to detect. Also unguarded and
+  belonging here: `_QUESTION_RE`/`_ANSWER_RE` survive `search`→`match`, and
+  `_QUESTION_RE` survives losing its `q` alternative, which real short links
+  such as `https://es.stackoverflow.com/q/12345` depend on.
 - **E5-3.** Owns `server.py`'s `_resolve_transport`, `_resolve_host_port`,
   `_resolve_tool_total_timeout_seconds`, `_resolve_web_search_max_concurrency`,
   `_resolve_transport_security`, `_cors_origin_regex`, `_get_int_env`,

@@ -468,6 +468,237 @@ can state. The per-parser properties are instead:
   a bare `Exception`, and rejection does not depend on trailing slashes, case in
   the scheme, or query-string order.
 
+**E5-1 shipped a production fix, following E5-8's precedent above.** A test
+step changing production code is the exception, not the rule, and the reason is
+the same one E5-8 gives: the defect *is* the thing the step set out to pin, so
+filing it separately would have meant merging a property that documents its own
+falsity. What changed in behaviour: `.com` hosts outside the Stack Exchange
+network — `github.com` and `www.github.com` above all, and any `meta.<x>.com` —
+no longer route to the StackExchange handler and are now claimed by whichever
+handler actually owns them. **For the class this fix exists for that is the
+GitHub handlers, not the HTML loader**: a `github.com` issue or discussion URL
+is claimed at stage 2 or 3 and served over the GitHub GraphQL API, with
+`load_url_as_markdown` reached only if that retrieval itself fails — no token,
+or a rate limit. The HTML loader is the destination only for the remaining
+hosts, which no specialized parser claims. An earlier draft of this sentence
+said everything falls through to the HTML loader, which told a reader with
+`GITHUB_TOKEN` configured that the fix demotes GitHub content to the browser
+path when it does the opposite. §9's risk row moves to covered on the strength of that fix, not merely
+of the new test.
+
+**The property was false on arrival.** The step was written expecting to pin a
+property that already held. It did not:
+`tests/test_url_parser_exclusivity.py` was red the moment it existed.
+StackExchange is tried first, so it won, and the resolver's StackExchange branch
+returns a canned failure note instead of falling through — the caller got no
+content and no indication of a mis-route.
+
+**Two families, and the second is the one that matters.** The first sweep found
+only family A and the requirements originally described only it; review found
+family B and it is far wider:
+
+| Family | Shape | Example |
+|---|---|---|
+| A | owner ∈ {`a`,`q`,`questions`}, all-digit repo | `github.com/a/2048/issues/7` |
+| B | **any** owner, **any** repo, marker in a trailing segment | `github.com/microsoft/vscode/issues/5/x/q/999` |
+
+Family B exists because `_ISSUE_RE` is a `match` anchored only at the start, so
+trailing segments are permitted, while `_QUESTION_RE` and `_ANSWER_RE` `search`
+the whole path. Any GitHub issue URL carrying `/q/<digits>`, `/a/<digits>` or
+`/questions/<digits>` after the issue number was claimed. Both are pinned as
+`@example`s, because family B is generable but rare — measured at ~0.06% per
+example against family A's ~3%.
+
+The cause was in `_derive_site_parameter`, not in the path patterns: it ended
+with `if host.endswith(".com")`, so **every** `.com` host was a StackExchange
+community and `github.com` derived the nonexistent site slug `github`. GitHub
+owners may legitimately be spelled `a`, `q` or `questions`, which is what the
+path patterns look for.
+
+**The obvious fix was tried first and is wrong; it is recorded so it is not
+re-proposed.** Anchoring `_QUESTION_RE` and `_ANSWER_RE` to the start of the
+path (`.search` → `^…`) leaves **family A** untouched, because in all eighteen
+overlaps the first generator found — which were family A only, family B not yet
+being known — the marker is *already* the first path segment. Measured, not
+reasoned.
+
+**The scoping matters, and an earlier draft of this paragraph omitted it.**
+Anchoring *would* close family B, whose marker is by definition a trailing
+segment. So anchoring is not inert; it is inert against exactly the family that
+would survive it. A future reader contemplating a narrower owner-based fix —
+excluding `a`, `q` and `questions` as owners, which is the change that would
+leave family B alone — must not read this paragraph as saying anchoring is
+useless in general. It says a fix validated against one family looks like it
+works, which is the reason both families are pinned as `@example`s.
+
+What landed is a membership gate ahead of every derivation branch:
+`_STACKEXCHANGE_NETWORK_DOMAINS`, the seven domains StackExchange itself
+publishes, with a host qualifying when it equals one or is a subdomain of one.
+**An allowlist rather than a denylist of the hosts other parsers own**, because a
+denylist makes this one property pass while leaving the same defect live
+wherever no second parser competes — `example.com/q/12345` would still be sent
+to a site that does not exist. §3.2 puts these parsers in the mutation scope, and
+a property that holds by coincidence survives mutation for the wrong reason.
+
+**The gate precedes all four branches rather than replacing the last one**,
+because the `meta.` branch is a second catch-all: it accepted `meta.example.com`
+and derived `meta.example`. Gating first is also the smaller diff — one guard
+added, four branches untouched.
+
+**`mathoverflow.net` is on the list and still rejected.** Every derivation branch
+requires `.com`, so MathOverflow resolves to `None` exactly as before. Removing
+it from the list was therefore an **equivalent mutant** when first written — and
+that is precisely why it did not stay one. A test now asserts both halves of the
+intent (`_is_stackexchange_network_host("mathoverflow.net")` is true, *and*
+`parse_stackexchange_url` still raises), which **converts it into a killed
+mutant**; it is the row recorded as killed in the matrix below. That conversion
+is the point: an allowlist entry no test can observe is a survivor somebody must
+triage, and this section exists to spare E12-1 exactly that. The entry stays
+because a constant named for the network must not lie about membership;
+restoring MathOverflow is a separate change.
+
+**One survivor was found by hand and killed.** With the separating dot deleted —
+`endswith(domain)` rather than `endswith("." + domain)` — every test in the
+module still passed, while `notstackoverflow.com` became StackExchange community
+`notstackoverflow`. The exclusivity property is structurally blind to it, since
+no second parser claims that host, so two explicit rejection rows own the
+suffix-versus-subdomain distinction instead.
+
+**The verification record, kept here because this is the durable document.**
+E5-1's mutation matrix and its control live in the step's task-local
+requirements folder, which `.gitignore` excludes from the repository — so the
+summary belongs here, where a reader of the tree can actually reach it:
+
+| Mutation | Outcome |
+|---|---|
+| Each of the five parsers' host guards, deleted in turn | killed (the property) |
+| Allowlist widened with `github.com` | killed (property + the GitHub rejection rows) |
+| Allowlist narrowed by dropping `superuser.com` | killed (exactly the two Super User rows) |
+| `endswith("." + domain)` weakened to `endswith(domain)` | killed (the two suffix rows) |
+| `mathoverflow.net` dropped from the allowlist | killed (the MathOverflow intent test) |
+
+**Nine mutants tried, nine killed.** Separately, a *control*: with the gate
+reverted **and** both pinned `@example`s deleted, the property still failed on
+five of five trials from a cleared `.hypothesis/examples`, shrinking to
+`https://github.com/a/1/issues/1` — so generation finds the defect unaided and
+the pins are belt-and-braces rather than load-bearing. A 200,000-example soak
+against the fixed code found no overlap. Every figure was measured locally, and
+that is not a preference — **the CI that exists runs no part of this suite.**
+`.github/workflows/ci.yml` carries the banner itself: *"This file is
+deliberately NOT this repository's test suite. It does not run `pytest`, `ruff`,
+or anything under `tests/`."* Its two jobs are `review-scripts`, which runs the
+review system's own tests, and `review_replies`, a merge gate over answered
+review threads that runs no tests at all. Neither touches `tests/`, and neither
+does any job in `claude-code-review.yml` or the CodeQL workflow.
+
+The citation here used to be §10.3, which was exactly backwards: §10.3 is this
+document's CI **design** and defines seven jobs — `fast`, `fast-extras`,
+`subsystem`, `chromium`, `package`, `types`, `coverage` — every one of which
+runs a pytest selection. A reader following that pointer found seven jobs where
+the sentence promised none. This document describes the *"To Be"* state
+throughout, so a claim about what runs **today** must cite the workflow file,
+never a section of this one.
+
+**Which parser pairs can collide depends entirely on which model you are
+counting under, and an earlier draft of this paragraph gave a number without
+saying.** Three models, three answers:
+
+- **Before the fix.** StackExchange's host language was every `.com` host, which
+  contains GitHub's `{github.com, www.github.com}`. Wikipedia needs
+  `.wikipedia.org` and arXiv an `arxiv.org` suffix, neither of which is `.com`,
+  so they were untouchable. Two pairs could collide — StackExchange ×
+  GitHub-issue and StackExchange × GitHub-discussion — and both did.
+- **After the fix.** All five host languages are pairwise disjoint, so **no**
+  pair can collide. That is what the property asserts and the soak confirms.
+- **Under single-guard deletion**, which is the model the mutation matrix
+  exercises: deleting any one non-StackExchange host guard lets that parser
+  accept a StackExchange host, so **four** pairs become reachable — the two
+  above plus StackExchange × arXiv and StackExchange × Wikipedia, whose
+  counterexamples are quoted below.
+
+GitHub-issue × GitHub-discussion is in none of the three: their host sets are
+identical, but the third path segment is literally `issues` or `discussions`, so
+they are separated structurally rather than by host and no host mutation can
+bring them together. **So apart from that one structurally-separated pair, the
+host predicates are what keeps every pair apart**, and that is what the property
+guards — *in one direction only*, which is the part worth stating precisely.
+Deleting a host guard, or widening it into space another parser
+claims, is killed. Widening one into **unclaimed** space is invisible: measured,
+`notarxiv.org`, `notwikipedia.org` and `notgithub.com` all pass the entire fast
+suite, because nothing then accepts a URL twice and a mutual-exclusivity
+property has nothing to see.
+
+*An earlier draft closed the sentence above with "the other seven pairs".
+Seven reconciles with none of the three models — they leave eight, ten and six
+pairs apart respectively — and was a leftover from a fourth, unstated one. The
+claim never needed a count: one pair is separated structurally and the host
+predicates separate the rest, which holds under all three.* That second direction is a per-parser *rejection*
+claim and is handed to E5-2, whose Verify clause names it. It is also why E5-1's first generator was
+insufficient: it crossed each parser's *path prefix* against every host, which
+found the GitHub overlap but left the arXiv and Wikipedia host guards as
+surviving mutants. What has to be crossed is each parser's **identifier
+vocabulary** — a legacy arXiv id is `<category>/<7 digits>` with the category
+unconstrained, so `q/1234567` is simultaneously a valid arXiv id and a
+StackExchange question marker, and `_WIKI_PATH_RE`'s capture is unconstrained in
+the same way. `https://stackoverflow.com/abs/q/1234567` and
+`https://stackoverflow.com/wiki/q/12345` are the two counterexamples that now
+fail those mutants.
+
+**A second equivalent mutant lives in the same function, and it predates this
+step.** Deleting the `meta.<community>.com` branch leaves the suite green:
+after the gate it and the fall-through `.com` branch agree on every allowlisted
+host **the network actually uses** — `meta.stackoverflow.com` →
+`meta.stackoverflow`, `meta.superuser.com` → `meta.superuser`, with
+`meta.stackexchange.com` caught by the special case above both. The scope is
+load-bearing and an earlier draft omitted it: `meta.<x>.stackexchange.com` *is*
+allowlisted, being a subdomain of `stackexchange.com`, and it is exactly where
+the two branches disagree — `meta.<x>.stackexchange` with the branch present,
+`meta` without it. What makes the deletion survive is not that no allowlisted
+host distinguishes them but that no host the network *operates* does: real
+second-level metas are `<x>.meta.stackexchange.com`, not `meta.<x>.…`.
+Kept because deleting a pre-existing branch is a behaviour change E5-1 was not
+asked for; recorded because the mutation step will otherwise surface it as a
+survivor with nothing to consult.
+
+**Adjacent widenings are recorded, not fixed.** `parse_arxiv_url` matches
+`endswith("arxiv.org")` with **no leading dot**, so `notarxiv.org` is accepted —
+the same defect class as the one E5-1 fixed in StackExchange, but it produces no
+overlap today and so is outside a step whose claim is exclusivity. And the
+`*.stackexchange.com` branch takes only the first label, so
+`math.meta.stackexchange.com` derives `math` where the API's
+`api_site_parameter` is `math.meta`; a characterisation test pins today's wrong
+answer so a future correction is visible rather than silent. And all four non-StackExchange parsers admit unclaimed host space without any
+test noticing, in two distinct conditions that an earlier draft collapsed into
+one count:
+
+- **arXiv needs no mutation at all.** `endswith("arxiv.org")` is *already* a
+  bare suffix test, so `notarxiv.org` is accepted on `main` today. A live
+  defect, not a survivable mutation.
+- **Three admit a widening mutation** that no test kills: `wikipedia.py`'s
+  `endswith(".wikipedia.org")` weakened to a bare suffix, and both GitHub
+  parsers' `host not in {"github.com", "www.github.com"}` weakened to a suffix
+  test.
+
+That is the arithmetic behind "three widenings" and "four parsers" — the two
+numbers count different things and the sentence used to give one of them without
+saying which. All four are the defect class E5-1 fixed on the StackExchange side
+and pinned with the `notstackoverflow.com` rows; all four belong to E5-2's
+stable-rejection claim. All are named here so the next reader
+does not re-derive them, and so a mutation report has an answer to point at.
+
+**`_QUESTION_RE` and `_ANSWER_RE` stay unanchored, and the honest reason is
+narrower than the one first written here.** An earlier version of this paragraph
+claimed the markers "do appear mid-path on real URLs" — that assertion had no
+citation, no test, and no URL anyone could produce on an allowlisted host; the
+closest candidate, the Teams `/c/<team>/questions/<id>/…` form, lives on
+`stackoverflowteams.com`, which this allowlist rejects, so it argues against the
+claim rather than for it. The real reason is simply that after the host fix,
+anchoring buys nothing, and narrowing acceptance is a behaviour change E5-1 was
+not asked to make. Nothing currently guards it: `search`→`match` on either
+pattern passes the whole suite, as does dropping the `q` alternative that real
+short links like `https://es.stackoverflow.com/q/12345` depend on. Those cases
+are handed to E5-2.
+
 **Environment resolvers.** The `_resolve_*` families in `server.py`,
 `chromium_pool.py` and `nodriver_worker.py`, plus `_parse_port_range`,
 `_resolve_transport_security` and `_cors_origin_regex`. Table-driven over unset,
@@ -2055,7 +2286,7 @@ The **Today** column describes *test coverage*, not implementation status.
 | `pdf-advanced` extras present *and* absent | gap | L2 | `fast` (both installs) | |
 | Resolver routing and per-handler fallback | partial | L1 | `fast` | |
 | Markdown transforms | partial | L1 + corpus | `fast` | |
-| URL parser mutual exclusivity | gap | L1 property | `fast` | |
+| URL parser mutual exclusivity | covered (E5-1) — the property was red on arrival; §3.1 records the defect and the fix | L1 property | `fast` | |
 | Env resolvers across all three modules | partial | L1 | `fast` | |
 | Diagnostics redaction at the emit boundary | gap (§7.1) | L1 + L2 | `fast` | |
 | Outbound URL policy | gap, undefined (§7.2) | L1 + L3 | `fast` + `subsystem` | |
