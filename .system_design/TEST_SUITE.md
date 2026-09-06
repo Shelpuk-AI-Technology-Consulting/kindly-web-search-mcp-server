@@ -1665,17 +1665,17 @@ platform. So the branches were run, in the instrument E1-6 used: a throwaway
 branch carrying one temporary workflow, `git diff --stat` confirming the workflow
 file was the only difference from the merge candidate, and both deleted after.
 
-**Result, `windows-latest`, 2026-09-05, merge candidate `05595c6`.**
+**Result, `windows-latest`, 2026-09-06, merge candidate `3c2cd7c`.**
 `Python 3.13.15 (tags/v3.13.15:4061bc4) [MSC v.1944 64 bit (AMD64)]`,
 `Windows-2025Server-10.0.26100-SP0`, pytest 9.1.1. The three modules this step
-touches: **90 passed, 1 skipped, 0 failed** in 39.84 s. The whole suite:
-**823 passed, 3 skipped, 16 subtests, 0 failed** in 165.34 s.
+touches: **90 passed, 1 skipped, 0 failed** in 39.43 s. The whole suite:
+**823 passed, 3 skipped, 16 subtests, 0 failed** in 135.07 s.
 
 The one-test difference from Linux's 824/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
 skips where `os.getpgid` does not exist. Nothing else diverges.
 
-This is the **fifth** run. Each one followed a review-driven change, which is
+This is the **sixth** run. Each one followed a review-driven change, which is
 the rule; the second is why the rule exists. Two of the later ones are worth
 naming for the opposite reason — **Windows was where a defect hid, not where it
 showed.** A case injected a killer that never killed, leaking a child and thirty
