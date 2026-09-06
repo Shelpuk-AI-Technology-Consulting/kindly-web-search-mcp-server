@@ -1691,9 +1691,14 @@ The module-scoped figure is `pytest -v -p no:cacheprovider` over
 `tests/test_worker_runner.py` — recorded here because a figure a reader cannot
 re-derive is a figure they have to take on trust. It re-derives as
 **36 + 18 + 38 = 92** collected node ids, of which one — the POSIX-only
-process-group case — skips on Windows. Count the *collected ids*, not the `def
-test_` lines: the runner module carries 38 ids from 28 functions, and counting
-functions is what makes this figure look ten too high.
+process-group case — skips on Windows. Count the *collected ids*, not the test
+functions: the runner module carries **38 ids from 33 functions**, ten of them
+`async def` and two parametrized into seven ids, so every cheaper way of counting
+lands short. A review round put those three modules at 82 by counting
+functions, and the commit that answered it repeated the mistake in miniature by
+recording 28 — the count of `^def test_` lines alone, which misses the `async`
+ones. Both numbers are corrected here; the commit message is left standing with
+its error, because history is not the place to pretend a figure was right.
 
 The one-test difference from Linux's 825/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
