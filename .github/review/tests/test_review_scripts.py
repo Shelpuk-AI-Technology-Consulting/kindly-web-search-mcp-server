@@ -258,6 +258,14 @@ def _matrix_values(block: str, key: str):
         or any of its values is a shape this parser cannot resolve.
     """
 
+    # 🔴 An `include:` or `exclude:` written INLINE is unreadable to a
+    # line-oriented scan, and stepping over it is not safe: `include:
+    # [{os: ubuntu-slim}]` names a runner the top-level list does not, so
+    # skipping it returns a label set missing its most constrained member and
+    # passes a cap that leg could never honour. Measured before this was added.
+    if re.search(r"^\s+(?:include|exclude):[ \t]*\S", block, re.M):
+        return None
+
     found = set()
     lines = block.splitlines()
     for index, line in enumerate(lines):
@@ -320,16 +328,36 @@ def _block_sequence(lines, key_indent: int):
 
     Returns:
         The labels, or ``None`` when the sequence is empty or carries a shape
-        this parser cannot read.
+        this parser cannot read. A line indented no further than the key ends
+        the sequence normally; an unreadable line **inside** it refuses the
+        whole job rather than truncating the list at that point.
     """
 
     labels = []
     for line in lines:
         if not line.strip():
             continue
-        item = re.match(r"^(\s+)-[ \t]+(\S.*?)[ \t]*(?:#.*)?$", line)
-        if item is None or len(item.group(1)) <= key_indent:
+        # 🔴 **A sequence ends at a DEDENT and at nothing else.** The first
+        # draft ended it at "the next line that is not an item", which made a
+        # comment BETWEEN two items look like the end of the list: the labels
+        # above it were returned and everything below was dropped. Measured --
+        # `ubuntu-latest`, a comment, `ubuntu-slim` resolved to just the first,
+        # so the lowest recorded ceiling came back 360 instead of 15 and a
+        # 60-minute cap passed. A confident wrong answer is the one outcome this
+        # module promises never to give, so the two conditions are now separate:
+        # a dedent ENDS the list, anything else unreadable REFUSES the job.
+        if len(line) - len(line.lstrip()) <= key_indent:
             break
+        # A whole-line comment is readable YAML that carries no datum, so it is
+        # stepped over rather than refused -- the same tolerance the item and
+        # scalar patterns already extend to a TRAILING comment. Refusing it
+        # would be safe but would make the guard dictate the comment style of
+        # the file it checks, which gets a guard edited into silence.
+        if line.lstrip().startswith("#"):
+            continue
+        item = re.match(r"^(\s+)-[ \t]+(\S.*?)[ \t]*(?:#.*)?$", line)
+        if item is None:
+            return None
         token = item.group(2).strip("'\"")
         if "${{" in token or not RUNNER_LABEL.match(token):
             return None
@@ -729,9 +757,13 @@ class TestSelectRules(unittest.TestCase):
     def test_the_specification_selects_the_docs_rule(self):
         """🔴 `README.md` is this repository's specification, not its blurb.
 
-        There is no `.system_design/` here; the README carries the tool contract,
+        The README is the always-read document: it carries the tool contract,
         the client-by-client setup for seven MCP clients, and the transport and
-        allowlist behaviour. A change to it is a specification change and must
+        allowlist behaviour. (⚠️ This sentence used to open "there is no
+        `.system_design/` here". There is one, holding the test-suite design; it
+        is deliberately not in the always-read set because those documents are
+        large and each change touches a section of one.) A change to the README
+        is a specification change and must
         load `docs.md`, which is what tells the reviewer to judge it as one.
 
         Upstream this path asserts the opposite -- `select(["README.md"]) == []`
@@ -11544,10 +11576,13 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
         falling through a condition". This case is what makes that sentence
         true: a job claiming the exemption is held to the shape justifying it.
 
-        ⚠️ Vacuous today -- this repository has no caller job. §1.3 of the
-        implementation plan commits `ci.yml` to becoming callers, and this is
-        here so the exemption is checked from the first one rather than
-        retrofitted after somebody notices.
+        ⚠️ **No longer vacuous, and the sentence saying it was has been
+        corrected rather than left.** It was written before any caller job
+        existed, so that the exemption would be checked from the first one
+        rather than retrofitted after somebody noticed. `ci.yml`'s `broad` job
+        is that first one. It declares `uses:` and `permissions:` -- the latter
+        is legal on a caller and does not forfeit the exemption -- and neither
+        of the two keys this case forbids.
         """
 
         for job in self._jobs():
@@ -11714,6 +11749,120 @@ class WorkflowJobParserTests(unittest.TestCase):
         )
         self.assertEqual([job["job"] for job in jobs], ["a"])
 
+class BroadTestJobWiringTests(unittest.TestCase):
+    """The test job's own selection, held to the design rather than to a review.
+
+    🔴 **Every claim here was, until this class existed, checked only by a human
+    reading the diff.** Each of the four below could be deleted and the entire
+    suite -- and the CI run itself -- would stay green:
+
+    * drop `windows-latest` and the gate silently covers one platform;
+    * drop `--ignore=tests/package` and a file under that directory whose author
+      forgot its marker runs against the source checkout while claiming to have
+      tested an installed wheel;
+    * drop `--min-selected` and a selector that stops matching is green having
+      run almost nothing, which is the exact failure the floor exists for;
+    * install `.` instead of `.[dev]` and the cases that shell out to `mypy`
+      fail while the rest pass, which reads as a partial breakage.
+
+    ⚠️ **The CI run cannot substitute for these.** A green run proves the command
+    that ran was fine; it says nothing about the command being the one the design
+    asked for. `tests/package/` does not exist yet, so the path exclusion is
+    forward-looking and no run can exercise it at all.
+    """
+
+    WORKFLOW = (
+        Path(__file__).resolve().parents[2] / "workflows" / "tests-broad.yml"
+    )
+
+    def _text(self):
+        """Return the reusable test workflow.
+
+        Returns:
+            `tests-broad.yml` as text.
+        """
+
+        return self.WORKFLOW.read_text(encoding="utf-8")
+
+    def _selection_command(self):
+        """Return the pytest invocation, whitespace-normalised.
+
+        The command is written as a folded block scalar across several lines, so
+        it is collapsed to one before matching -- otherwise every assertion below
+        would silently depend on where the author wrapped it.
+
+        Returns:
+            The command as a single line.
+        """
+
+        text = self._text()
+        start = text.index("python -m pytest")
+        return " ".join(text[start:].split())
+
+    def test_the_selection_is_the_one_the_design_specifies(self):
+        """Both halves: the marker expression AND the path exclusion.
+
+        🔴 The path exclusion is **not** redundant with the marker. A marker
+        exclusion only helps when the marker is present, and a file under
+        `tests/package/` whose author forgot `@pytest.mark.package` is still
+        collected by the expression alone. Path and marker together; neither
+        alone.
+        """
+
+        command = self._selection_command()
+
+        self.assertIn("--ignore=tests/package", command)
+        self.assertIn(
+            '-m "not live and not chromium and not package"',
+            command,
+            "the marker expression is not the one the design specifies",
+        )
+
+    def test_the_selection_carries_a_collection_floor(self):
+        """A selector that stops matching is otherwise green having run nothing.
+
+        pytest fails by itself only when a selector matches *nothing* (exit 5).
+        The dangerous case is a selector matching a handful where it should match
+        hundreds: that exits 0. Only a declared floor catches it, so its presence
+        is asserted rather than assumed.
+        """
+
+        floor = re.search(r"--min-selected (\d+)", self._selection_command())
+
+        self.assertIsNotNone(floor, "the job declares no `--min-selected` floor")
+        self.assertGreater(
+            int(floor.group(1)),
+            0,
+            "a floor of zero is the option's inert default written out longhand",
+        )
+
+    def test_both_platforms_are_covered(self):
+        """A gate over one platform is half a gate, and looks exactly like one.
+
+        Named rather than counted: a matrix that swapped Windows for a second
+        Linux label would keep the leg count at two while covering one operating
+        system.
+        """
+
+        matrix = re.search(r"^        os: \[(.+)\]$", self._text(), re.M)
+
+        self.assertIsNotNone(matrix, "the job declares no flow-style `os` matrix")
+        labels = {item.strip() for item in matrix.group(1).split(",")}
+        self.assertEqual(labels, {"ubuntu-latest", "windows-latest"})
+
+    def test_the_install_carries_the_extra_the_selection_needs(self):
+        """`.[dev]`, not `.`, and the failure without it is asymmetric.
+
+        The selection includes `subsystem` cases that shell out to `mypy`, which
+        lives only in the `dev` extra. With it absent those cases fail while the
+        harness's configuration-reading cases still pass -- a partial breakage
+        rather than a missing tool, which is the reading that costs an
+        afternoon.
+        """
+
+        self.assertIn('pip install -e ".[dev]"', self._text())
+
+
 class CiRequiredAggregatorTests(unittest.TestCase):
     """The one required check, held to the shape that makes it one.
 
@@ -11739,6 +11888,25 @@ class CiRequiredAggregatorTests(unittest.TestCase):
         """
 
         return self.CI.read_text(encoding="utf-8")
+
+    def _job_block(self, name):
+        """Return one job's text from `ci.yml`, bounded to that job.
+
+        Args:
+            name: The job id.
+
+        Returns:
+            The job's text.
+        """
+
+        text = self._text()
+        start = text.index("\n  " + name + ":")
+        rest = text[start + 1 :]
+        end = re.search(r"\n  [A-Za-z_][\w-]*:\n", rest)
+        block = rest[: end.start()] if end else rest
+        self.assertIn(f"{name}:", block)
+        self.assertLess(len(block), len(text) // 2, "the job window did not close")
+        return block
 
     def _aggregate_block(self):
         """Return the aggregate job's own text, bounded to that job.
@@ -11867,21 +12035,61 @@ class CiRequiredAggregatorTests(unittest.TestCase):
             "because its own `if:` skips it on every other event",
         )
 
-    def test_the_conditional_clause_mirrors_that_jobs_own_condition(self):
-        """The exemption is only sound while the two conditions agree.
+    #: The exact condition `review_replies` must carry, as a WHOLE line. The
+    #: aggregate excuses that job on every event this expression excludes, so the
+    #: excuse is sound only while the expression is exactly this one.
+    REPLIES_CONDITION = "    if: github.event_name == 'pull_request'"
 
-        If `review_replies` stopped being `pull_request`-only, the clause above
-        would start excusing a job that was scheduled and skipped anyway. The
-        two lines live four hundred apart in one file, which is precisely the
-        arrangement that produced the runner-ceiling defect.
+    def test_the_conditional_clause_mirrors_that_jobs_own_condition(self):
+        """🔴 The excuse is only sound while the condition justifying it holds.
+
+        The aggregate does not require `review_replies` to succeed unless the
+        event is `pull_request`. That is safe **because that job does not run on
+        any other event**. If its own `if:` were widened, it would start running
+        on a push -- and a failure there would land in the gap the excuse opens:
+        the job runs, fails, and the aggregate does not count it. `ci-required`
+        then reports green over a failed merge gate.
+
+        🔴 **Pinned as a whole line, not as a substring, and this is the second
+        version of this check.** The first counted occurrences of the condition
+        and required exactly two. A count cannot see a WIDENED condition:
+        measured against that version, changing the job's `if:` to
+        `... == 'pull_request' || github.event_name == 'push'` left the string
+        present, the count at two, and **all 545 cases green** over exactly the
+        hole described above. Substring containment is the wrong relation for a
+        claim about what an expression EXCLUDES.
         """
 
-        text = self._text()
+        block = self._job_block("review_replies")
+        conditions = [
+            line for line in block.splitlines() if line.startswith("    if:")
+        ]
+
         self.assertEqual(
-            text.count("github.event_name == 'pull_request'"),
-            2,
-            "the aggregate's conditional clause and `review_replies`'s own "
-            "`if:` must both be present and must be the only two",
+            conditions,
+            [self.REPLIES_CONDITION],
+            "`review_replies` must carry exactly this condition and no other. "
+            "The aggregate excuses it on every event this expression excludes, "
+            "so widening it opens a gap in which the job runs, fails, and is "
+            "not counted -- change both together or neither",
+        )
+
+    def test_the_aggregates_excuse_names_the_same_event_the_job_is_limited_to(self):
+        """The other half of the mirror: the excuse must not outrun the limit.
+
+        Pinned separately from the case above so the two failures are
+        distinguishable. Widening the JOB is one defect; widening the EXCUSE to
+        an event the job does run on is a different one, and a single assertion
+        covering both would report the same message for either.
+        """
+
+        event = re.search(r"github\.event_name == ('[a-z_]+')", self.REPLIES_CONDITION)
+        self.assertIsNotNone(event, "the recorded condition no longer names an event")
+        self.assertIn(
+            f"github.event_name == {event.group(1)}",
+            self._aggregate_block(),
+            "the aggregate excuses `review_replies` on an event other than the "
+            "one its own condition limits it to",
         )
 
     def test_no_expression_reaches_a_shell(self):
@@ -12182,6 +12390,55 @@ class MatrixRunnerResolutionTests(unittest.TestCase):
         )
         self.assertEqual(jobs[0]["runners"], ("ubuntu-latest", "windows-latest"))
 
+    def test_a_comment_between_sequence_items_does_not_truncate_the_list(self):
+        """🔴 The silent under-resolution, measured before it was fixed.
+
+        A comment between two items is not an item. The first draft treated
+        "not an item" as "the sequence ended", so it returned the labels ABOVE
+        the comment and dropped everything below -- a confident wrong answer,
+        which is the one outcome :func:`_matrix_values` promises never to give.
+
+        Measured on that draft: a matrix of `ubuntu-latest`, a comment, then
+        `ubuntu-slim` resolved to `('ubuntu-latest',)`, whose lowest recorded
+        ceiling is 360, and a `timeout-minutes: 60` therefore PASSED the cap
+        check while one leg ran on a 15-minute runner. That is the original
+        defect this entire class was written after, reached through a different
+        door.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n        os:\n"
+            + "          - ubuntu-latest\n"
+            + "          # the cheap one\n"
+            + "          - ubuntu-slim\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-latest", "ubuntu-slim"))
+
+    def test_a_flow_style_include_is_refused_rather_than_stepped_over(self):
+        """🔴 The second door to the same wrong answer.
+
+        `include: [{os: ubuntu-slim}]` is legal YAML that GitHub accepts, and it
+        names a runner the top-level list does not. The line-oriented scan
+        cannot see inside it, and skipping it leaves the label invisible --
+        again resolving to a set that is missing its most constrained member,
+        again passing a cap that one leg could never honour.
+
+        Refused, not partially resolved: an `include:` this parser cannot read
+        may always be hiding a runner, so the honest answer about the whole job
+        is that it has none this file can settle.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n"
+            + "        os: [ubuntu-latest]\n"
+            + "        include: [{os: ubuntu-slim}]\n"
+        )
+        self.assertIsNone(jobs[0]["runners"])
+
     def test_a_key_whose_name_merely_starts_with_the_referenced_one_is_not_read(self):
         """`os-arch` is not `os`, and resolving against it would be confident and wrong.
 
@@ -12282,6 +12539,33 @@ class RecordedTestCountTests(unittest.TestCase):
                     "reader whether their local run was complete",
                 )
 
+    def test_the_ci_rule_names_every_workflow_file(self):
+        """🔴 Prose that lists files rots exactly like prose that counts them.
+
+        `rules/ci.md` opens by saying what this directory holds. It used to open
+        with a **count** -- "three workflows" -- which the next job to land would
+        have made wrong, silently, in a document nothing checked. The count is
+        gone and the files are named instead, and this is what keeps the naming
+        honest: it is derived from :data:`EXPECTED_WORKFLOW_FILES`, which is
+        itself pinned against the tree, so a workflow added without a mention
+        here fails rather than being quietly unmentioned to the reviewer that
+        reads this file.
+        """
+
+        rule = (
+            Path(__file__).resolve().parents[1] / "rules" / "ci.md"
+        ).read_text(encoding="utf-8")
+
+        for name in sorted(EXPECTED_WORKFLOW_FILES):
+            with self.subTest(workflow=name):
+                self.assertIn(
+                    name,
+                    rule,
+                    f"{name} is a workflow in this repository and the `ci` rule "
+                    "file does not mention it, so a pull request touching it is "
+                    "reviewed against a description of the tree that omits it",
+                )
+
     def test_the_count_is_derived_and_not_a_constant(self):
         """🔴 The control: a hard-coded total would pass the case above for ever.
 
@@ -12327,14 +12611,38 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
     #: which is a true sentence this repository needs to keep.
     CLAIMS = (
         # "this repository has no CI test job" / "no CI for its own code"  # noqa: ci-claim
-        re.compile(r"no CI (?:test job|for its own)"),
+        (
+            re.compile(r"no CI (?:test job|for its own)"),
+            "this repository DOES run its tests in CI",
+        ),
         # "`claude-code-review.yml` is its only workflow"  # noqa: ci-claim
-        re.compile(r"is its only workflow"),  # noqa: ci-claim
+        (
+            re.compile(r"is its only workflow"),  # noqa: ci-claim
+            "there is more than one workflow",
+        ),
         # "This directory contains one workflow"  # noqa: ci-claim
-        re.compile(r"contains one workflow"),  # noqa: ci-claim
+        (
+            re.compile(r"contains one workflow"),  # noqa: ci-claim
+            "there is more than one workflow",
+        ),
         # "the two CI jobs" / "the two `ci.yml` jobs" -- an undercount now that  # noqa: ci-claim
         # the caller, the aggregate and the broad job exist.
-        re.compile(r"the two (?:CI|`ci\.yml`) jobs"),
+        (
+            re.compile(r"the two (?:CI|`ci\.yml`) jobs"),
+            "`ci.yml` has more than two jobs",
+        ),
+        # 🔴 A different claim class, added for the same reason and swept by the
+        # same walk: four files stated this repository has no `.system_design/`
+        # directory. It has one, holding the design these very CI jobs implement
+        # -- and one of the four told the automated reviewer not to report a
+        # missing design document, so the belief was degrading every review
+        # rather than merely sitting there. Not caused by the CI work; found
+        # while sweeping for the claims above, which is the argument for
+        # sweeping rather than editing the files somebody remembered.
+        (
+            re.compile(r"(?:has no|is no|no) `?\.system_design/?`? ?(?:directory|here)"),  # noqa: ci-claim
+            "`.system_design/` exists and holds the test-suite design",
+        ),
     )
 
     #: Suppress a deliberate match with this marker on the line, exactly as the
@@ -12386,11 +12694,14 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "This directory contains one workflow and the review system",  # noqa: ci-claim
             "`ubuntu-slim` for the two CI jobs, so no runner group",  # noqa: ci-claim
             "`ubuntu-slim` for the two `ci.yml` jobs -- GitHub-hosted",  # noqa: ci-claim
+            "**This repository has no `.system_design/` directory today.**",  # noqa: ci-claim
+            "fourth by section. This repository has no `.system_design/` directory.",  # noqa: ci-claim
+            "There is no `.system_design/` here; the README carries the contract",  # noqa: ci-claim
         )
         for specimen in specimens:
             with self.subTest(specimen=specimen):
                 self.assertTrue(
-                    any(rule.search(specimen) for rule in self.CLAIMS),
+                    any(rule.search(specimen) for rule, _ in self.CLAIMS),
                     "no rule recognises a sentence this guard exists to forbid",
                 )
 
@@ -12408,9 +12719,13 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "the only workflow-level binding kitty reads",
             "the two review-system jobs stay on `ubuntu-slim`",
             "no CI runner group has to be granted",
+            "`.system_design/` holds the test-suite design and its plan",
+            "it is deliberately not in the always-read set",
         ):
             with self.subTest(sentence=sentence):
-                firing = [rule.pattern for rule in self.CLAIMS if rule.search(sentence)]
+                firing = [
+                    rule.pattern for rule, _ in self.CLAIMS if rule.search(sentence)
+                ]
                 self.assertFalse(firing, f"{sentence!r} -> {firing}")
 
     def test_the_sweep_reaches_the_files_it_claims_to(self):
@@ -12441,20 +12756,24 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             for lineno, line in enumerate(text.splitlines(), 1):
                 if self.MARKER in line:
                     continue
-                for rule in self.CLAIMS:
+                for rule, correction in self.CLAIMS:
                     if rule.search(line):
+                        # 🔴 The correction travels WITH the pattern. One sweep
+                        # now holds two unrelated claim classes, and a shared
+                        # message would tell whoever reintroduced the
+                        # design-document claim that the repository runs its
+                        # tests in CI -- true, and no help at all.
                         offences.append(
                             f"{path.relative_to(root).as_posix()}:{lineno}: "
-                            f"{line.strip()[:100]}"
+                            f"{line.strip()[:100]}\n      -> {correction}"
                         )
 
         self.assertFalse(
             offences,
-            "this repository DOES run its tests in CI -- `ci.yml` calls the "
-            "broad selection on both platforms and aggregates it into "
-            "`ci-required`. Rewrite each of these to say what is true now "
-            "(which jobs the gate does and does not cover) rather than "
-            "deleting the sentence, so the reasoning survives:\n  "
+            "each of these asserts an absence that is no longer true. Rewrite "
+            "the sentence to say what IS true now -- the arrow on each line "
+            "says what -- rather than deleting it, so the reasoning "
+            "survives:\n  "
             + "\n  ".join(offences),
         )
 

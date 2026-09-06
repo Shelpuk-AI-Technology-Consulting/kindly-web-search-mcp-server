@@ -67,8 +67,15 @@ reference in the README still resolves.
 
 ## `.system_design/`
 
-**This repository has no `.system_design/` directory today.** The rule matches it
-so that the day one appears it is not reviewed with zero rules loaded.
+**This directory exists and is tracked.** It holds the test-suite design and its
+implementation plan, and it is where the reasoning behind the CI jobs, the
+coverage lanes and the marker scheme lives. The sentence that stood here said the
+repository had none; that was true when it was written and stopped being true
+without anyone editing it, which is why the claim is now guarded.
+
+⚠️ **It is deliberately NOT in the always-read set.** Those documents are large
+and each step touches a section of one, so reading them whole on every pull
+request would crowd out the diff. Read the part a change actually touches.
 
 If a pull request adds one, judge it on whether it records the **why** and not
 only the **what**: for each significant design choice, why it is done this way

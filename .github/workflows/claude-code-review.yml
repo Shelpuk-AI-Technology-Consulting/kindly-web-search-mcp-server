@@ -300,8 +300,13 @@ jobs:
     # the cap below becomes enforceable for the first time and the distribution should
     # shorten as well. `ci.yml` deliberately KEEPS `ubuntu-slim`: two jobs whose slowest
     # observed run is 207s are exactly the lightweight workload that label is for. The
-    # two workflows therefore no longer share one label, which is a real cost -- see
-    # `ci.yml`, where it is recorded on both jobs.
+    # review workflow and the two `ci.yml` review jobs therefore no longer share one
+    # label, which is a real cost -- see `ci.yml`, where it is recorded on both jobs.
+    # ⚠️ "The two workflows" is how this read before the test jobs landed; there are
+    # three workflow files now, and `tests-broad.yml` runs on `ubuntu-latest` too. The
+    # cost this sentence records is unchanged -- it was always about these jobs and
+    # that one -- but its arithmetic was not, so it is corrected rather than left to
+    # be read as a claim about the tree.
     #
     # ⚠️ The pairing of this label with the cap below is now checked by
     # `DeclaredJobCapIsEnforceableTests`, so neither line can move without the other.

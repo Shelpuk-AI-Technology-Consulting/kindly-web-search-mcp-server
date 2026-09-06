@@ -19,11 +19,16 @@ Do not review the diff in isolation.
 
 > This is a deliberate departure from the upstream repository this review system
 > was adopted from, which reads three `.system_design/` documents and navigates a
-> fourth by section. **This repository has no `.system_design/` directory.** The
-> README is what stands in its place, and it is small enough to read in full. Do
-> not treat its absence as a gap you should work around by inferring a design —
-> and do not report "there is no design document" as a finding on every pull
-> request. It is recorded here.
+> fourth by section. **The always-read document here is the README**, which is
+> small enough to read in full and carries the tool contract, the client setup
+> and the transport behaviour.
+>
+> ⚠️ **This paragraph used to say the repository had no `.system_design/`
+> directory. It has one**, holding the test-suite design and its implementation
+> plan. What survives is the narrower rule: those documents are large and each
+> change touches a section of one, so they are not read whole on every pull
+> request — read the part the change actually touches, and do not report "there
+> is no design document" as a finding.
 
 **Additionally, based on what the pull request touches:**
 

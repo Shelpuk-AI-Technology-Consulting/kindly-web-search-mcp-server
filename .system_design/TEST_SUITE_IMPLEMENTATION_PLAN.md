@@ -20,8 +20,12 @@ So there is no interim enforcement phase. **E4-1 is authored early and merges wi
 which is what TEST_SUITE §8B asks for. Every later job is added and activated
 incrementally on top of an already-enforced gate.
 
-Before E1-6 the repository has no CI, exactly as today. That is the honest
-position, and it is short.
+Before E1-6 the repository had no CI for its own code. **"Exactly as today" is
+how this sentence read until E4-1 landed and made it false**, which is worth
+leaving visible: this paragraph sits outside `.github/`, so the sweep guard that
+now catches that claim class cannot see it. The scope of that guard is the
+directories it walks, and a design document is not one of them — a correction
+here is a person's job, and this is the record that it was needed.
 
 ### 1.2 A job never becomes required before its tests exist
 

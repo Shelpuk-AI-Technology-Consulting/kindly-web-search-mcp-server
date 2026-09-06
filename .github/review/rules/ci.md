@@ -1,9 +1,13 @@
 # Rule: CI and the review system (`.github/**`)
 
-This directory contains three workflows — `claude-code-review.yml`, the `ci.yml`
-that calls the test jobs and aggregates them into `ci-required`, and the reusable
-`tests-broad.yml` those jobs live in — plus the review system `claude-code-review.yml`
-drives. **The reviewer is reviewing itself here**, so the bar is higher, not
+This directory contains `claude-code-review.yml`, the `ci.yml` that calls the
+test jobs and aggregates them into `ci-required`, and the reusable
+`tests-broad.yml` those jobs live in — plus the review system
+`claude-code-review.yml` drives. (⚠️ The count that used to open this sentence is
+deliberately gone. It said "three" and would have been wrong the moment the next
+job landed, silently, in prose nothing checked — the same rot the test-count
+guard was written for. The files are **named** instead, and a guard holds this
+list to the recorded set.) **The reviewer is reviewing itself here**, so the bar is higher, not
 lower: a defect in this tree degrades or disables review across the repository
 without anything going red. The same is now true of the merge gate: an aggregate
 that stops failing is green, not red.
