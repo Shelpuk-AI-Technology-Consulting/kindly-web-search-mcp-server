@@ -853,7 +853,7 @@ Container will be built at the first run. To rebuild it, append `--build` to the
   - Env vars:
     - `KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS`: total time budget per `web_search` / `get_content` call (search + extraction). Default: `120`.
     - `KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS`: caps the above value (safety). Default: `600`.
-    - `KINDLY_WEB_SEARCH_MAX_CONCURRENCY`: max parallel content fetches. Default: `3` (when unset or invalid).
+    - `KINDLY_WEB_SEARCH_MAX_CONCURRENCY`: max parallel content fetches. Default: `3` (when unset or invalid); clamped 1..5.
   - Recommended starting point (PowerShell):
     - `$env:KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS="180"`
     - `$env:KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS="600"`
