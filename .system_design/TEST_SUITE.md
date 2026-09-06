@@ -1533,10 +1533,10 @@ double will serve, and fail with a sentence naming the loop.
 ### 5.4a The anti-flake harness — built in E3-4
 
 `tests/harness/anti_flake.py`, imported by the tests that start something real.
-Its calibration is `tests/test_anti_flake_harness.py` — thirty-five cases, of
+Its calibration is `tests/test_anti_flake_harness.py` — thirty-six cases, of
 which **thirteen spawn no process and open no socket**, for a reason given below.
 (Counted as collected node ids, which is the unit `pytest -q` reports; by test
-function it is ten hermetic of twenty-eight. Where this document gives a case
+function it is ten hermetic of twenty-nine. Where this document gives a case
 count, it is node ids.)
 
 | Helper | What it does |

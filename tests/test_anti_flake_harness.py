@@ -103,6 +103,25 @@ PORT_WAIT_SECONDS = 1.0
 #: silently change what the other is measuring.
 BRIEF_DEADLINE_SECONDS = 0.5
 
+#: An artefact that announces itself and then writes its payload in slices, so a
+#: deadline can fire while it is still writing. The fixture child cannot serve
+#: this: it writes its whole payload before it hangs, so any kill lands after the
+#: last byte and the truncation this drives never happens.
+SLOW_WRITER_SOURCE = (
+    "import sys, time\n"
+    "sys.stderr.buffer.write(b'harness.ready\\n')\n"
+    "sys.stderr.buffer.flush()\n"
+    "for _ in range(20):\n"
+    "    sys.stdout.buffer.write(b'x' * 1000)\n"
+    "    sys.stdout.buffer.flush()\n"
+    "    time.sleep(0.2)\n"
+    "time.sleep(300)\n"
+)
+
+#: How many bytes that artefact writes in total, against which a truncated
+#: payload is recognisable as truncated.
+SLOW_WRITER_TOTAL_BYTES = 20_000
+
 #: An artefact that logs before it announces itself, which is the ordinary shape
 #: and the one the fixture child does not have. Not the fixture child precisely
 #: because of that: its readiness frame is its first output, so it cannot tell a
@@ -1353,3 +1372,40 @@ def test_a_watchdog_that_will_not_start_still_leaves_no_live_child() -> None:
         "a watchdog that failed to start took the teardown down with it and "
         "left the child running"
     )
+
+
+@pytest.mark.subsystem
+def test_a_payload_from_a_child_killed_at_its_deadline_is_refused() -> None:
+    """Refuse a prefix, whichever kill produced it
+
+    The truncation guard existed for one kill path and not the other. Teardown
+    set the flag; the deadline watchdog did not — so a caller who had explicitly
+    asked for the child to be killed mid-flight got a silently short payload
+    back, which is the failure mode the guard was written to convert into a
+    sentence. Measured before the fix: a child killed at its deadline handed
+    back **3,000 of 20,000 bytes** and nothing complained.
+
+    Driven with an artefact that writes in slices, because the fixture child
+    cannot reach this state: it writes its whole payload *before* it hangs, so
+    every kill lands after the last byte. That is why no existing case
+    exercised the asymmetry, and why it survived nine review rounds.
+
+    The assertion is the refusal, not the length. A case pinning "3,000 bytes"
+    would be pinning how far a Python interpreter gets in half a second, which
+    is a measurement of the runner.
+    """
+    with spawned_child(
+        [sys.executable, "-c", SLOW_WRITER_SOURCE],
+        readiness_marker=b"harness.ready",
+        readiness_timeout=SHORT_READINESS_SECONDS,
+        deadline=SHORT_DEADLINE_SECONDS,
+    ) as child:
+        assert wait_until_gone(child.proc.pid, timeout=DEATH_TIMEOUT_SECONDS)
+        assert child.deadline_fired
+
+    # The prefix is real -- so the refusal is protecting a caller from something
+    # that actually happened, not from a hypothetical.
+    assert 0 < len(child.stdout_sink[0]) < SLOW_WRITER_TOTAL_BYTES
+
+    with pytest.raises(AssertionError, match="may be truncated"):
+        child.stdout_bytes()

@@ -747,10 +747,10 @@ it carries no X-number.
   *Verify:* a hanging fixture child is killed at the deadline and its PID tree is
   gone; cleanup never matches processes by name.
 
-  **Landed.** `tests/harness/anti_flake.py` plus thirty-five cases in
+  **Landed.** `tests/harness/anti_flake.py` plus thirty-six cases in
   `tests/test_anti_flake_harness.py`, and three new flags on the fixture child
   with four cases beside them; the surface, its rationale and its measured
-  limits are §5.4a. Every rule was mutation-checked — **thirty-six distinct
+  limits are §5.4a. Every rule was mutation-checked — **thirty-seven distinct
   mutants, no survivors** — but **eleven** of those survived their *first* form,
   and what that cost is the most useful thing recorded here. Eight things the build
   changed about the clause above.

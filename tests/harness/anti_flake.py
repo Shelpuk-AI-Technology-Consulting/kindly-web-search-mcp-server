@@ -577,8 +577,11 @@ class CapturedChild:
         deadline_fired: Whether the per-child deadline expired and killed the
             tree. A recorded fact rather than a raised error, because the case
             that asks for a deadline is usually asserting that it fired.
-        killed_while_running: Whether teardown had to kill a child that had not
-            finished, which makes its stdout payload untrustworthy.
+        killed_while_running: Whether **anything in this helper** had to kill a
+            child that had not finished, which makes its stdout payload
+            untrustworthy. Set by the teardown reap and by the deadline
+            watchdog: both kill a running child, and a payload truncated by one
+            is exactly as truncated as a payload truncated by the other.
         reap_lock: Serialises every call that could reap the child against the
             deadline watchdog's guard-then-kill. See :meth:`poll_under_lock`.
         seen_stderr: Every line taken off the queue so far, by any reader, in
@@ -651,18 +654,20 @@ class CapturedChild:
             Every byte the child wrote to standard output.
 
         Raises:
-            AssertionError: If the stream never closed, or if teardown had to
-                kill a child that was still running. The second is the
-                interesting one: readiness is announced *before* a payload is
-                written, so a caller that leaves the block as soon as the child
-                is ready races teardown against the write and compares a
-                truncated payload. That turns forgetting into a sentence rather
-                than into a flake.
+            AssertionError: If the stream never closed, or if the child was
+                killed while it was still running -- by the teardown reap **or**
+                by the deadline watchdog. That second one is the interesting
+                case twice over: readiness is announced *before* a payload is
+                written, so a caller leaving the block as soon as the child is
+                ready races teardown against the write; and a caller that set a
+                deadline has asked for the child to be killed mid-flight, which
+                is the same truncation arriving by appointment. Either way this
+                turns forgetting into a sentence rather than into a flake.
         """
         assert not self.killed_while_running, (
-            "teardown killed this child while it was still running, so its "
-            "stdout may be truncated -- wait for it to exit inside the `with` "
-            f"block before reading the payload.{self.captured_report()}"
+            "this child was killed while it was still running, so its stdout "
+            "may be truncated -- wait for it to exit inside the `with` block "
+            f"before reading the payload.{self.captured_report()}"
         )
         assert self.stdout_sink, "the child's stdout has not been drained yet"
         return self.stdout_sink[0]
@@ -919,6 +924,13 @@ def spawned_child(
             if proc.poll() is not None:
                 return
             child.deadline_fired = True
+            # The same flag the teardown sets, and for the same reason: this
+            # kills a child that had not finished, so whatever it had written to
+            # stdout is a prefix. Measured before this line existed -- a child
+            # killed at its deadline mid-write handed back 3,000 of 20,000 bytes
+            # and `stdout_bytes` did not complain, because the guard covered one
+            # kill path and not the other.
+            child.killed_while_running = True
             kill_process_tree(proc.pid, kill=kill)
 
     # The `try` opens as close to the spawn as anything can: the two statements
