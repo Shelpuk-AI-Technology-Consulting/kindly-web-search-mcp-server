@@ -151,7 +151,11 @@ async def _served_tool(name: str) -> Tool:
         The :class:`~mcp.types.Tool` FastMCP serves over ``list_tools()``.
 
     Raises:
-        AssertionError: When no tool of that name is exposed.
+        AssertionError: When no tool of that name is exposed. Every case about a
+            tool therefore fails when that tool disappears, rather than one. That
+            is deliberate: a missing tool genuinely breaks every claim made about
+            it, and reporting it once per claim is more legible than a
+            ``KeyError`` from whichever case happened to run first.
     """
     served = {tool.name: tool for tool in await mcp.list_tools()}
 
@@ -243,6 +247,10 @@ def test_normalization_strips_keywords_but_never_a_parameter_named_like_one() ->
             "properties": {
                 "title": {"title": "Title", "type": "string", "description": "A."},
                 "description": {"title": "Description", "type": "string"},
+                # A list of subschemas, so the walk's list branch has an input
+                # that distinguishes it. The live payload uses no `anyOf`, so
+                # without this the branch could be deleted with nothing failing.
+                "mode": {"anyOf": [{"title": "M", "type": "string"}, {"type": "null"}]},
             },
             "required": ["title", "description"],
         }
@@ -251,6 +259,7 @@ def test_normalization_strips_keywords_but_never_a_parameter_named_like_one() ->
     assert normalized == {
         "properties": {
             "description": {"type": "string"},
+            "mode": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "title": {"description": DESCRIPTION_SENTINEL, "type": "string"},
         },
         "required": ["description", "title"],
@@ -350,10 +359,21 @@ CEILING_SURFACES: tuple[CeilingSurface, ...] = (
 def _stated_ceilings(text: str, anchor: str) -> list[int]:
     """Return every ``1..N`` ceiling the text claims near its anchor.
 
-    Scans a short window starting at each line containing ``anchor``, so a range
-    documenting some other knob elsewhere in the file cannot be mistaken for this
-    claim. The window is needed because two surfaces separate the anchor from the
-    sentence carrying the number.
+    Scans a short window starting at each line containing ``anchor``. The window
+    is needed because two surfaces separate the anchor from the sentence carrying
+    the number.
+
+    The scoping is to the window, **not** to the sentence: a range for some other
+    knob written inside one of these windows would be read as this claim. That is
+    a loud failure, not a silent pass -- the case then reports two disagreeing
+    values -- and it is the reason the window is as narrow as the measured gaps
+    allow. Ranges elsewhere in the file are unreachable, which is what a
+    whole-file scan would not give: ``README.md`` documents many knobs.
+
+    Only the ``1..N`` spelling is recognised. ``1-5``, ``1 to 5`` and the en-dash
+    ``1--5`` -- which the same docstring uses for ``num_results`` -- all read as
+    "states no ceiling" and fail. That is the intended direction: a surface must
+    state the bound in the recognised form or say so loudly.
 
     Args:
         text: Document to scan.
@@ -399,12 +419,18 @@ async def test_the_surface_states_the_enforced_concurrency_ceiling(
 
     stated = _stated_ceilings(text, surface.anchor)
 
+    # Says "no 1..N near the anchor", which is also what a surface that stopped
+    # mentioning the knob at all looks like -- so the message names the anchor it
+    # searched for rather than claiming the surface still discusses the variable.
     assert stated, (
-        f"{surface.name} discusses {CONCURRENCY_VARIABLE} without stating its "
-        f"ceiling. The code silently clamps to {enforced}, so a reader who sets a "
+        f"{surface.name} states no 1..N ceiling within "
+        f"{CEILING_CLAIM_WINDOW_LINES} lines of {surface.anchor!r} -- either the "
+        f"ceiling went undocumented or the anchor is no longer there. The code "
+        f"clamps {CONCURRENCY_VARIABLE} to {enforced}, so a reader who sets a "
         "higher value gets no indication it was ignored."
     )
     assert set(stated) == {enforced}, (
-        f"{surface.name} states a ceiling of {sorted(set(stated))} for "
+        f"{surface.name} states a ceiling of "
+        f"{', '.join(str(value) for value in sorted(set(stated)))} for "
         f"{CONCURRENCY_VARIABLE}; the code enforces {enforced}."
     )
