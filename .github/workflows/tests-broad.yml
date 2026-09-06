@@ -132,7 +132,7 @@ jobs:
         # the run, never from a number written down earlier. Note the shape that
         # is NOT an addition to the selection: the first test carrying a
         # `chromium`, `live` or `package` marker is deselected here, so it lowers
-        # this count. Today those three markers select zero of the 913, so this
+        # this count. Today those three markers select zero of the 924, so this
         # floor is the whole suite; the step that adds the first browser test
         # owns lowering it, and the failure message it would otherwise get names
         # the wrong cause.
@@ -140,4 +140,4 @@ jobs:
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 913
+          --min-selected 924

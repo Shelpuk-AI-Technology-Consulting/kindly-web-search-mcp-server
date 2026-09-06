@@ -2827,6 +2827,17 @@ because `mcp` constrains several of these itself — it asks for
 major slipped through. The bounded set resolves to the same versions the
 unbounded one did, so no user's installation changes.
 
+**Verified on both supported interpreters, because the floors are new.** Nine of
+these floors newly require a current minor series, and a floor with no
+3.14-compatible build at or above it would turn a working resolve into a hard
+install failure — silently, since the guard compares specifiers and never
+resolvability, and no wired CI leg resolves on 3.14 (`tests-broad.yml` runs 3.13
+deliberately, and §10.3's 3.14 leg is unwired). Measured rather than reasoned
+about: a clean resolve on **CPython 3.14.7** selects the identical ten versions,
+compiled wheels included (`pydantic-core`, `PyMuPDF`), and the server module,
+`CORSMiddleware`, `FastMCP` and `socksio` all import. `requires-python` is
+`>=3.13` and the README states 3.14 support, so both are covered.
+
 **`starlette` is bounded `<2`, not `<1`.** 1.0 shipped 22 March 2026 and is the
 current line. Its headline break was removing `on_startup`/`on_shutdown` in
 favour of `lifespan`; this server uses neither, because it only wraps the ASGI
@@ -2877,8 +2888,14 @@ Tighten a bound the moment one of **these four** breaks a minor in practice; the
 `httpx` row instead needs watching for the `httpx2` rename, which is a code
 change, not a bound change.
 
-**The runtime rows carry four checks the tooling rows do not** — the shared
-machine-checking is stated once, at the top of this section: that the declared bound **excludes every major
+**Two of the checks below have no tooling counterpart; the rest are shared.** The
+exact-set and declare-once checks apply to both tables, by the same code
+(`test_extra_declares_exactly_the_expected_packages` and its sibling do the tooling
+half), and the admit-the-pin check has a tooling analogue in
+`test_ratchet_lockfile_versions_satisfy_the_ratchet_extra`. What is genuinely
+runtime-only is the **rejected-major ceiling** check and — vacuously for tooling,
+which declares no extras — the **extras** check. The shared machine-checking is
+stated once, at the top of this section. The runtime rows are held to: that the declared bound **excludes every major
 above the declared floor's** — proved structurally, by requiring a `<`/`<=` clause
 at or below the next major, *and* by probing that major, because neither half
 alone is the claim; that the bound still **admits** the version

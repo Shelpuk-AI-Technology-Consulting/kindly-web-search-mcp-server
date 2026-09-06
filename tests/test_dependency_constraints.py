@@ -649,6 +649,49 @@ def test_runtime_dependency_declares_expected_extras(name: str, specifier: str) 
     )
 
 
+@pytest.mark.parametrize(
+    ("name", "specifier"),
+    RUNTIME_BOUND_CASES,
+    ids=[name for name, _ in RUNTIME_BOUND_CASES],
+)
+def test_runtime_dependency_has_no_marker_or_direct_url(
+    name: str, specifier: str
+) -> None:
+    """Install every runtime dependency on every interpreter this project supports"""
+    declared = _declared_runtime_requirement(name, specifier)
+
+    # The same blind spot the extras case above closed, in two more fields the
+    # specifier comparison cannot reach. `requires-python` is `>=3.13` and the
+    # README supports 3.14, so `; python_version < "3.14"` would drop this package
+    # from every 3.14 install while name, specifier and extras all still matched -
+    # and `server.py` imports at module load, so a uvx launch there would simply
+    # stop starting. That is the outage this module exists to prevent, arriving
+    # through the door it was not watching. A marker is also the natural "fix" for
+    # a floor that over-constrains one interpreter, which is what makes it likely
+    # rather than merely possible.
+    assert declared.marker is None, (
+        f"pyproject.toml declares '{declared}' behind the environment marker "
+        f"'{declared.marker}', so it silently vanishes on the interpreters that "
+        "marker excludes. requires-python is '>=3.13' and the README supports "
+        "3.14; a runtime dependency that is absent there breaks the documented "
+        "install at import, with nothing red anywhere. A genuinely optional "
+        "dependency belongs in an extra, the way 'pdf-advanced' does."
+    )
+
+    # A direct reference pins the source rather than the version, so every bound in
+    # section 10.2 stops describing what users get. ⚠️ Unlike the marker assertion
+    # above, this one cannot be falsified alone: PEP 508 forbids a version
+    # specifier alongside a URL, so a URL entry necessarily has an empty specifier
+    # and the bound cases fire too. It is kept because it is the only one whose
+    # message names the actual cause; measured, not assumed.
+    assert declared.url is None, (
+        f"pyproject.toml declares '{declared}' as a direct reference to "
+        f"'{declared.url}'. The bound in section 10.2 then constrains nothing: the "
+        "documented 'uvx --from git+https://...' install takes whatever that URL "
+        "serves at the moment it resolves."
+    )
+
+
 def test_runtime_dependencies_are_all_bounded() -> None:
     """Refuse an unbounded entry in the list users install
 
@@ -944,6 +987,52 @@ def _specifier_sets(entries: set[str], context: str) -> set[SpecifierSet]:
             ) from None
 
     return converted
+
+
+def _design_table_purposes() -> dict[str, str]:
+    """Read the Purpose cell of every row under section 10.2
+
+    Returns:
+        A mapping of canonical dependency name to its Purpose cell text.
+    """
+    text = TEST_SUITE_PATH.read_text(encoding="utf-8")
+    section = text.split(DESIGN_TABLE_HEADING, 1)[1].split("\n### ", 1)[0]
+
+    purposes: dict[str, str] = {}
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        names = BACKTICKED_PATTERN.findall(cells[0]) if cells else []
+        if len(cells) < 3 or not names:
+            continue
+        purposes[canonicalize_name(names[0])] = cells[2]
+
+    return purposes
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(name for name, extras in EXPECTED_RUNTIME_EXTRAS.items() if extras),
+)
+def test_design_table_records_every_required_extra(name: str) -> None:
+    """Keep section 10.2 naming the extras the guard enforces"""
+    extras = ",".join(sorted(EXPECTED_RUNTIME_EXTRAS[name]))
+    documented = _design_table_purposes().get(canonicalize_name(name), "")
+
+    # EXPECTED_RUNTIME_EXTRAS is otherwise anchored to nothing in the document: the
+    # Constraint cell cannot carry an extra, so without this the row could lose
+    # "Declared as httpx[socks]" while every case stayed green - leaving the guard
+    # enforcing a requirement the design no longer records. That is the
+    # documented-claim-nothing-checks shape this whole section exists to close, and
+    # it would have been reintroduced by the fix for it.
+    assert f"{name}[{extras}]" in documented, (
+        f"Section 10.2's row for '{name}' no longer names '{name}[{extras}]' in its "
+        f"Purpose cell. The guard still requires that extra, so the document and "
+        f"the check would disagree with nothing to say so. Purpose cell reads: "
+        f"{documented!r}."
+    )
 
 
 def test_design_table_lists_every_expected_dependency() -> None:

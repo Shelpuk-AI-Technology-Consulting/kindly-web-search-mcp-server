@@ -27,7 +27,9 @@ requires-python = ">=3.13"
 # purpose, different number, and the difference is deliberate.
 # "Verified" means a clean resolve into a fresh CPython 3.13 environment on
 # 2026-09-06, after which the server module, `CORSMiddleware` and `FastMCP` were all
-# imported successfully. Raising a bound is a deliberate PR that runs the full suite
+# imported successfully — on CPython 3.13 **and** 3.14, both of which this project
+# supports and neither of which any wired CI leg resolves on. Same ten versions on
+# both, compiled wheels included. Raising a bound is a deliberate PR that runs the full suite
 # against the new version; Dependabot may propose, never auto-merge.
 dependencies = [
     # `<2`: the MCP SDK dropped `mcp.server.fastmcp` in 2.0.0, and `server.py` imports
