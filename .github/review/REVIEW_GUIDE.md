@@ -24,9 +24,10 @@ Do not review the diff in isolation.
 > and the transport behaviour.
 >
 > ⚠️ **This paragraph used to deny that this repository keeps design documents
-> of its own. It keeps two**, under `.system_design/` -- the test-suite design
-> and its implementation plan. (Described rather than reproduced: the sweep
-> guard reads every file here.) What survives is the narrower rule: those documents are large and each
+> of its own. It keeps them**, under `.system_design/`. (Described rather than
+> reproduced: the sweep guard reads every file here. And deliberately not
+> counted -- a count in prose is a claim nothing checks, and the directory is
+> where a reader should look for what is in it.) What survives is the narrower rule: those documents are large and each
 > change touches a section of one, so they are not read whole on every pull
 > request — read the part the change actually touches, and do not report a
 > missing design document as a finding. <!-- The phrasing this sentence used to

@@ -495,9 +495,10 @@ SCHEMA_PATH = REVIEW_DIR / "schemas" / "review_findings.schema.json"
 # repository has a `.system_design/` of its own but does not always-read it**,
 # and `README.md` is what the always-read set holds -- the tool contract, the
 # client setup, the transport and allowlist behaviour. ⚠️ This comment used to
-# say the repository had none of those documents. It has two, about the test
-# suite; they are large and each change touches a section of one, so they are
-# read where a change touches them rather than in full on every pull request.
+# say the repository had none of those documents. It has its own, under
+# `.system_design/`; they are large and each change touches a section of one, so
+# they are read where a change touches them rather than in full on every pull
+# request. (Not counted here: a count in prose is a claim nothing checks.)
 #
 # 🔴 The tuple survives with one entry rather than collapsing to a string,
 # because what it holds is not "the specification is README.md" but "whatever the
@@ -765,9 +766,10 @@ class TestSelectRules(unittest.TestCase):
         the client-by-client setup for seven MCP clients, and the transport and
         allowlist behaviour. (⚠️ This sentence used to open by denying the
         repository kept design documents of its own -- described rather than
-        reproduced, since the sweep guard reads this file. It keeps two, under
-        `.system_design/`; they are deliberately not in the always-read set
-        because they are large and each change touches a section of one.) A change to the README
+        reproduced, since the sweep guard reads this file. It keeps them under
+        `.system_design/`, uncounted for the reason the head of this file gives;
+        they are deliberately not in the always-read set because they are large
+        and each change touches a section of one.) A change to the README
         is a specification change and must
         load `docs.md`, which is what tells the reviewer to judge it as one.
 
