@@ -5,7 +5,7 @@ dependencies from PyPI on every start and ignores ``uv.lock``. The bounds that
 reach users therefore live in ``pyproject.toml``, not in the lock file, so they
 are asserted here.
 
-The rest of the suite covers the other half of this contract: six test modules
+The rest of the suite covers the other half of this contract: eight test modules
 import ``kindly_web_search_mcp_server.server``, so an SDK that no longer provides
 ``mcp.server.fastmcp`` fails the suite. Those imports prove the *resolved* version
 works; the assertions here constrain what may be resolved in the first place.
@@ -458,6 +458,36 @@ def test_runtime_dependency_declares_expected_bound(name: str, specifier: str) -
     )
 
 
+def _declared_floor(requirement: Requirement, name: str) -> Version:
+    """Read the lower bound ``pyproject.toml`` declares for one runtime package
+
+    Args:
+        requirement: The parsed requirement taken from ``[project].dependencies``.
+        name: The distribution name, used in the failure message.
+
+    Returns:
+        The lowest ``>=`` or ``==`` bound the specifier carries.
+
+    Raises:
+        AssertionError: If the specifier declares no lower bound, which would
+            leave the major this package is anchored to undefined.
+    """
+    floors = [
+        Version(clause.version)
+        for clause in requirement.specifier
+        if clause.operator in (">=", "==")
+    ]
+
+    assert floors, (
+        f"pyproject.toml declares '{requirement}' for '{name}' with no lower "
+        "bound. Section 10.2 requires one: it is what stops a constrained resolve "
+        "selecting an older, untested API, and it is the major every ceiling check "
+        "here is measured against."
+    )
+
+    return min(floors)
+
+
 def _verified_runtime_version(name: str) -> Version:
     """Read the version ``requirements-ratchet.txt`` pins for one runtime package
 
@@ -476,7 +506,7 @@ def _verified_runtime_version(name: str) -> Version:
         AssertionError: If the lockfile does not pin the package at all, which
             would make every check derived from it vacuously true.
     """
-    pinned = {}
+    pinned: dict[str, Version] = {}
     for line in _ratchet_lockfile_pins():
         pinned_name, separator, version = line.partition("==")
         if separator:
@@ -503,25 +533,50 @@ def test_runtime_dependency_rejects_every_later_major(
 ) -> None:
     """Exclude every major release above the pinned one, not just the next"""
     declared = _declared_runtime_requirement(name, specifier)
-    verified = _verified_runtime_version(name)
-    rejected = [
-        Version(f"{verified.major + major}.{minor}.0")
-        for major, minor in REJECTED_MAJOR_OFFSETS
+    next_major = _declared_floor(declared, name).major + 1
+
+    # 🔴 Derived from the DECLARED FLOOR, not from the lockfile pin. The floor is
+    # held to section 10.2 exactly by `..._declares_expected_bound`, whereas
+    # section 10.4 permits the pin to sit anywhere inside these bounds - so a pin
+    # taken from a regenerated lockfile could move the reference major and let a
+    # widened ceiling pass. The floor cannot move without the document moving.
+    ceilings = [
+        Version(clause.version)
+        for clause in declared.specifier
+        if clause.operator in ("<", "<=")
     ]
 
-    # Read from pyproject.toml and compared against majors derived from a version
-    # pinned in requirements-ratchet.txt - two committed artefacts. Asking the
-    # declared bound whether it matches the declared bound passes for any bound at
-    # all, including one whose ceiling had been widened away in both places at once.
+    assert ceilings, (
+        f"pyproject.toml declares '{declared}', which has no upper bound at all. "
+        f"A '!=' exclusion is not a ceiling: it removes the releases it names and "
+        f"leaves every later one installable, which is the trap the "
+        f"REJECTED_MCP_VERSIONS comment above records."
+    )
+
+    # Two assertions, because neither alone is the claim. The lowest ceiling being
+    # at or below the next major excludes everything from there up - which kills a
+    # widened `<4` and an exclusion-only bound - while the probes catch the one
+    # case that survives it, `<=` on the major boundary itself, where the ceiling
+    # is low enough but still admits the release.
+    assert min(ceilings) <= Version(f"{next_major}.0.0"), (
+        f"pyproject.toml declares '{declared}', whose lowest ceiling is "
+        f"{min(ceilings)} - above {next_major}.0.0, so every release of major "
+        f"{next_major} is installable. The documented 'uvx --from git+https://...' "
+        f"install re-resolves from PyPI on every start, so such a release reaches "
+        f"every user with no commit here and no CI run."
+    )
+
     admitted = [
-        str(version) for version in rejected if declared.specifier.contains(version)
+        str(version)
+        for offset, minor in REJECTED_MAJOR_OFFSETS
+        for version in [Version(f"{next_major + offset - 1}.{minor}.0")]
+        if declared.specifier.contains(version)
     ]
 
     assert not admitted, (
-        f"pyproject.toml declares '{declared}', which admits {admitted}. The "
-        f"documented 'uvx --from git+https://...' install re-resolves from PyPI on "
-        f"every start, so a major release reaches every user with no commit here "
-        f"and no CI run. This project has twice been broken exactly that way."
+        f"pyproject.toml declares '{declared}', which admits {admitted}. This "
+        f"project has twice been broken by a dependency that reached a major it "
+        f"was never tested against."
     )
 
 
@@ -554,21 +609,11 @@ def test_runtime_dependency_admits_the_pinned_version(
 def test_runtime_dependencies_are_all_bounded() -> None:
     """Refuse an unbounded entry in the list users install
 
-    ⚠️ **No mutation kills this case alone, and that was measured, not assumed.**
-    Removing a bound from ``pyproject.toml`` also fails
-    ``..._declares_expected_bound`` and ``..._rejects_every_later_major`` for that
-    package. Worse, the class this checks is strictly *smaller* than theirs:
-    ``markdownify>=0`` has a specifier, so this passes it, while the rejected-major
-    case still fails — verified by mutation.
-
-    It is kept anyway, deliberately. It is the direct statement of the rule this
-    module's own failure messages have recited since the tooling extras were
-    guarded — "this project has twice been broken by an unbounded dependency" —
-    now applied to the list users install rather than the one developers install,
-    and it mirrors ``test_extra_dependencies_are_all_bounded`` so the two
-    populations read the same way. Delete it if the redundancy ever costs
-    something; do not delete the rejected-major case in its place, which is the
-    one carrying the weight.
+    ⚠️ **Subsumed, and measured to be so:** no mutation kills this case alone, and
+    it accepts ``markdownify>=0``, which ``..._rejects_every_later_major`` rejects.
+    Kept because it is the only case whose failure names the *unbounded* diagnosis,
+    and for symmetry with ``test_extra_dependencies_are_all_bounded``. If it is
+    ever dropped, do not drop the rejected-major case with it.
     """
     unbounded = sorted(
         name

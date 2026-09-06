@@ -12691,21 +12691,43 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
         # 🔴 A third claim class: the runtime freeze file. It was deleted -- no
         # install path read it, it had silently stopped listing a runtime
         # dependency, and it was the origin of every open Dependabot alert. Three
-        # files under this root asserted its purpose in the present tense.
+        # files under this root asserted its purpose in the present tense -- two,
+        # counted, not three: the deleted file's own header said it too, but it
+        # sat at the repository root, which `_root()` below does not walk.
         #
-        # ⚠️ `for tooling`, not `kept for tooling`. Measured while writing this:
-        # the narrower spelling missed the deleted file's own header, "primarily  # noqa: ci-claim
-        # for tooling that expects `requirements.txt`" -- the first phrasing tried  # noqa: ci-claim
-        # was the one from the review guide, and the file's own words did not
-        # match it. One pattern per phrasing makes a guard's reach a function of
-        # the author's memory.
+        # 🔴 **The first two patterns here missed one of the two sentences they
+        # were written for, and the control did not say so.** Both required the
+        # literal filename within 60 non-dot characters of the purpose phrase.
+        # That matched the review guide's bullet, which names the file and its
+        # purpose in one sentence -- and missed the packaging rule's, where the
+        # filename was in the H2 heading two lines up and the sentence itself  # noqa: ci-claim
+        # began "Its header says so: it is a `pip freeze` of a working  # noqa: ci-claim
+        # environment". Re-introducing the deleted prose verbatim would have left  # noqa: ci-claim
+        # this guard green.
         #
-        # ⚠️ Anchored on `pip freeze` and `for tooling` rather than on the
-        # filename, deliberately. The filename still appears in four TRUE
-        # sentences here -- the routing pattern that catches a re-introduction,
-        # and the prose explaining it -- so a pattern on the name alone would fire
-        # on the correction itself, which is how a guard gets its own prose
-        # deleted. What is retired is the *purpose* claim, not the mention.
+        # 🔴 **The control concealed it, which is the worse half.** Its specimen
+        # was that real sentence with `, see requirements.txt above` grafted on -
+        # and the graft was the only reason it matched. A specimen edited until it
+        # passes tests the edit, not the tree. The specimens below are now the
+        # sentences as they were actually written.
+        #
+        # ⚠️ Anchored on the PURPOSE claim, not on the filename. The filename
+        # still appears in four TRUE sentences here -- the routing pattern that
+        # catches a re-introduction, and the prose explaining it -- so a pattern on
+        # the name alone would fire on the correction itself, which is how a guard
+        # gets its own prose deleted. What is retired is the purpose, not the
+        # mention.
+        #  # noqa: ci-claim
+        # ⚠️ `is a `pip freeze`` is deliberately not anchored to a filename at  # noqa: ci-claim
+        # all, which is what lets it reach a sentence whose subject is a pronoun.  # noqa: ci-claim
+        # The cost to watch: a future true sentence calling
+        # `requirements-ratchet.txt` a pip freeze would fire it. That file lives at
+        # the repository root, outside this sweep, so the case is not reachable
+        # today; add a negative lookbehind on `ratchet` if one is ever written here.
+        (
+            re.compile(r"\bis a `?pip freeze`?"),  # noqa: ci-claim
+            "that file was deleted; `pyproject.toml` is the only dependency source",
+        ),
         (
             re.compile(r"requirements\.txt[^.\n]{0,60}(?:pip freeze|for tooling)"),  # noqa: ci-claim
             "that file was deleted; `pyproject.toml` is the only dependency source",
@@ -12776,10 +12798,15 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "read `README.md` in full: this repository has no separate design document",  # noqa: ci-claim
             "There is no separate design document in this repository.",  # noqa: ci-claim
             "`.system_design/` is matched although this repository has none today.",  # noqa: ci-claim
-            # The freeze-file claim, in both orders it was actually written.
-            "`requirements.txt` is a `pip freeze` kept for tooling; the source",  # noqa: ci-claim
-            "primarily for tooling that expects `requirements.txt` to be there",  # noqa: ci-claim
-            "a `pip freeze` of a working environment, see requirements.txt above",  # noqa: ci-claim
+            # 🔴 The freeze-file claim, quoted from the two files that carried
+            # it, NOT paraphrased into something that matches. The second is the
+            # one the first pattern round missed: its subject is "it", and the
+            # filename is in a heading the sentence-join never reaches.
+            "- `requirements.txt` is a `pip freeze` kept for tooling; `pyproject.toml` is",  # noqa: ci-claim
+            "Its header says so: it is a `pip freeze` of a working environment, kept for",  # noqa: ci-claim
+            # The deleted file's own header. Its directory is outside this sweep,
+            # so this specimen guards the phrasing rather than a reachable file.
+            "This is primarily for tooling that expects `requirements.txt`.",  # noqa: ci-claim
         )
         for specimen in specimens:
             with self.subTest(specimen=specimen):

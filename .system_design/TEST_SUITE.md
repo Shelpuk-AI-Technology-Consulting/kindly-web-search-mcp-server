@@ -2812,7 +2812,11 @@ crossed 0.x → 1.x in that gap with nothing to notice it.
 **How the numbers were chosen.** Each ceiling is the next major of the version
 the entry was verified against; each floor is that version's minor series, which
 stops a constrained resolve from silently selecting an older, untested API — the
-reasoning `mcp>=1.25` already records. "Verified" means a clean resolve into a
+purpose `mcp>=1.25` already records. **`mcp` is the exception to the floor rule
+and keeps the older number:** its floor is the oldest release verified against
+this server, not the pinned version's minor series, and applying the nine-package
+rule to it would raise it to `>=1.29` and fail
+`test_mcp_requirement_still_allows_supported_version`. "Verified" means a clean resolve into a
 fresh CPython 3.13 environment on 2026-09-06, after which the server module,
 `CORSMiddleware` and `FastMCP` all imported. **Bounds are chosen against a real
 resolve, not by inspection**, because `mcp` constrains several of these itself —
@@ -2822,10 +2826,15 @@ major slipped through. The bounded set resolves to the same versions the
 unbounded one did, so no user's installation changes.
 
 **`starlette` is bounded `<2`, not `<1`.** 1.0 shipped 22 March 2026 and is the
-current line. Its breaking change was removing `on_startup`/`on_shutdown` in
+current line. Its headline break was removing `on_startup`/`on_shutdown` in
 favour of `lifespan`; this server uses neither, because it only wraps the ASGI
-app `FastMCP` builds. Holding below 1.0 would have rolled users back off the
-release they already run, to avoid a break that does not apply to this code.
+app `FastMCP` builds. 1.0 also changed `CORSMiddleware` — it returns an explicit
+origin when credentials are allowed instead of a wildcard — and that is the one
+1.0 change touching the single starlette symbol `server.py` imports; it is named
+here because a justification citing only the change that does *not* affect us
+would be the weaker half of the truth. The suite is green on 1.6.0. Holding below
+1.0 would have rolled users back off the release they already run, to avoid a
+break that does not apply to this code.
 
 🔴 **Four of these ten ceilings are nominal — read them as such.** A `<next major`
 bound only defends against anything if the upstream actually signals breakage by
@@ -2850,9 +2859,10 @@ alternative is pinning each to a single minor (`uvicorn>=0.52,<0.53` and so on),
 which converts every upstream minor into a forced pull request on a path that
 re-resolves at each user launch — and the ceilings still block the catastrophic
 case, a surprise major, at no cost. It matches the `ruff>=0.6,<1` precedent above.
-**What actually protects these four is the suite**, not the bound: six test
-modules import `kindly_web_search_mcp_server.server`, so a release that breaks an
-import fails CI before it can be adopted. Tighten a bound the moment one of them
+**What actually protects these four is the suite**, not the bound: eight test
+modules import `kindly_web_search_mcp_server.server` — seven of them inside the
+required selection, the eighth carrying the `live` marker — so a release that
+breaks an import fails CI before it can be adopted. Tighten a bound the moment one of them
 breaks a minor in practice; the `httpx` row instead needs watching for the
 `httpx2` rename, which is a code change, not a bound change.
 
@@ -2860,11 +2870,21 @@ breaks a minor in practice; the `httpx` row instead needs watching for the
 `tests/test_dependency_constraints.py` parses every row under this heading, so
 the runtime rows and the tooling rows are compared with `pyproject.toml` the same
 way and a docs-only edit to either turns CI red. The runtime rows carry three
-checks the tooling rows do not: that the declared bound **excludes the next
-major** computed from the verified version, that it still **admits** that
-verified version, and that `[project].dependencies` holds exactly this set. The
-first two are what a table-versus-table comparison cannot see — a ceiling widened
-in both places at once agrees with itself perfectly.
+checks the tooling rows do not: that the declared bound **excludes every major
+above the declared floor's** — proved structurally, by requiring a `<`/`<=` clause
+at or below the next major, *and* by probing that major, because neither half
+alone is the claim; that the bound still **admits** the version
+`requirements-ratchet.txt` pins; and that `[project].dependencies` holds exactly
+this set, each entry once.
+
+The first two are what a table-versus-table comparison cannot see — a ceiling
+widened in both places at once agrees with itself perfectly. The ceiling check is
+anchored to the **declared floor rather than to the lockfile pin**, deliberately:
+§10.4 permits that pin to sit anywhere inside these bounds, so anchoring there
+would let a regenerated lockfile move the reference major underneath a widened
+ceiling. The floor check is the one that genuinely needs the second file, and it
+is the only thing holding the two together in that direction — the coverage lane
+installs `--no-deps`, so pip never compares those pins with these bounds.
 
 ### 10.3 CI
 
