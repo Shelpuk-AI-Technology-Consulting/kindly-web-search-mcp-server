@@ -320,14 +320,30 @@ def test_the_marker_has_one_definition_and_a_named_exception_list() -> None:
     ):
         sites = _marker_sites(path)
         if sites:
-            found[str(path.relative_to(REPO_ROOT))] = len(sites)
+            # `as_posix`, not `str`. `str(Path)` renders the platform separator,
+            # so on Windows every key came back backslash-spelled and matched
+            # nothing in the allow-list -- green on Linux, red on Windows, with
+            # a diagnostic that read as "the marker is nowhere" rather than "the
+            # two spellings disagree". Measured in CI, not reasoned about.
+            found[path.relative_to(REPO_ROOT).as_posix()] = len(sites)
 
+    # Keys are compared as text, so their spelling is part of the instrument.
+    # This fires only on Windows, where `str(Path)` yields backslashes; it is
+    # stated rather than left to the comparison below because that failure
+    # presents as "every file is unexpected", which reads as a tree problem.
+    assert not [key for key in found if "\\" in key], (
+        "the sweep produced platform-spelled keys; MARKER_ALLOWANCE is written "
+        f"with forward slashes, so nothing can match.\n  found: {sorted(found)}"
+    )
     # Non-vacuity, asserted before the comparison: a sweep whose vocabulary
     # matched nothing at all would otherwise report an empty dict and read as a
-    # clean tree rather than as a broken instrument.
+    # clean tree rather than as a broken instrument. It names what it *did* find,
+    # because the first version said "the marker is nowhere" on a Windows run
+    # that had in fact found every site under a different spelling.
     assert "src/kindly_web_search_mcp_server/utils/diagnostics.py" in found, (
-        "the sweep found the marker nowhere, including in the module that "
-        "defines it — the sweep itself is broken, not the tree"
+        "the sweep did not find the marker in the module that defines it, so "
+        "the sweep is broken rather than the tree.\n"
+        f"  what it did find: {sorted(found)}"
     )
     # The message deliberately does not spell the marker out: this sweep counts
     # literals, and its own diagnostic would be one of them. Prose that needs to
