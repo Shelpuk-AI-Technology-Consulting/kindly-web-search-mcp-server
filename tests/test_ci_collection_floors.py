@@ -140,6 +140,7 @@ def _run_commands(text: str) -> list[str]:
     commands: list[str] = []
     lines = text.splitlines()
     steps_indent: int | None = None
+    step_item_indent: int | None = None
     step_key_indent: int | None = None
     index = 0
     while index < len(lines):
@@ -148,7 +149,8 @@ def _run_commands(text: str) -> list[str]:
         # Entering, and leaving, the block whose children are steps.
         steps = STEPS_KEY.match(line)
         if steps is not None:
-            steps_indent, step_key_indent = len(steps.group("indent")), None
+            steps_indent = len(steps.group("indent"))
+            step_item_indent = step_key_indent = None
             index += 1
             continue
         # Two shapes are structural no-ops and must not end the region. A
@@ -168,12 +170,17 @@ def _run_commands(text: str) -> list[str]:
         ):
             steps_indent = step_key_indent = None
 
-        if (
-            steps_indent is not None
-            and item is not None
-            and len(item.group("indent")) >= steps_indent
-        ):
-            step_key_indent = len(item.group("indent")) + 2
+        # A step item is recognised at the column the region's FIRST item
+        # established, and only there. Accepting any deeper `- ` re-anchors the
+        # key column onto content -- a nested sequence under `env:` or `with:`,
+        # or a `- ` line inside a block scalar -- and the step's real `run:` key
+        # then matches nothing, dropping the command and its floor silently.
+        if steps_indent is not None and item is not None:
+            depth = len(item.group("indent"))
+            if step_item_indent is None and depth >= steps_indent:
+                step_item_indent = depth
+            if depth == step_item_indent:
+                step_key_indent = depth + 2
 
         run = RUN_KEY.match(line)
         if run is None or step_key_indent is None:
@@ -604,6 +611,18 @@ jobs:
     steps:
       - run: python -m pytest -m "not live" --min-selected 12
 """,
+    "a step whose env block scalar contains dashed lines": """\
+jobs:
+  a:
+    steps:
+      - name: Select
+        env:
+          RULES: |
+            - rule-one
+            - rule-two
+        run: >-
+          python -m pytest -m "not live" --min-selected 12
+""",
     "an indentless sequence, the item at the steps key's own indent": """\
 jobs:
   a:
@@ -621,6 +640,16 @@ jobs:
           python -m pytest -m "not live" --min-selected 12
 """,
 }
+
+TWO_JOBS_IN_DIFFERENT_SEQUENCE_STYLES = """\
+jobs:
+  a:
+    steps:
+      - run: python -m pytest -m "not live" --min-selected 12
+  b:
+    steps:
+    - run: python -m pytest -m "subsystem" --min-selected 34
+"""
 
 NOT_A_PYTEST_INVOCATION = """\
 jobs:
@@ -723,6 +752,20 @@ def test_two_floors_in_one_file_are_both_recovered() -> None:
     """
 
     assert [floor for _, floor in _declared_floors(TWO_FLOORS)] == [12, 34]
+
+
+def test_each_steps_region_establishes_its_own_item_column() -> None:
+    """A file may hold one job in each sequence style, and `ci.yml` holds three jobs.
+
+    The item column is remembered per region, so it must be forgotten at the next
+    ``steps:``. Carried over, the second region recognises none of its items --
+    its floor is dropped rather than refused, and the recorded-set check cannot
+    see it, because that compares only which *files* declare at least one floor.
+    """
+
+    floors = _declared_floors(TWO_JOBS_IN_DIFFERENT_SEQUENCE_STYLES)
+
+    assert [floor for _, floor in floors] == [12, 34]
 
 
 def test_a_comment_between_steps_does_not_end_the_scan() -> None:
