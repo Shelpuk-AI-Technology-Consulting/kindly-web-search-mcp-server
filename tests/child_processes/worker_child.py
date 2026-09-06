@@ -153,9 +153,9 @@ def stdout_pattern_byte(index: int) -> int:
     """Give the byte at ``index`` of a generated standard-output payload.
 
     A function rather than a literal so there is **one** source: a pattern
-    duplicated between this script and the case that checks it would be two
-    things edited together, which catches drift and never deletion -- a
-    generator quietly replaced by a run of zeros satisfies two agreeing copies.
+    duplicated between this script and the two cases that check it would be three
+    things edited together, which catches drift and never deletion -- a generator
+    quietly replaced by a run of zeros satisfies any number of agreeing copies.
 
     The multiplier and the modulus are coprime and the period is 251 bytes, so
     no offset shift, truncation or repeated block reproduces the same sequence.

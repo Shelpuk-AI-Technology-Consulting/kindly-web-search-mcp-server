@@ -1101,12 +1101,22 @@ reaps from an announcement never walks anything.
 and `CreateProcessW` caps a whole line at 32767 characters, so the pipe-capacity
 claim — which needs more than the 64 KiB a Linux pipe buffers — cannot be driven
 through it at all. Its bytes come from `stdout_pattern_byte`, a function of the
-index, so the script and the case that checks it share **one** source rather than
-two copies that would agree with each other while both being wrong.
+index, so the script and the **two** cases that check it share **one** source
+rather than three copies that would agree with each other while all being wrong.
 
-**One case loads this script as a module**, to re-derive that pattern. It is safe
-because everything here is under the `__main__` guard, and it is why the module
-docstring no longer says the script is never imported.
+**Three call sites across two test modules load this script as a module** — two
+to re-derive that pattern, and one to re-derive the descendant program a reaping
+case needs a look-alike of. It is safe because everything here is under the
+`__main__` guard, and it is why the module docstring no longer says the script is
+never imported.
+
+This sentence said "one case" for two review rounds after that stopped being
+true, and it is the **third** claim on this step to be corrected in one of its
+two homes and left standing in the other — the lock invariant and the importer
+count being the others. The cheap discipline, recorded here because the cost was
+paid three times: when a review names a count, `grep` the claim across
+`.system_design/` and `tests/` before calling it fixed. Editing the file the
+reviewer pointed at is not the same as editing the claim.
 
 The `--pid-file` and `--grandchild-new-session` flags arrived with the
 browser-orphan fix. `--grandchild-new-session`
