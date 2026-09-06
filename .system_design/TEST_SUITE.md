@@ -1461,6 +1461,16 @@ Every test in §5.2 and §5.3 that starts something real must:
 
 - Use a **readiness handshake**, never a sleep — wait for a known line or an
   accepting port, with a timeout.
+
+  **The timeout is a deadline, never a startup budget**, and the distinction is
+  what keeps a handshake from becoming the flake it replaced. Poll with a hard
+  ceiling of at least 30 s and assert nothing about how long readiness took: a
+  millisecond threshold measures a loaded runner and an antivirus scanner's
+  process-start delay, not this code. Print the duration as telemetry instead.
+  The inverse — waiting a short interval and requiring the process to *still* be
+  there — is not a budget and is safe, because it can only fail if the process
+  died. E3-1's clause is where this rule was first written; it is restated here
+  because three modules cite it and a plan step is not a durable citation.
 - Allocate **ephemeral ports** and **isolated profile directories** per test.
 - Carry a **per-test timeout** shorter than the job timeout.
 - Clean up in `finally`, keyed on **the PIDs this test spawned**. "No live

@@ -66,7 +66,7 @@ from typing import IO, Any
 #: Hard ceiling on waiting for a child to announce itself. Thirty seconds is not
 #: a measurement of anything -- it is far longer than a Python interpreter has
 #: ever needed to start, chosen so the deadline only ever fires on a child that
-#: is genuinely not going to speak. Section 5.2a forbids a startup *budget*
+#: is genuinely not going to speak. Section 5.4 forbids a startup *budget*
 #: assertion for the opposite reason: a millisecond threshold measures a loaded
 #: runner and an antivirus scanner's process-start delay.
 READINESS_TIMEOUT_SECONDS = 30.0

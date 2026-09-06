@@ -465,7 +465,7 @@ def test_readiness_returns_on_the_marker_the_caller_asked_for() -> None:
 
     No upper bound on the elapsed time is asserted. A millisecond threshold
     measures a loaded runner and an antivirus scanner's process-start delay, and
-    section 5.2a forbids it; the duration is printed as telemetry instead.
+    section 5.4 forbids it; the duration is printed as telemetry instead.
     """
     with spawned_child(
         [sys.executable, "-c", CHATTY_SOURCE],
@@ -1192,8 +1192,8 @@ def test_a_poll_waits_for_the_lock_the_watchdog_holds() -> None:
 
     That measurement says the lock was *needed*. This case says it is *held*,
     which is a different claim and the one nothing else made: with
-    ``poll_under_lock`` reduced to a bare ``proc.poll()``, all forty-nine cases
-    in these two modules still passed.
+    ``poll_under_lock`` reduced to a bare ``proc.poll()``, every one of the
+    forty-nine cases these two modules held at the time still passed.
 
     Hermetic and deterministic. The assertion is "this call blocks while the
     lock is held", which is a property of the code and not of any race, so it
@@ -1230,7 +1230,8 @@ def test_waiting_for_exit_reaps_through_the_lock_and_not_around_it() -> None:
 
     Restoring the obvious ``return self.proc.wait(timeout=timeout)`` therefore
     breaks the invariant while looking simpler -- and, measured, left all
-    forty-nine cases passing. This is the case that notices.
+    every one of the forty-nine cases these two modules held at the time
+    passing. This is the case that notices.
     """
     child = CapturedChild(
         proc=cast(Any, _ExitedProcess()), argv=[], stderr_lines=queue.Queue()

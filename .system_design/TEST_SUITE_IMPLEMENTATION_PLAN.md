@@ -800,8 +800,8 @@ it carries no X-number.
 
   **And then that fix shipped untested, which the second review pass caught.**
   Three mutations — dropping the lock from the poll, from the watchdog, and
-  restoring the obvious blocking `Popen.wait` — each left all forty-nine cases in
-  the two modules passing. A measurement showing a fix was *needed* is not a case
+  restoring the obvious blocking `Popen.wait` — each left every one of the
+  forty-nine cases those two modules held at the time passing. A measurement showing a fix was *needed* is not a case
   holding that it is still *there*, and the distinction is easy to miss precisely
   because the probe felt like evidence. **Two** hermetic cases now hold the lock and
   assert that a reaping call blocks, which is a property of the code rather than

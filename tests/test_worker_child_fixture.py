@@ -810,7 +810,7 @@ def test_hang_mode_outlives_its_own_startup_and_dies_when_killed() -> None:
         # whole module still passed, five runs out of five. Waiting instead
         # inverts the claim: this can only fail if the child *died*, which is
         # the thing under test, so it is not the fixed startup threshold section
-        # 5.2a forbids.
+        # 5.4 forbids.
         with pytest.raises(subprocess.TimeoutExpired):
             child.proc.wait(timeout=HANG_LIVENESS_SECONDS)
 
@@ -1138,6 +1138,19 @@ def test_a_chain_that_cannot_complete_is_reported_rather_than_announced() -> Non
     handle to and kills. What this case therefore does *not* drive is the loop
     that kills a partial record of deeper generations; that is stated here
     rather than left for a reader to assume.
+
+    **An equivalent mutant lives under the `observed` assertion, and it is
+    recorded rather than killed.** The count comes from what the wait itself saw;
+    an earlier build re-read the directory afterwards, which reports a *later*
+    moment and can therefore come back equal to `expected` on the path that
+    exists because it was not. No case here can tell the two apart, because the
+    window between the wait giving up and the frame being written is microseconds
+    wide -- measured, 80 runs including 40 under twelve spinner processes, always
+    `observed: 0`. Forcing the window open with a one-second delay separates them
+    exactly: the re-reading form reports `{expected: 1, observed: 1}`, this one
+    reports `{expected: 1, observed: 0}`. What holds it now is construction --
+    `_report_incomplete_chain` is *given* the count and has no directory read to
+    get it wrong with.
     """
     argv = [
         sys.executable,

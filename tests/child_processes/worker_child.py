@@ -441,7 +441,7 @@ def _read_chain(record_dir: str) -> list[dict[str, int]]:
 
 def _await_chain(
     record_dir: str, *, expected: int, timeout: float
-) -> list[dict[str, int]] | None:
+) -> tuple[list[dict[str, int]], bool]:
     """Wait for every generation of the chain to record itself.
 
     **The deadline is checked before the first read**, not after. That is what
@@ -449,22 +449,34 @@ def _await_chain(
     is driven at all: a case that instead asked for a slow chain would be racing
     the machine it runs on.
 
+    **Returns what it last saw, rather than leaving the caller to look again.**
+    A caller that re-read the directory after this gave up would be reporting a
+    *later* moment than the wait, so its count could come back equal to
+    ``expected`` on the failure path -- a frame saying "expected 1, observed 1"
+    while announcing the chain incomplete, which reads as a bug in this script.
+    Something is given up by that: a fresh read would tell a reader whose bound
+    was merely too short that the chain did finish just afterwards. A count that
+    can contradict its own frame is the worse of the two, and the reaping in
+    :func:`_report_incomplete_chain` still reads fresh, so nothing leaks for it.
+
     Args:
         record_dir: Directory the generations write into.
         expected: How many generations were asked for.
         timeout: Seconds to wait for all of them.
 
     Returns:
-        The records, once there are ``expected`` of them, or ``None`` if the
-        deadline passed first.
+        The records read, and whether there were ``expected`` of them. On expiry
+        the records are whatever the last read saw, which is empty when the
+        deadline passed before any read happened.
     """
     deadline = time.monotonic() + timeout
+    records: list[dict[str, int]] = []
     while True:
         if time.monotonic() >= deadline:
-            return None
+            return records, False
         records = _read_chain(record_dir)
         if len(records) >= expected:
-            return records
+            return records, True
         time.sleep(_CHAIN_POLL_SECONDS)
 
 
@@ -492,7 +504,7 @@ def _spawn_grandchild(*, new_session: bool, record_dir: str, depth: int) -> int:
 
     ``new_session`` selects which of the two topologies a real browser can
     present. A production Chromium is launched with ``start_new_session`` set on
-    every POSIX platform (``nodriver_worker.py:608`` spells it
+    every POSIX platform (``nodriver_worker.py:611`` spells it
     ``start_new_session=(os.name == "posix")``), which makes it its own session
     and group leader and puts it outside any process group a reaper could aim at
     the worker; the default here inherits this process's group instead. A reaper
@@ -591,7 +603,7 @@ def _hang(limit_seconds: float) -> None:
 
 
 def _report_incomplete_chain(
-    record_dir: str, *, expected: int, grandchild_pid: int
+    record_dir: str, *, expected: int, observed: list[dict[str, int]], grandchild_pid: int
 ) -> int:
     """Say that the chain never finished building, reap what can be named, and give up.
 
@@ -612,22 +624,24 @@ def _report_incomplete_chain(
     Args:
         record_dir: Directory the generations were recording into.
         expected: How many generations were asked for.
+        observed: What the wait itself saw before giving up. Reported rather than
+            re-read, so the count cannot come back equal to ``expected`` on a
+            path that exists because it was not.
         grandchild_pid: The first generation, which this process started and can
             therefore always name.
 
     Returns:
         :data:`CHAIN_INCOMPLETE_EXIT_CODE`, for the caller to exit with.
     """
-    observed = _read_chain(record_dir)
     _emit_frame(
         CHAIN_INCOMPLETE_STAGE,
         "Descendant chain did not finish building",
         {"expected": expected, "observed": len(observed)},
     )
-    # Deepest first, so a generation cannot be reparented out of reach between
-    # one kill and the next; then the one this process started, which is the
-    # only generation guaranteed to be nameable when no record arrived at all.
-    for entry in reversed(observed):
+    # Read fresh for the *reaping*, unlike the count above: a generation that
+    # recorded itself after the wait gave up is one this process still has to
+    # kill, and reaping only what the wait happened to see would leak it.
+    for entry in reversed(_read_chain(record_dir)):
         _reap(entry["pid"])
     _reap(grandchild_pid)
     return CHAIN_INCOMPLETE_EXIT_CODE
@@ -658,15 +672,16 @@ def main(argv: list[str]) -> int:
                 record_dir=record_dir,
                 depth=args.grandchild_depth,
             )
-            awaited = _await_chain(
+            awaited, complete = _await_chain(
                 record_dir,
                 expected=args.grandchild_depth,
                 timeout=args.chain_timeout,
             )
-            if awaited is None:
+            if not complete:
                 return _report_incomplete_chain(
                     record_dir,
                     expected=args.grandchild_depth,
+                    observed=awaited,
                     grandchild_pid=grandchild_pid,
                 )
             chain = awaited
