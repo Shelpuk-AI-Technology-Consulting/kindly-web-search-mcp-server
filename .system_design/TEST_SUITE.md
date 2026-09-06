@@ -891,14 +891,22 @@ SDK bound motivates is a forward guard rather than a compatibility shim: nothing
 the allowed range makes `1.25.0` and `1.29.1` disagree today.
 
 **(d) The ceiling the description states.** The `web_search` description tells the
-model that `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` is "clamped 1..5". That number is
-repeated in four places outside the code — the description itself, `README.md`,
-`.env.example` and `.github/review/rules/mcp-server.md` — and pinning three of them
+model that `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` is clamped to an upper bound, and
+that bound is restated in prose the user reads: `README.md`, `.env.example` and
+`.github/review/rules/mcp-server.md`. Pinning some of those and not the rest
 institutionalizes exactly the partial drift `test_provider_registry_consistency.py`
-exists to stop. All four are asserted against a ceiling **probed from the running
+exists to stop. Each is asserted against a ceiling **probed from the running
 resolver**, never against a constant restated in the test: a constant catches drift
 between documents but never deletion, because removing the clamp leaves the
 constant agreeing with every copy.
+
+**The rule for what belongs in that list is "nothing else would take an author
+there".** `tests/test_server.py` spells the bound in a comment and is deliberately
+excluded — its case table pins the value, so moving the clamp turns that file red
+and the author is already in it. This document is excluded for a different reason:
+its numbers are dated records of a measurement, and pinning them would make a
+design document's history a maintained claim. The number is therefore *not* written
+into this section, so that §4.2(d) does not itself become a copy that goes stale.
 
 The probe must use a result count *above* the environment value, since the
 resolver also bounds concurrency by `num_results` and a smaller count returns the

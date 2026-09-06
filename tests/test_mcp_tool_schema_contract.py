@@ -38,8 +38,9 @@ absorbs today.
 Both halves of this file assert facts about the same served payload. The schema
 half pins its shape;
 :func:`test_the_surface_states_the_enforced_concurrency_ceiling` pins the one
-documented knob whose ceiling that payload states to the calling model, across
-every surface that repeats the number.
+documented knob whose ceiling that payload states to the calling model, across the
+prose surfaces a clamp change would otherwise leave silently wrong -- see
+:data:`CEILING_SURFACES` for which copies those are and why the others are not.
 """
 
 from __future__ import annotations
@@ -310,8 +311,9 @@ CONCURRENCY_VARIABLE = "KINDLY_WEB_SEARCH_MAX_CONCURRENCY"
 
 # Both far above any plausible ceiling, and the result count above the environment
 # value on purpose: the resolver also bounds concurrency by `num_results`, so a
-# small count returns the same answer whether the ceiling exists or not. That
-# masking is exactly why this ceiling went uncovered for so long.
+# small count returns the same answer whether the ceiling exists or not. The clamp
+# itself is already pinned by `test_server.py`'s case table; the probe is what lets
+# the surface comparison below survive its deletion.
 _CEILING_PROBE_ENVIRONMENT_VALUE = 1000
 _CEILING_PROBE_RESULT_COUNT = 1001
 
@@ -365,9 +367,20 @@ class CeilingSurface:
     anchor: str
 
 
-# Every surface that states the number. `.env.example` and the review rule were
-# both found stating `1..5` already, so a change to the clamp that updated only
-# the code, the docstring and the README would leave two copies wrong.
+# The surfaces a clamp change would leave wrong with nothing to say so. That is the
+# selection rule, not "every string in the tree that spells the number": a copy is
+# listed here when nothing else would bring an author to it.
+#
+# By that rule `tests/test_server.py` is deliberately absent even though its
+# comment spells the ceiling -- its case table pins the value itself, so moving the
+# clamp turns that file red and puts the author in it. `.system_design/` is absent
+# too: those are dated records of a measurement, not instructions a user follows,
+# and pinning them would make a design document's history a maintained claim.
+#
+# `.env.example` and the review rule earn their place the other way round: both
+# already stated the ceiling correctly and nothing would have taken anyone there,
+# so a change updating only the code, the docstring and the README leaves two
+# copies quietly wrong.
 CEILING_SURFACES: tuple[CeilingSurface, ...] = (
     CeilingSurface("web_search's tool description", None, CONCURRENCY_VARIABLE),
     CeilingSurface("README.md", "README.md", CONCURRENCY_VARIABLE),
