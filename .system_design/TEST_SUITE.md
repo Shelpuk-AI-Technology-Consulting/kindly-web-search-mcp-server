@@ -883,28 +883,132 @@ process machinery. The address matters to whoever implements this section:
 KINDLY_DIAG {"stage": "...", "msg": "...", ...}
 ```
 
-**Test the live path.** `_split_worker_diagnostics` (`universal_html.py:119`)
+**Test the live path.** `_split_worker_diagnostics` (`universal_html.py:124`)
 parses a whole captured stderr string and **has no callers in `src/` or
 `tests/`**; production streams through `worker_runner._read_stderr_stream` →
 `_consume_stderr_line`. That dead function is a removal candidate, flagged here
-rather than deleted by this document. Since E2-3 it is also the **only**
-`KINDLY_DIAG` parser left in `universal_html.py`, which makes it easier to
-mistake for the live one than it was when both sat in the same file.
+and in §14 rather than deleted by this document. Since E2-3 it is also the
+**only** `KINDLY_DIAG` parser left in `universal_html.py`, which makes it easier
+to mistake for the live one than it was when both sat in the same file.
 
 Both sides ship from the same wheel, so this is an **internal protocol**, not an
 agreement between independently versioned parties. It still earns a contract test
 because the two sides are edited independently and the format is all that holds
 them together.
 
-Extract the frame encoder and decoder into one place and test both directions:
+**E6-2 landed this section, and everything below is now a record of what was
+built rather than a specification of what to build.** The suite is
+`tests/test_worker_frame_contract.py`.
 
-- Emission through the real encoder produces a line the real decoder accepts.
+**The codec lives in `utils/diagnostics.py`.** Chosen over a new module because
+that file already owned the encoder (`emit_diagnostic`) and the ceiling
+(`MAX_LINE_CHARS`); because `nodriver_worker.py` already imports from it with a
+recorded rationale — it is stdlib-only behind empty package `__init__` files, so
+the import costs the worker nothing — and because `worker_runner.py` already
+imports from it, so no cycle appears. It also puts the codec **inside** the
+diff-coverage gate, which its previous home is exempt from (§10.4). The surface
+is four names: `FRAME_PREFIX`, `encode_frame`, `frame_payload` and
+`decode_frame_payload`, the decoder being two functions because the router needs
+three outcomes — not a frame, a malformed frame, a record — and two `None`
+returns express that without a result type.
+
+**`encode_frame` is a serializer and deliberately not the redaction point.** It
+is now the one function both writers share, which makes it the tempting place to
+put sanitization; §7.1 requires that at the top of `Diagnostics.emit` instead,
+because `entries` is returned to the MCP caller as well as written to stderr, and
+redacting in the writer alone would clean stderr while leaving the raw value in
+the response.
+
+**The format had four copies before this step**, three of which wrote it: the
+parent's `emit_diagnostic`, the worker's `_emit_diag` — with its own ceiling
+constant carrying the comment *"Keep in sync with utils.diagnostics.MAX_LINE_CHARS"*
+— and the dead parser, plus the live router. They had already diverged in
+behaviour and not merely in risk: only the shared ceiling handled a payload that
+would not serialize at all, so the worker emitted **nothing** in that case, which
+is indistinguishable from the stage never having been reached. The worker gained
+that fallback by adopting the shared one.
+
+The **two** copies that remain are deliberate and counted, not overlooked:
+`_split_worker_diagnostics` until its removal, and
+`tests/child_processes/worker_child.py`, a test instrument that must not import
+the package it calibrates. `tests/test_worker_frame_contract.py` sweeps every
+source file's *syntax tree* for the marker as a string or bytes literal and holds
+an exact per-file count, so a third copy fails and a vanished exemption fails
+too. The vocabulary is the marker **including its trailing space**: without it,
+`KINDLY_DIAGNOSTICS` — the environment variable that enables diagnostics, a
+different identifier sharing the stem — matches in four further files.
+
+**Two of the seven stream claims below were false when the step began, and both
+were fixed here.** Both were measured before being trusted, and the other five
+were measured too rather than assumed:
+
+- *A multi-byte character split across chunks.* `_read_stderr_stream` decoded
+  each chunk independently, so a UTF-8 sequence straddling a read boundary became
+  two invalid fragments and `errors="replace"` rendered each byte as `U+FFFD`.
+  Measured: a frame carrying `✓` came back carrying `���`, and because the
+  corruption sits inside a JSON string the frame still parsed — silently wrong,
+  which is worse than failing. **`_read_stdout_stream` twelve lines above already
+  stated the rule** — *"a multi-byte character split across two reads would
+  otherwise be corrupted at the seam"* — and avoids it by accumulating undecoded
+  bytes and decoding once at the end. Stderr cannot copy that: it must yield lines
+  before the child exits. It carries an incremental decoder instead. The two
+  readers are written to different rules on purpose, recorded here so the next
+  reader neither re-derives it nor "harmonises" them.
+- *An oversized line is truncated rather than buffered without limit.* This was
+  simply absent. Measured: 655 360 bytes of one unterminated line produced a
+  655 360-character buffer. The fix is a **sliding window** — when no newline has
+  arrived and the buffer exceeds `MAX_STDERR_LINE_CHARS`, the front is discarded.
+  Keeping the *end* rather than the beginning is the load-bearing half of that
+  choice: `_append_tail_text` keeps the most recent text *"because the end of a
+  failing child's stderr is what names the failure"*, and a head truncation would
+  invert that rule for exactly the case it was written for — a child that spews
+  and then dies mid-line would hand the caller the start of the spew and drop the
+  message naming the crash. The window is applied only after every complete line
+  has been drained, because `STREAM_READ_CHUNK` (16 384) exceeds the cap and a
+  bound applied first would shred a chunk of many short, complete lines.
+
+`MAX_STDERR_LINE_CHARS` is **16000**, and it answers to two constituencies. It
+must exceed `len(FRAME_PREFIX) + MAX_LINE_CHARS` (8012) or the parent would cut
+up a frame the worker considers legal; and it bounds the reader's memory, which
+is why it exists at all. A reader who knows only the first will lower it toward
+8013 and lose the second.
+
+**That relation needed a production fix to be true.** The ceiling's truncation
+fallback copied `stage` and `msg` verbatim from the record it was shortening, so
+`MAX_LINE_CHARS` bounded what *triggered* the fallback and never what the fallback
+wrote. Measured: a record with a 50 000-character `msg` produced a
+50 156-character line while reporting `line_truncated: True`. The fallback now
+truncates the fields it copies, so the ceiling is real and the parent's cap rests
+on something. It also **verifies** its own result rather than assuming it:
+`elapsed_ms` is the one field copied without conversion, and a large enough
+integer raises inside `json.dumps` on the fallback itself, after the original was
+rejected for that same reason. Nothing reaches that today — both emitters derive
+it from a monotonic clock — but the function is public, E5-7 will drive it with
+generated values, and a postcondition with one uninspected field is not one.
+
+The seven claims, each pinned by a case that dies when its branch is removed:
+
+- Emission through the real encoder produces a line the real decoder accepts —
+  driven through the worker's real `_emit_diag` and the parent's real
+  `_read_stderr_stream`, not through the codec twice.
 - Streaming consumption handles fragmentation: a frame split across chunk
   boundaries, several frames in one chunk, CRLF endings, EOF with no trailing
   newline, and a multi-byte character split across chunks.
 - Malformed payloads are sampled and capped without raising; non-`KINDLY_DIAG`
   lines survive as human-readable stderr.
 - An oversized line is truncated rather than buffered without limit.
+
+**The instrument is a fed stream, not the fixture child, and that is a decision
+rather than a convenience.** Four of those claims are about *where a chunk
+boundary falls*, and where a boundary falls is a property of pipe timing rather
+than of the child — no process can be asked to split a multi-byte character
+across a 16 KiB read. The cases hand `_read_stderr_stream` exact chunks through a
+stand-in with one `read` method, and a calibration case drives the same bytes
+through a real `asyncio.StreamReader` and requires the same result, so the
+stand-in is not uncalibrated. Nothing in the module sleeps for a duration.
+`.github/review/rules/scrape-browser.md` was narrowed in the same change: it
+previously read *every* hermetic runner case as a finding, which was true of a
+spawn seam and not of a stream reader.
 
 ### 4.4 Response-model invariants
 
@@ -1182,8 +1286,24 @@ about arity, and the case that would need a branching tree does not exist yet.
 There is no flag that
 produces a long line with no newline, or more than two malformed frames, so
 §4.3's "capped without raising" and "oversized line truncated" claims have no
-driver here — they belong with the codec work in E6-2, which also owns the fact
-that the parent implements no line cap at all today. Nothing writes undecodable
+driver here.
+
+**E6-2 closed both, and not with the flags this paragraph anticipated.** No flag
+was added, because the fixture is the wrong instrument for these two and adding
+one would have implied otherwise. Both claims are about what the *parent's*
+stream reader does with bytes arriving in a particular shape, and a real child
+cannot be asked to produce a chosen shape: where a chunk boundary falls is
+decided by pipe timing, not by the child. `tests/test_worker_frame_contract.py`
+feeds `_read_stderr_stream` exact chunks instead, and drives the sample cap past
+three and an unterminated 640 KB line without starting a process. The parent's
+missing line cap — which this paragraph correctly recorded — was fixed there;
+§4.3 carries the measurement and the reasoning.
+
+The rule the two claims illustrate, worth keeping when the next one arrives: a
+claim about *this script's* behaviour belongs to a flag here, and a claim about
+the *parent's* handling of a byte pattern belongs to a fed stream. Parking the
+second kind on a future flag is how a claim ends up with an instrument that
+cannot decide it. Nothing writes undecodable
 bytes to *stdout*, so the runner's `errors="ignore"` decode is undriven. And the
 readiness frame is always emitted, so a fixture-driven run can never produce
 zero worker entries the way the real worker does with diagnostics off; the
@@ -1918,7 +2038,7 @@ job.
 
 ### 7.1 Diagnostics must be sanitized at the boundary
 
-`Diagnostics.emit` and `emit_diagnostic` (`utils/diagnostics.py:133,151`) apply
+`Diagnostics.emit` and `emit_diagnostic` (`utils/diagnostics.py:305,287`) apply
 **no redaction** — only JSON serialization and a line-length cap. Callers pass
 raw data: `server.py` emits `{"url": url}` and `{"detail": full_detail}` where
 the detail is unfiltered exception text. So
@@ -1935,6 +2055,22 @@ stderr write.** `emit` appends to `self.entries` and then calls
 leaving the raw value in the MCP response — the worse of the two paths. One
 sanitizing step at the top of `emit`, covering both consumers, is the
 requirement.
+
+**`encode_frame` (`utils/diagnostics.py:200`) is not that place, and since E6-2
+it is the tempting one.** It is now the single serializer both writers share, so
+it looks like the natural chokepoint — and putting redaction there would produce
+exactly the inversion the paragraph above names, because `Diagnostics.emit`
+appends to `entries` *before* calling it. Recorded here rather than only in that
+function's docstring, since this is the section a redaction author reads first.
+
+**The worker is a third consumer and `Diagnostics.emit` does not cover it.**
+`nodriver_worker._emit_diag` builds its own record and calls `apply_line_limit`
+and `encode_frame` directly, never `Diagnostics.emit`, so a sanitizing step
+placed as required above will **not** reach worker frames. Those frames are
+parsed by the parent and merged into the caller's diagnostics, which is the same
+egress path. E9-1 owns the boundary and should say which of the two it treats as
+the seam; the alternative — a second sanitizing step in the worker — is the
+duplication E6-2 spent its diff removing.
 
 Test the **emitted JSON and the returned `entries`**, not the helper. Policy must
 state, and tests must cover:
@@ -3156,19 +3292,38 @@ for why file-granularity `omit` forces it, and why the split is the same argumen
 §2.1 makes about assertions: the seam belongs in the design, not in a side-table.
 
 **Landed in E2-3, with one cost worth stating.** `worker_runner.py` is not purely
-unhermetic: five helpers moved with the process code that a unit test could
+unhermetic: **six** helpers moved with the process code that a unit test could
 perfectly well drive — `_append_tail_text`, `_consume_stderr_line`,
-`_finalize_stderr_state`, `_maybe_emit_stream_progress` and
-`_subprocess_launch_options`. They are exempted along with it, so those five sit
-outside the diff gate.
+`_finalize_stderr_state`, `_maybe_emit_stream_progress`,
+`_subprocess_launch_options` and `_read_stderr_stream`. They are exempted along
+with it, so those six sit outside the diff gate.
+
+**This said five until E6-2, and the sixth was an undercount rather than a
+change.** `_read_stderr_stream` takes its stream as a parameter and always could
+have been driven by a stand-in; nothing made it hermetic, E6-2 merely did it, and
+`tests/test_worker_frame_contract.py` now drives it with exact chunks. Corrected
+in all three places the figure appears — here, §11.2, and `.coveragerc-gate` —
+because a count restated in three files and edited in one is the drift this
+document keeps rediscovering.
 
 They moved because they have exactly one consumer, the runner, and leaving them
 behind would make `universal_html.py` import from `worker_runner.py` while
 `worker_runner.py` imports nothing back — the loader already imports the runner,
 so the reverse edge is a cycle. The third option, a separate module for the pure
 text and stream helpers, would have kept them gated and was rejected as more
-structure than five single-consumer helpers earn; it remains the move if that
-set grows. Recorded because the classification is *file*-granular by design, and
+structure than the five single-consumer helpers then counted earn; it remains
+the move if that set grows.
+
+> **Deferred (E6-2, 2026-09-06).** That trigger has now been touched: the set
+> reads six. E6-2 did **not** take the move, and the reason is that the count
+> rose by correction rather than by growth — no helper migrated, one was found to
+> have been drivable all along. Against that, the step moved the frame codec the
+> *other* way, out of the runner and into `utils/diagnostics.py`, which is inside
+> the gate; the exempt surface therefore shrank in substance while its count rose
+> by one. Taking the third-module move is a sequencing call for the owner, and a
+> step that did it while also shipping two production fixes would have been three
+> changes in one pull request. Recorded here, with the trigger named, so the next
+> reader does not have to rediscover that it fired. Recorded because the classification is *file*-granular by design, and
 a reader who takes "omitted" to mean "untestable" would draw the wrong
 conclusion about these five. They are testable, and E5-6 owns testing one of
 them — an L1 test on an omitted module, which is already this suite's practice
@@ -3638,9 +3793,14 @@ in the terminate or the release itself still leaves it recoverable;
 hands one browser and one profile directory to two callers.
 
 `_build_worker_command` stays with `fetch_html_via_nodriver`; it is pure and
-hermetically testable, so it belongs on the gated side. Five smaller helpers that
-are equally hermetic went the other way, for import-cycle reasons; §10.4 records
-which, and what that costs.
+hermetically testable, so it belongs on the gated side. **Six** smaller helpers
+that are equally hermetic went the other way, for import-cycle reasons; §10.4
+records which, and what that costs. (This said five until E6-2 found
+`_read_stderr_stream` had been drivable all along. Note that §10.4 and
+`.coveragerc-gate` state a *different* reason for the same decision — "more
+structure than a handful of single-consumer helpers earns" — and both reasons
+are real: the cycle rules out leaving them behind, the structure argument rules
+out a third module.)
 
 **The command must not become a parameter of the public fetch API.** Adding a
 `command=` argument to `fetch_html_via_nodriver` would turn "execute an arbitrary
@@ -3666,10 +3826,17 @@ the caller. The streaming claim moved to `tests/test_worker_runner.py`, which
 asserts it against a **real** child process, where no fake can satisfy it. That
 file carries **four** `subsystem` cases — stdout returned, non-zero exit, where
 the timeout budget is read from, and the runner's own emit order — plus six
-hermetic guards that hold the module boundary itself. Until E7-2's fixture-child
-battery lands, those four are the whole of the runner's behavioural coverage,
-and §10.4 control 1's "every omitted module has non-zero coverage in the
-observational report" rests on them; E7-2 should say whether it absorbs them or
+hermetic guards that hold the module boundary itself.
+
+**"Those four are the whole of the runner's behavioural coverage" stopped being
+true at E6-2**, which added a hermetic battery over `_read_stderr_stream`,
+`_consume_stderr_line` and `_finalize_stderr_state` in
+`tests/test_worker_frame_contract.py`. The four `subsystem` cases remain the
+whole of its coverage *of things that need a process* — spawning, exit status,
+the timeout budget, emit order — and that is the claim §10.4 control 1's "every
+omitted module has non-zero coverage in the observational report" actually rests
+on. Until E7-2's fixture-child battery lands, those four still carry it; E7-2
+should say whether it absorbs them or
 leaves them, so the claim does not end up with two owners.
 
 **A second consequence, now closed: `FakeWorkerProcess` had no production

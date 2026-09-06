@@ -98,6 +98,7 @@ Both spellings are pinned by ``tests/test_worker_runner.py``.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import json
 import os
@@ -112,7 +113,10 @@ from typing import Any
 
 from ..utils.diagnostics import (
     MAX_STDERR_CHARS,
+    MAX_STDERR_LINE_CHARS,
     Diagnostics,
+    decode_frame_payload,
+    frame_payload,
     truncate_text,
 )
 
@@ -167,6 +171,12 @@ class _StderrAccumulator:
             diagnostics once the run finishes.
         parse_errors: Up to three samples of frames that would not decode, kept
             so a malformed worker is diagnosable without unbounded logging.
+        decoder: The stream's UTF-8 decoder, carried across chunk boundaries so a
+            multi-byte character split between two reads is reassembled rather
+            than replaced twice. It lives on the accumulator rather than inside
+            :func:`_read_stderr_stream` because the reader is *cancelled* on the
+            timeout path and never reaches end of stream; the flush therefore
+            belongs to :func:`_finalize_stderr_state`, which both paths reach.
     """
 
     buffer: str = ""
@@ -176,6 +186,11 @@ class _StderrAccumulator:
     last_emit_bytes: int = 0
     worker_entries: list[dict[str, Any]] = field(default_factory=list)
     parse_errors: list[str] = field(default_factory=list)
+    decoder: codecs.IncrementalDecoder = field(
+        default_factory=lambda: codecs.getincrementaldecoder("utf-8")(
+            errors="replace"
+        )
+    )
 
 
 STREAM_READ_CHUNK = 16_384
@@ -269,23 +284,20 @@ def _consume_stderr_line(
     """
     if line == "":
         return
-    if line.startswith("KINDLY_DIAG "):
-        payload = line[len("KINDLY_DIAG ") :].strip()
-        try:
-            parsed = json.loads(payload)
-        except Exception:
-            if len(state.parse_errors) < 3:
-                sample, _, _ = truncate_text(payload, 200)
-                state.parse_errors.append(sample)
-            return
-        if isinstance(parsed, dict):
-            state.worker_entries.append(parsed)
-        else:
-            if len(state.parse_errors) < 3:
-                sample, _, _ = truncate_text(payload, 200)
-                state.parse_errors.append(sample)
+    # What a line *is* belongs to the codec in `utils.diagnostics`; where each
+    # kind goes is this function's business. Before E6-2 the marker and the JSON
+    # rules were spelled out here as well as in the two writers.
+    payload = frame_payload(line)
+    if payload is None:
+        state.tail = _append_tail_text(state.tail, line + "\n", limit=tail_limit)
         return
-    state.tail = _append_tail_text(state.tail, line + "\n", limit=tail_limit)
+    parsed = decode_frame_payload(payload)
+    if parsed is None:
+        if len(state.parse_errors) < 3:
+            sample, _, _ = truncate_text(payload, 200)
+            state.parse_errors.append(sample)
+        return
+    state.worker_entries.append(parsed)
 
 
 def _finalize_stderr_state(state: _StderrAccumulator, *, tail_limit: int) -> None:
@@ -295,10 +307,20 @@ def _finalize_stderr_state(state: _StderrAccumulator, *, tail_limit: int) -> Non
     buffer, where the reader's newline loop never sees it. That line is often
     the most interesting one, so it is flushed through the same routing.
 
+    Called on **both** exit paths — after a clean end of stream, and after the
+    reader task has been cancelled on the timeout path. That is why the decoder
+    flush below lives here rather than at the reader's end-of-stream break: on
+    cancellation there is no such break, and any bytes the decoder was holding
+    would be dropped in silence.
+
     Args:
         state: Accumulator mutated in place.
         tail_limit: Maximum characters to retain in ``state.tail``.
     """
+    # A sequence still pending in the decoder is the tail of a character the
+    # stream ended in the middle of; `final=True` renders it as a replacement
+    # character rather than discarding it.
+    state.buffer += state.decoder.decode(b"", final=True)
     if not state.buffer:
         return
     line = state.buffer.rstrip("\r")
@@ -594,6 +616,28 @@ async def _read_stderr_stream(
     bytes are replaced rather than raised: stderr is diagnostic output, and
     losing a run to a stray byte in it would be the wrong trade.
 
+    **Decoding as it goes is why the decoder is incremental.**
+    :func:`_read_stdout_stream` states the underlying rule — a multi-byte
+    character split across two reads is corrupted at the seam — and avoids it by
+    accumulating undecoded bytes and decoding once at the end. This reader
+    cannot do that, so it carries the decoder across chunks instead. Written as
+    a per-chunk ``bytes.decode`` it rendered a torn ``✓`` as three replacement
+    characters inside a frame that still parsed, which is worse than failing.
+
+    **The buffer is bounded by a sliding window.** A child that writes a long
+    line and never terminates it grew this buffer without limit, measured at
+    640 KB. When no newline has arrived and the buffer exceeds
+    :data:`~kindly_web_search_mcp_server.utils.diagnostics.MAX_STDERR_LINE_CHARS`
+    the *front* is discarded, keeping the most recent text — the same rule, and
+    for the same reason, as :func:`_append_tail_text`: the end of a failing
+    child's stderr is what names the failure. Truncating the other way would
+    hand a caller the beginning of a crash log and drop the crash.
+
+    The bound is applied only once every complete line has been drained, so a
+    chunk carrying many short lines is never cut in the middle of one. That
+    ordering is load-bearing: ``STREAM_READ_CHUNK`` exceeds the cap, so every
+    full read can be larger than it.
+
     Args:
         stream: The stream, or ``None`` when no pipe was requested.
         state: Accumulator mutated in place.
@@ -608,8 +652,7 @@ async def _read_stderr_stream(
         if not chunk:
             break
         state.bytes_read += len(chunk)
-        text = chunk.decode("utf-8", errors="replace")
-        state.buffer += text
+        state.buffer += state.decoder.decode(chunk)
         while True:
             newline_index = state.buffer.find("\n")
             if newline_index < 0:
@@ -617,6 +660,10 @@ async def _read_stderr_stream(
             line = state.buffer[:newline_index].rstrip("\r")
             state.buffer = state.buffer[newline_index + 1 :]
             _consume_stderr_line(state, line, tail_limit=tail_limit)
+        # Only what remains after every complete line has gone is an unfinished
+        # line, and only that is bounded here.
+        if len(state.buffer) > MAX_STDERR_LINE_CHARS:
+            state.buffer = state.buffer[-MAX_STDERR_LINE_CHARS:]
         state.last_emit_time, state.last_emit_bytes = _maybe_emit_stream_progress(
             diagnostics,
             stream="stderr",

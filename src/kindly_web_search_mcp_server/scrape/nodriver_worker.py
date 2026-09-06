@@ -22,8 +22,12 @@ from typing import TextIO
 # The only package import in this module. This worker is otherwise stdlib-only
 # because it runs as a `python -m` subprocess, but `utils.diagnostics` is itself
 # stdlib-only behind empty package `__init__` files, so the import is free. Sharing
-# the redaction keeps one definition of what a credential looks like.
-from ..utils.diagnostics import redact_url_credentials
+# the redaction keeps one definition of what a credential looks like -- and, since
+# E6-2, one definition of the frame format and one of the line ceiling as well.
+# The ceiling used to be a private constant here kept in step with that module's
+# by a comment, and the two had already diverged: only the shared one survives a
+# payload that will not serialize.
+from ..utils.diagnostics import apply_line_limit, encode_frame, redact_url_credentials
 
 
 class _NullTextIO(io.TextIOBase):
@@ -116,7 +120,6 @@ _DIAG_ENABLED = False
 _DIAG_REQUEST_ID = "unknown"
 _DIAG_STREAM: TextIO | None = None
 _DIAG_STARTED = 0.0
-_DIAG_LINE_LIMIT = 8000  # Keep in sync with utils.diagnostics.MAX_LINE_CHARS
 
 
 def _diagnostics_enabled() -> bool:
@@ -137,18 +140,9 @@ def _emit_diag(stage: str, msg: str, data: dict[str, object] | None = None) -> N
             "elapsed_ms": elapsed_ms,
             "data": data or {},
         }
-        payload = json.dumps(entry, ensure_ascii=True, separators=(",", ":"))
-        if len(payload) > _DIAG_LINE_LIMIT:
-            entry = {
-                "request_id": _DIAG_REQUEST_ID,
-                "stage": stage,
-                "msg": msg,
-                "elapsed_ms": elapsed_ms,
-                "line_truncated": True,
-                "data": {"note": "diagnostic payload truncated", "original_len": len(payload)},
-            }
-            payload = json.dumps(entry, ensure_ascii=True, separators=(",", ":"))
-        _safe_write_text(stream, f"KINDLY_DIAG {payload}")
+        # One ceiling and one encoder, shared with the parent. `_safe_write_text`
+        # supplies the terminator, so the encoder must not.
+        _safe_write_text(stream, encode_frame(apply_line_limit(entry)))
     except Exception:
         return
 
