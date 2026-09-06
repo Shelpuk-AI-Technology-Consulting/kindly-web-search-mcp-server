@@ -752,7 +752,7 @@ it carries no X-number.
   with four cases beside them; the surface, its rationale and its measured
   limits are §5.4a. Every rule was mutation-checked — **thirty-six distinct
   mutants, no survivors** — but **eleven** of those survived their *first* form,
-  and what that cost is the most useful thing recorded here. Seven things the build
+  and what that cost is the most useful thing recorded here. Eight things the build
   changed about the clause above.
 
   **The decision the clause asked for is "yes, walk"**, and it is forced rather
@@ -796,7 +796,11 @@ it carries no X-number.
   signals with nothing in between, while this walks `/proc` between them — 8 ms
   median, 14 ms worst — and a caller reaping in that window frees the pid.
   Measured on the unmodified code, **13 of 120 runs** issued the kill against an
-  already-reaped pid. Every reaping call now goes through one `poll_under_lock`.
+  already-reaped pid. Every reaping call **that can race a live watchdog** now
+  goes through one `poll_under_lock`; two calls deliberately do not, and §5.4a
+  names both with the reason each is safe. The qualifier is not pedantry — this
+  note is the **third** home of that claim, and the first two were corrected in
+  separate rounds while this one kept asserting the absolute version.
 
   **And then that fix shipped untested, which the second review pass caught.**
   Three mutations — dropping the lock from the poll, from the watchdog, and
