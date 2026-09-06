@@ -1134,9 +1134,15 @@ duplicating tests or touching the same files.
   every parse function — and an over-long StackExchange id falsifies it in one.
   So the shipped claim is scoped to the branches each parser's own guards reach,
   all twenty-one of them, and the two escapes are pinned as characterisation and
-  filed in §14. Likewise "rejection is stable across trailing slashes" is exactly
-  right and acceptance is not: a trailing slash changes the Wikipedia title, so
-  the acceptance rows exclude that one pair by name. Repairing either was
+  filed in §14. Likewise "rejection is stable across trailing slashes" needed
+  narrowing on **both** sides, and only the acceptance side was obvious. A
+  trailing slash changes the Wikipedia title, so the acceptance rows exclude that
+  pair by name. It also flips one *rejection* into an acceptance —
+  `…/wiki/%09` is declined and `…/wiki/%09/` returns `title="/"` — which the
+  first version of this step could not see, because its stability rows varied one
+  rejected URL per parser while the bullet above quantified over the branches.
+  The shipped rows cross **every** branch: eighty-one pairs, of which that is the
+  only one that does not hold, and it is excluded by name too. Repairing either was
   declined by the product owner on E5-8's precedent — a test step ships one
   production edit — and, for the id, because the ceiling is a process-global
   interpreter setting rather than anything the parser enforces.
