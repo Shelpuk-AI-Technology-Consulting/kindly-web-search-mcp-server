@@ -1503,9 +1503,12 @@ duplicating tests or touching the same files.
   needs its own `chromium` or `subsystem` marker, or a step written against a
   locally installed Chromium quietly acquires cases that run everywhere.
   **This step therefore owns lowering the broad job's `--min-selected` floor,
-  and its acceptance check must say so.** E4-1 measured that floor at 787 —
-  which is the *whole* suite, because `chromium`, `live` and `package` today
-  select zero of it. The first `chromium`-marked case this step adds is
+  and its acceptance check must say so.** E4-1 measured that floor at 787, and it
+  has been re-measured upward since as later steps added tests — **read the
+  current value from `tests-broad.yml`, never from this sentence**, which records
+  what E4-1 observed rather than what the job declares today. Whatever its
+  value, that floor is the *whole* suite, because `chromium`, `live` and
+  `package` today select zero of it. The first `chromium`-marked case this step adds is
   deselected by the broad job and drops the count below the floor, so the job
   exits 4 with *"check the -m expression against the registered markers"*: a
   message naming the wrong cause, on a step whose selector is fine. §10.3's

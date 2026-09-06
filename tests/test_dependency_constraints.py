@@ -99,6 +99,63 @@ EXTRA_BOUND_CASES = [
     for name, specifier in bounds.items()
 ]
 
+# Section 10.2's runtime table. These are the bounds that reach users: the
+# documented ``uvx --from git+https://...`` install re-resolves every one of them
+# from PyPI on each start, so a breaking major arrives with no commit here, no CI
+# run and no alert. Nine of these ten were bare names until this table existed,
+# while the identical rule was already machine-checked for the tooling extras
+# above - the dependencies developers install were guarded and the dependencies
+# users install were not.
+#
+# Each ceiling is the next major of the version the entry was verified against.
+# Each floor is that version's minor series, which stops a constrained resolve
+# from silently selecting an older, untested API - the same reasoning the ``mcp``
+# comment in ``pyproject.toml`` records for ``>=1.25``.
+#
+# 🔴 Four of these ceilings are NOMINAL, and the cases below cannot tell you so:
+# ``uvicorn`` and ``nodriver`` are pre-1.0 where a minor may break, ``PyMuPDF``
+# removes API in 1.x minors, and ``httpx`` is unlikely ever to ship 1.0 because its
+# maintained successor is a differently named distribution, ``httpx2``. The
+# rejected-major cases still pass for all four - they ask whether the *declared*
+# ceiling excludes the majors above the pinned one, which is a different question
+# from whether that upstream signals breakage by bumping its major at all. Section
+# 10.2 records why they are kept and what protects them instead.
+EXPECTED_RUNTIME_BOUNDS: dict[str, str] = {
+    "mcp": ">=1.25,<2",
+    "starlette": ">=1.6,<2",
+    "uvicorn": ">=0.52,<1",
+    "pydantic": ">=2.13,<3",
+    "httpx": ">=0.28,<1",
+    "beautifulsoup4": ">=4.15,<5",
+    "markdownify": ">=1.2,<2",
+    "trafilatura": ">=2.2,<3",
+    "nodriver": ">=0.50,<1",
+    "PyMuPDF": ">=1.28,<2",
+}
+
+# The versions these bounds are checked against are NOT restated here. They are
+# read from ``requirements-ratchet.txt``, which pins all ten - it is the committed
+# environment section 10.4's coverage lane installs and runs the whole hermetic
+# suite in, so a version pinned there is one CI demonstrably works against. A
+# hand-copied table of "verified" numbers beside it would be a second copy with no
+# committed counterpart, and comparing this module's constants with this module's
+# constants proves only that it is self-consistent.
+#
+# The pairing also closes a gap in the other direction. The project is installed
+# with ``--no-deps`` in that lane, so pip never checks these bounds against the
+# pins; without a check here, raising a floor past the pinned version would leave
+# CI silently measuring a release ``pyproject.toml`` forbids.
+
+# Every major from the next one upward, per package. One rejected version is not
+# enough: the comment on REJECTED_MCP_VERSIONS above records why - a bound that
+# excludes exactly one release while admitting the ones after it satisfies a check
+# that only tried that release, and reintroduces the outage anyway.
+REJECTED_MAJOR_OFFSETS = ((1, 0), (1, 1), (2, 0))
+
+# One case per runtime package, so a single loosened bound fails exactly one test
+# and the failure names the package that lost it.
+RUNTIME_BOUND_CASES = sorted(EXPECTED_RUNTIME_BOUNDS.items())
+
 # A `pip freeze` run inside a directory containing the project records it as a
 # local path or URL - ``kindly-web-search-mcp-server @ file:///...`` - which no
 # other machine can resolve. These are the prefixes and infixes that betray it.
@@ -326,6 +383,233 @@ def test_extra_dependencies_are_all_bounded(extra: str) -> None:
     )
 
 
+def _runtime_requirements() -> dict[str, Requirement]:
+    """Parse ``[project].dependencies``, keyed by canonical distribution name
+
+    Returns:
+        A mapping of canonical package name to parsed requirement. Duplicate
+        declarations collapse here, which is why they are asserted against
+        separately - the last entry wins at resolve time, so a duplicate is a way
+        to smuggle an unbounded requirement past every other check below.
+    """
+    return {
+        canonicalize_name(requirement.name): requirement
+        for requirement in (
+            Requirement(entry) for entry in _raw_runtime_entries()
+        )
+    }
+
+
+def _raw_runtime_entries() -> list[str]:
+    """Read ``[project].dependencies`` verbatim
+
+    Returns:
+        The declared requirement strings, in declaration order.
+    """
+    with PYPROJECT_PATH.open("rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    return pyproject["project"]["dependencies"]
+
+
+def _declared_runtime_requirement(name: str, specifier: str) -> Requirement:
+    """Look up one runtime dependency as ``pyproject.toml`` actually declares it
+
+    Args:
+        name: The distribution name section 10.2 records.
+        specifier: The bound that section records, used only in the failure
+            message so a missing entry says what it should have been.
+
+    Returns:
+        The parsed requirement taken from ``[project].dependencies``.
+
+    Raises:
+        AssertionError: If the package is not declared at all, so the cases that
+            build on it report a missing dependency rather than a ``KeyError``.
+    """
+    declared = _runtime_requirements()
+    canonical = canonicalize_name(name)
+
+    assert canonical in declared, (
+        f"pyproject.toml's [project].dependencies does not declare '{name}'. "
+        f"Section 10.2 of TEST_SUITE.md requires it at '{name}{specifier}'."
+    )
+
+    return declared[canonical]
+
+
+@pytest.mark.parametrize(
+    ("name", "specifier"),
+    RUNTIME_BOUND_CASES,
+    ids=[name for name, _ in RUNTIME_BOUND_CASES],
+)
+def test_runtime_dependency_declares_expected_bound(name: str, specifier: str) -> None:
+    """Declare each runtime dependency with exactly the documented bound"""
+    declared = _runtime_requirements()
+    canonical = canonicalize_name(name)
+
+    assert canonical in declared, (
+        f"pyproject.toml's [project].dependencies does not declare '{name}'. "
+        f"Section 10.2 of TEST_SUITE.md requires it at '{name}{specifier}'."
+    )
+    assert declared[canonical].specifier == SpecifierSet(specifier), (
+        f"pyproject.toml declares '{declared[canonical]}' as a runtime dependency, "
+        f"but section 10.2 of TEST_SUITE.md requires '{name}{specifier}'."
+    )
+
+
+def _verified_runtime_version(name: str) -> Version:
+    """Read the version ``requirements-ratchet.txt`` pins for one runtime package
+
+    That lockfile is the committed environment section 10.4's coverage lane
+    installs and runs the whole hermetic suite in, so a version pinned there is one
+    CI demonstrably works against - a stronger claim than a resolve performed once
+    on a developer's machine, and one that lives in a tracked file.
+
+    Args:
+        name: The distribution name section 10.2 records.
+
+    Returns:
+        The pinned version, parsed.
+
+    Raises:
+        AssertionError: If the lockfile does not pin the package at all, which
+            would make every check derived from it vacuously true.
+    """
+    pinned = {}
+    for line in _ratchet_lockfile_pins():
+        pinned_name, separator, version = line.partition("==")
+        if separator:
+            pinned[canonicalize_name(pinned_name)] = Version(version)
+
+    canonical = canonicalize_name(name)
+    assert canonical in pinned, (
+        f"requirements-ratchet.txt does not pin '{name}', so the bound checks "
+        "derived from it would pass without testing anything. Section 10.4's lane "
+        "installs the project with '--no-deps' on top of that lockfile, so every "
+        "runtime dependency has to be pinned there for the lane to run at all."
+    )
+
+    return pinned[canonical]
+
+
+@pytest.mark.parametrize(
+    ("name", "specifier"),
+    RUNTIME_BOUND_CASES,
+    ids=[name for name, _ in RUNTIME_BOUND_CASES],
+)
+def test_runtime_dependency_rejects_every_later_major(
+    name: str, specifier: str
+) -> None:
+    """Exclude every major release above the pinned one, not just the next"""
+    declared = _declared_runtime_requirement(name, specifier)
+    verified = _verified_runtime_version(name)
+    rejected = [
+        Version(f"{verified.major + major}.{minor}.0")
+        for major, minor in REJECTED_MAJOR_OFFSETS
+    ]
+
+    # Read from pyproject.toml and compared against majors derived from a version
+    # pinned in requirements-ratchet.txt - two committed artefacts. Asking the
+    # declared bound whether it matches the declared bound passes for any bound at
+    # all, including one whose ceiling had been widened away in both places at once.
+    admitted = [
+        str(version) for version in rejected if declared.specifier.contains(version)
+    ]
+
+    assert not admitted, (
+        f"pyproject.toml declares '{declared}', which admits {admitted}. The "
+        f"documented 'uvx --from git+https://...' install re-resolves from PyPI on "
+        f"every start, so a major release reaches every user with no commit here "
+        f"and no CI run. This project has twice been broken exactly that way."
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "specifier"),
+    RUNTIME_BOUND_CASES,
+    ids=[name for name, _ in RUNTIME_BOUND_CASES],
+)
+def test_runtime_dependency_admits_the_pinned_version(
+    name: str, specifier: str
+) -> None:
+    """Keep the version the coverage lane actually runs the suite against installable"""
+    declared = _declared_runtime_requirement(name, specifier)
+    verified = _verified_runtime_version(name)
+
+    # The ceiling case above is satisfied by an absurdly tight bound as well as by
+    # a correct one, so the floor needs its own case. It is also the only thing
+    # holding the two files together in this direction: section 10.4's lane installs
+    # the project with `--no-deps`, so pip never compares these pins against these
+    # bounds, and a raised floor would otherwise leave CI measuring a version
+    # pyproject.toml forbids - silently, because the lane would still go green.
+    assert declared.specifier.contains(verified), (
+        f"pyproject.toml declares '{declared}', which excludes {verified} - the "
+        f"version requirements-ratchet.txt pins and section 10.4's coverage lane "
+        f"therefore runs the whole suite against. Raising a runtime floor means "
+        f"regenerating that lockfile in the same pull request."
+    )
+
+
+def test_runtime_dependencies_are_all_bounded() -> None:
+    """Refuse an unbounded entry in the list users install
+
+    ⚠️ **No mutation kills this case alone, and that was measured, not assumed.**
+    Removing a bound from ``pyproject.toml`` also fails
+    ``..._declares_expected_bound`` and ``..._rejects_every_later_major`` for that
+    package. Worse, the class this checks is strictly *smaller* than theirs:
+    ``markdownify>=0`` has a specifier, so this passes it, while the rejected-major
+    case still fails — verified by mutation.
+
+    It is kept anyway, deliberately. It is the direct statement of the rule this
+    module's own failure messages have recited since the tooling extras were
+    guarded — "this project has twice been broken by an unbounded dependency" —
+    now applied to the list users install rather than the one developers install,
+    and it mirrors ``test_extra_dependencies_are_all_bounded`` so the two
+    populations read the same way. Delete it if the redundancy ever costs
+    something; do not delete the rejected-major case in its place, which is the
+    one carrying the weight.
+    """
+    unbounded = sorted(
+        name
+        for name, requirement in _runtime_requirements().items()
+        if len(requirement.specifier) == 0
+    )
+
+    assert not unbounded, (
+        f"pyproject.toml declares {unbounded} as runtime dependencies without a "
+        "version bound. This project has twice been broken by an unbounded "
+        "dependency, which is why section 10.2 states bounds rather than "
+        "'current' - and the documented install path re-resolves these from PyPI "
+        "on every start, so they reach users faster than the tooling extras do."
+    )
+
+
+def test_runtime_dependencies_are_exactly_the_expected_packages() -> None:
+    """Keep [project].dependencies to exactly the packages section 10.2 records"""
+    declared = set(_runtime_requirements())
+    expected = {canonicalize_name(name) for name in EXPECTED_RUNTIME_BOUNDS}
+
+    assert declared == expected, (
+        f"pyproject.toml declares runtime dependencies {sorted(declared)}, but "
+        f"section 10.2 of TEST_SUITE.md records {sorted(expected)}. Unexpected: "
+        f"{sorted(declared - expected)}; missing: {sorted(expected - declared)}. A "
+        "new runtime dependency needs a documented bound before it can ship."
+    )
+
+
+def test_runtime_dependencies_declare_each_package_once() -> None:
+    """Refuse a duplicate declaration, which would hide an unbounded entry"""
+    names = [canonicalize_name(Requirement(entry).name) for entry in _raw_runtime_entries()]
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+
+    assert not duplicated, (
+        f"pyproject.toml declares {duplicated} as a runtime dependency more than "
+        "once. The last entry wins at resolve time, so a duplicate is a way to "
+        "smuggle an unbounded requirement past every other check in this module."
+    )
+
+
 def _ratchet_lockfile_text() -> str:
     """Read the committed ratchet lockfile
 
@@ -337,8 +621,9 @@ def _ratchet_lockfile_text() -> str:
     """
     assert RATCHET_LOCKFILE_PATH.is_file(), (
         f"{RATCHET_LOCKFILE_PATH.name} is missing. Section 10.4's coverage-ratchet lane "
-        "installs from it and has no other dependency source - requirements.txt "
-        "covers runtime only and carries no pytest, coverage or diff-cover."
+        "installs from it and has no other dependency source: it is the only "
+        "committed lockfile in the repository, and pyproject.toml's ranges cannot "
+        "hold a coverage baseline steady the way exact pins can."
     )
     return RATCHET_LOCKFILE_PATH.read_text(encoding="utf-8")
 
@@ -464,16 +749,23 @@ def test_ratchet_lockfile_header_records_regeneration() -> None:
 
 
 def _design_table_constraints() -> dict[str, set[str]]:
-    """Parse section 10.2's dependency table out of ``TEST_SUITE.md``
+    """Parse section 10.2's dependency tables out of ``TEST_SUITE.md``
 
     Reads the Constraint cell of every row, which is where the policy actually
-    lives. ``coverage`` yields two specifiers because the pinned lane and every
-    other lane differ. The result is an unordered set, so this cannot detect the
-    two ``coverage`` lanes being described the wrong way round in prose; that one
-    row is checked by review, not here.
+    lives. Section 10.2 carries **two** tables - the tooling extras and the
+    runtime dependencies - under one ``###`` heading, and this walks both: the
+    runtime table sits under a ``####`` sub-heading, which does not terminate the
+    section, so one parse covers both populations and neither can be documented
+    without being checked.
+
+    ``coverage`` yields two specifiers because the pinned lane and every other
+    lane differ. The result is an unordered set, so this cannot detect the two
+    ``coverage`` lanes being described the wrong way round in prose; that one row
+    is checked by review, not here.
 
     Returns:
-        A mapping of canonical tool name to the specifiers its row declares.
+        A mapping of canonical dependency name to the specifiers its row
+        declares.
 
     Raises:
         AssertionError: If section 10.2 cannot be located.
@@ -492,27 +784,46 @@ def _design_table_constraints() -> dict[str, set[str]]:
         if not stripped.startswith("|"):
             continue
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        # The header row and the `|---|` separator carry no backticked tool name.
+        # The header row and the `|---|` separator carry no backticked dependency name.
         names = BACKTICKED_PATTERN.findall(cells[0]) if cells else []
         if len(cells) < 2 or not names:
             continue
-        constraints[canonicalize_name(names[0])] = set(
-            BACKTICKED_PATTERN.findall(cells[1])
+        canonical = canonicalize_name(names[0])
+        # Two tables now sit under this heading, so one name appearing in both is
+        # reachable for the first time - and a plain assignment would keep the
+        # later row and drop the earlier one without saying so, leaving the
+        # comparison below reading a policy nobody wrote.
+        assert canonical not in constraints, (
+            f"Section 10.2 of TEST_SUITE.md has more than one row for "
+            f"'{canonical}'. One row per dependency across every table under that "
+            "heading: a second row silently replaces the first here, so the bound "
+            "actually enforced would be whichever the document happens to list "
+            "last."
         )
+        constraints[canonical] = set(BACKTICKED_PATTERN.findall(cells[1]))
 
     return constraints
 
 
-def _expected_specifiers_by_tool() -> dict[str, set[str]]:
-    """Collapse the per-extra bounds into what section 10.2's table should declare
+def _expected_specifiers_by_dependency() -> dict[str, set[str]]:
+    """Collapse every declared bound into what section 10.2 should document
+
+    Covers both populations - the tooling extras and the runtime dependencies -
+    because section 10.2 documents both and the parser reads both. Keeping them
+    in one mapping is what makes the whole-table comparison non-vacuous: a
+    runtime row added to the document without a bound asserted here fails, and so
+    does the reverse.
 
     Returns:
-        A mapping of canonical tool name to every specifier that binds it.
+        A mapping of canonical dependency name to every specifier that binds it.
     """
     collected: dict[str, set[str]] = {}
     for bounds in EXPECTED_EXTRA_BOUNDS.values():
         for name, specifier in bounds.items():
             collected.setdefault(canonicalize_name(name), set()).add(specifier)
+
+    for name, specifier in EXPECTED_RUNTIME_BOUNDS.items():
+        collected.setdefault(canonicalize_name(name), set()).add(specifier)
 
     return collected
 
@@ -522,7 +833,7 @@ def _specifier_sets(entries: set[str], context: str) -> set[SpecifierSet]:
 
     Args:
         entries: The backticked strings taken from a Constraint cell.
-        context: The tool the cell belongs to, used in the failure message.
+        context: The dependency the cell belongs to, used in the failure message.
 
     Returns:
         One :class:`SpecifierSet` per entry, compared by meaning rather than by
@@ -547,10 +858,10 @@ def _specifier_sets(entries: set[str], context: str) -> set[SpecifierSet]:
     return converted
 
 
-def test_design_table_lists_every_expected_tool() -> None:
-    """Parse the whole of section 10.2, so the per-tool comparison cannot go vacuous"""
+def test_design_table_lists_every_expected_dependency() -> None:
+    """Parse the whole of section 10.2, so the per-row comparison cannot go vacuous"""
     documented = set(_design_table_constraints())
-    expected = set(_expected_specifiers_by_tool())
+    expected = set(_expected_specifiers_by_dependency())
 
     assert documented == expected, (
         f"Section 10.2 of TEST_SUITE.md lists {sorted(documented)} but this module expects "
@@ -559,14 +870,16 @@ def test_design_table_lists_every_expected_tool() -> None:
     )
 
 
-@pytest.mark.parametrize("tool", sorted(_expected_specifiers_by_tool()))
-def test_design_table_matches_expected_bounds(tool: str) -> None:
-    """Keep section 10.2's table and the bounds asserted here in agreement"""
-    documented = _specifier_sets(_design_table_constraints().get(tool, set()), tool)
-    expected = _specifier_sets(_expected_specifiers_by_tool()[tool], tool)
+@pytest.mark.parametrize("dependency", sorted(_expected_specifiers_by_dependency()))
+def test_design_table_matches_expected_bounds(dependency: str) -> None:
+    """Keep section 10.2's tables and the bounds asserted here in agreement"""
+    documented = _specifier_sets(
+        _design_table_constraints().get(dependency, set()), dependency
+    )
+    expected = _specifier_sets(_expected_specifiers_by_dependency()[dependency], dependency)
 
     assert documented == expected, (
-        f"Section 10.2 of TEST_SUITE.md constrains '{tool}' to "
+        f"Section 10.2 of TEST_SUITE.md constrains '{dependency}' to "
         f"{sorted(str(entry) for entry in documented)}, but this module asserts "
         f"{sorted(str(entry) for entry in expected)} against pyproject.toml. The "
         "design document is the policy: change it and this table together."

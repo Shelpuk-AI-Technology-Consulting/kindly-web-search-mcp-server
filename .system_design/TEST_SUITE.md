@@ -2750,12 +2750,16 @@ dependency, which is why `test_dependency_constraints.py` exists. **Update
 policy:** bounds are raised in a PR that runs the full suite against the new
 version; Dependabot may propose, never auto-merge.
 
-**This table is machine-checked.** `tests/test_dependency_constraints.py` parses
-it and fails if it and `pyproject.toml` disagree in either direction, so a
-docs-only edit here turns CI red. Change both in the same PR. `packaging>=24` is
-deliberately one-sided — it is the only entry without an upper bound, because the
-guard module needs a floor for `Requirement`/`SpecifierSet` behaviour and
-`packaging` has no breaking-major cadence to defend against.
+**Both tables in this section are machine-checked**, by the same parser.
+`tests/test_dependency_constraints.py` reads every row under this heading and
+fails if it and `pyproject.toml` disagree in either direction, so a docs-only edit
+to either turns CI red. Change both in the same PR. One row per dependency across
+both tables: a second row for the same name is refused, because it would silently
+replace the first and leave the enforced bound decided by document order.
+`packaging>=24` is deliberately one-sided — it is the only entry **in either
+table** without an upper bound, because the guard module needs a floor for
+`Requirement`/`SpecifierSet` behaviour and `packaging` has no breaking-major
+cadence to defend against.
 
 **The `mutation` extra is additive and is never installed alone.** `mutmut` drives
 pytest over the L1 suite, which needs `hypothesis` and `pytest-asyncio`; mutmut's
@@ -2777,6 +2781,90 @@ justified in `pyproject.toml`.
 
 **No HTTP-mocking library.** `httpx.MockTransport` is already the pattern in
 `test_searxng_unit.py:57` and covers every case here.
+
+#### Runtime dependencies — the bounds that reach users
+
+The table above governs what *developers* install. This one governs what *users*
+install, and it is the more dangerous of the two: the documented
+`uvx --from git+https://…` path re-resolves every entry from PyPI **on each
+start** and ignores any lock file, so a breaking major arrives with no commit
+here, no CI run and no alert. The first signal is a user whose server stops
+starting.
+
+| Dependency | Constraint | Purpose |
+|---|---|---|
+| `mcp` | `>=1.25,<2` | The MCP SDK. `server.py` imports `FastMCP` from `mcp.server.fastmcp`, which 2.0.0 removed |
+| `starlette` | `>=1.6,<2` | ASGI framework; `server.py` imports `CORSMiddleware` from it directly |
+| `uvicorn` | `>=0.52,<1` | ASGI server; `server.py` imports it directly to serve the app |
+| `pydantic` | `>=2.13,<3` | The `web_search` and `get_content` response models in `models.py` |
+| `httpx` | `>=0.28,<1` | HTTP client for every API-backed handler, with the `[socks]` extra that supplies `socksio` — the README documents SOCKS proxying through it |
+| `beautifulsoup4` | `>=4.15,<5` | With `markdownify`, the fallback extraction path in `scrape/extract.py` when `trafilatura` yields nothing |
+| `markdownify` | `>=1.2,<2` | HTML to Markdown, in that same fallback and in the StackExchange loader |
+| `trafilatura` | `>=2.2,<3` | Primary main-content extraction |
+| `nodriver` | `>=0.50,<1` | The headless Chromium worker behind the universal HTML loader |
+| `PyMuPDF` | `>=1.28,<2` | PDF to text, used by the arXiv loader |
+
+**Nine of these ten were bare names**, while the identical rule was already
+machine-checked for the tooling extras above — the dependencies developers
+install were guarded and the dependencies users install were not. `starlette`
+crossed 0.x → 1.x in that gap with nothing to notice it.
+
+**How the numbers were chosen.** Each ceiling is the next major of the version
+the entry was verified against; each floor is that version's minor series, which
+stops a constrained resolve from silently selecting an older, untested API — the
+reasoning `mcp>=1.25` already records. "Verified" means a clean resolve into a
+fresh CPython 3.13 environment on 2026-09-06, after which the server module,
+`CORSMiddleware` and `FastMCP` all imported. **Bounds are chosen against a real
+resolve, not by inspection**, because `mcp` constrains several of these itself —
+it asks for `pydantic>=2.11,<3`, `httpx>=0.27.1,<1` and, notably, `starlette>=0.27`
+with **no ceiling at all**, which is the actual mechanism by which the starlette
+major slipped through. The bounded set resolves to the same versions the
+unbounded one did, so no user's installation changes.
+
+**`starlette` is bounded `<2`, not `<1`.** 1.0 shipped 22 March 2026 and is the
+current line. Its breaking change was removing `on_startup`/`on_shutdown` in
+favour of `lifespan`; this server uses neither, because it only wraps the ASGI
+app `FastMCP` builds. Holding below 1.0 would have rolled users back off the
+release they already run, to avoid a break that does not apply to this code.
+
+🔴 **Four of these ten ceilings are nominal — read them as such.** A `<next major`
+bound only defends against anything if the upstream actually signals breakage by
+bumping its major. Verified against upstream on 2026-09-06:
+
+- **`uvicorn` (0.52.4) and `nodriver` (0.50.3)** are pre-1.0, where semver itself
+  says a *minor* may break. `<1` is not a defence against their next breaking
+  release.
+- **`PyMuPDF`** has been 1.x for its whole history and ships API removals in
+  minors — its changelog carries "Removed PDF linearization support", "Removed
+  deprecated functions" and "Removed obsolete classic implementation". `<2` admits
+  every one of those.
+- **`httpx`** will probably never publish 1.0.0. Its last stable release is
+  0.28.1, and the actively maintained successor is a **differently named
+  distribution**, `httpx2` (Pydantic Services, with the original author involved);
+  the MCP SDK's own 2.0 has already moved to it. `<1` is a ceiling nothing is
+  expected to reach, and the real migration risk here is a package rename, which
+  **no version bound can see**.
+
+They are kept anyway, and this is the reasoning rather than an oversight: the
+alternative is pinning each to a single minor (`uvicorn>=0.52,<0.53` and so on),
+which converts every upstream minor into a forced pull request on a path that
+re-resolves at each user launch — and the ceilings still block the catastrophic
+case, a surprise major, at no cost. It matches the `ruff>=0.6,<1` precedent above.
+**What actually protects these four is the suite**, not the bound: six test
+modules import `kindly_web_search_mcp_server.server`, so a release that breaks an
+import fails CI before it can be adopted. Tighten a bound the moment one of them
+breaks a minor in practice; the `httpx` row instead needs watching for the
+`httpx2` rename, which is a code change, not a bound change.
+
+**Both tables in this section are machine-checked, and by the same code.**
+`tests/test_dependency_constraints.py` parses every row under this heading, so
+the runtime rows and the tooling rows are compared with `pyproject.toml` the same
+way and a docs-only edit to either turns CI red. The runtime rows carry three
+checks the tooling rows do not: that the declared bound **excludes the next
+major** computed from the verified version, that it still **admits** that
+verified version, and that `[project].dependencies` holds exactly this set. The
+first two are what a table-versus-table comparison cannot see — a ceiling widened
+in both places at once agrees with itself perfectly.
 
 ### 10.3 CI
 
@@ -3667,10 +3755,14 @@ mechanism:
   difference.
 
 **Measurement environment for the baseline.** Dependencies come from the committed
-`requirements-ratchet.txt` — the single authority for this lane, not
-`requirements.txt`, which covers runtime only and has no `pytest`, `coverage` or
-`diff-cover`. Pinning those with `==` while leaving their transitive dependencies
-free would reopen the same hole one level down.
+`requirements-ratchet.txt`, the single authority for this lane and now the only
+committed lockfile in the repository — this sentence used to contrast it with a
+`requirements.txt` that covered runtime only and carried no `pytest`, `coverage`
+or `diff-cover`. That file has since been deleted (§10.2), so the contrast is
+gone but the requirement is not: this lane needs exact pins, which
+`pyproject.toml`'s ranges cannot give it. Pinning the named tools with `==` while
+leaving their transitive dependencies free would reopen the same hole one level
+down.
 
 `requirements-ratchet.txt` is regenerated deliberately, and its header records how:
 install a `ratchet` extra — declaring pytest, pytest-asyncio, hypothesis, coverage,
@@ -3731,9 +3823,11 @@ installs the project with `--no-deps`, so nothing else resolves `mcp`, `httpx`,
 has a consequence the reset rule above must absorb: **a runtime dependency bump
 moves the baseline**, because a different `mcp` or `nodriver` takes different
 branches in the hermetic suite. The reset trigger is therefore a `coverage`,
-Python, **or pinned runtime-dependency** update, not the first two alone. Where
-this file and `requirements.txt` disagree, this file wins for this lane; they are
-permitted to diverge.
+Python, **or pinned runtime-dependency** update, not the first two alone. This
+file's runtime pins may sit anywhere inside §10.2's runtime bounds and need not
+match what a fresh resolve selects: the lane measures a fixed environment, not
+the newest one. A pin that falls *outside* those bounds is drift, because it
+would measure a version `pyproject.toml` forbids users from installing.
 
 Adopting `--require-hashes` also means relaxing
 `test_ratchet_lockfile_pins_every_entry`, which currently requires every line to

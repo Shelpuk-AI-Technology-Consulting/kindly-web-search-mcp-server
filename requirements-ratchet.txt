@@ -2,10 +2,16 @@
 #
 # GENERATED FILE, do not hand-edit. This is the single dependency authority for
 # the `coverage` job of TEST_SUITE.md section 10.3, which measures the committed
-# coverage baseline. requirements.txt is not a substitute: it covers runtime only
-# and carries no pytest, coverage or diff-cover. Every entry is exact, including
-# the transitive ones - pinning the named tools while leaving their dependencies
-# free would reopen the same hole one level down.
+# coverage baseline, and now the only committed lockfile here - this header used to
+# contrast it with a requirements.txt that covered runtime only and carried no
+# pytest, coverage or diff-cover; that file has since been deleted (section 10.2).
+# Every entry is exact, including the transitive ones - pinning the named tools
+# while leaving their dependencies free would reopen the same hole one level down.
+#
+# The runtime pins here are also read by tests/test_dependency_constraints.py as the
+# versions section 10.2's runtime bounds are checked against, since this is the
+# environment CI actually runs the suite in. Raising a runtime floor in
+# pyproject.toml means regenerating this file in the same pull request.
 #
 # Regenerate deliberately, in a clean Python 3.13 Linux virtualenv:
 #

@@ -4,10 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindly-web-search-mcp-server"
-version = "0.1.8"
+version = "0.1.9"
 description = "MCP server: Serper web search + robust content retrieval."
 readme = "README.md"
 requires-python = ">=3.13"
+# Every bound below comes from §10.2 of `.system_design/TEST_SUITE.md` and is
+# asserted against it, in both directions, by `tests/test_dependency_constraints.py`.
+#
+# These are the bounds that reach users. The documented install path
+# (`uvx --from git+https://...`) re-resolves every one of them from PyPI on each
+# start and ignores any lock file, so a breaking major arrives with no commit here,
+# no CI run and no alert — the first signal is a user whose server stops starting.
+# Nine of these ten were bare names while the identical rule was already enforced
+# for the tooling extras below: the dependencies developers install were guarded
+# and the dependencies users install were not.
+#
+# Each ceiling is the next major of the version the entry was verified against, and
+# each floor is that version's minor series — the same reasoning `mcp>=1.25` records
+# below. "Verified" means a clean resolve into a fresh CPython 3.13 environment on
+# 2026-09-06, after which the server module, `CORSMiddleware` and `FastMCP` were all
+# imported successfully. Raising a bound is a deliberate PR that runs the full suite
+# against the new version; Dependabot may propose, never auto-merge.
 dependencies = [
     # `<2`: the MCP SDK dropped `mcp.server.fastmcp` in 2.0.0, and `server.py` imports
     # `FastMCP` from it. The documented install path (`uvx --from git+https://...`)
@@ -20,15 +37,35 @@ dependencies = [
     # `server.py` imports both directly to wrap the ASGI app in CORS middleware and
     # serve it. They arrive transitively via `mcp` today, which is exactly the kind of
     # undeclared dependency `tests/test_dependency_constraints.py` exists to catch.
-    "starlette",
-    "uvicorn",
-    "pydantic",
-    "httpx[socks]",
-    "beautifulsoup4",
-    "markdownify",
-    "trafilatura",
-    "nodriver",
-    "PyMuPDF",
+    #
+    # `starlette<2` and not `<1`: 1.0 shipped 22 March 2026 and is the current line —
+    # a clean resolve selects 1.6.0, and this project crossed that major without
+    # noticing while the entry was unbounded. The 1.0 break was the removal of
+    # `on_startup`/`on_shutdown` in favour of `lifespan`, and this server uses
+    # neither: it only wraps the ASGI app `FastMCP` builds. Bounding below 1.0 would
+    # roll users back off the release they already run, to avoid a break that does
+    # not apply to this code.
+    "starlette>=1.6,<2",
+    # 🔴 `uvicorn`, `nodriver`, `httpx` and `PyMuPDF` have ceilings that are NOMINAL:
+    # the first two are pre-1.0 where a minor may break, `PyMuPDF` removes API in 1.x
+    # minors, and `httpx` is unlikely ever to ship 1.0 — its maintained successor is a
+    # differently named distribution, `httpx2`. Do not read `<1` or `<2` on these four
+    # as protection. Kept anyway because they still block a surprise major at no cost,
+    # and because pinning each to one minor would force a PR per upstream minor on a
+    # path that re-resolves at every user launch. §10.2 records the full reasoning and
+    # what protects them instead.
+    "uvicorn>=0.52,<1",
+    # `mcp` requires `pydantic>=2.11,<3`; this floor is the verified release, which is
+    # inside that range, so the two constraints resolve together rather than fighting.
+    "pydantic>=2.13,<3",
+    # The `[socks]` extra is load-bearing: it installs `socksio`, without which a
+    # SOCKS proxy configuration fails at request time rather than at install time.
+    "httpx[socks]>=0.28,<1",
+    "beautifulsoup4>=4.15,<5",
+    "markdownify>=1.2,<2",
+    "trafilatura>=2.2,<3",
+    "nodriver>=0.50,<1",
+    "PyMuPDF>=1.28,<2",
 ]
 
 [project.optional-dependencies]
