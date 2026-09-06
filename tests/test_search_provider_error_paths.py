@@ -28,7 +28,12 @@ leaves a way to pass without an exchange.
 credential as a URL query parameter, so ``httpx``'s own
 :class:`~httpx.HTTPStatusError` message quotes a URL containing the API key.
 Asserting on that string would make the key part of a pinned expectation. See
-``.system_design/TEST_SUITE.md`` section 14, which records the leak itself.
+``.system_design/TEST_SUITE.md`` section 14, which records the leak -- now
+**closed**, and closed in a way that leaves this rule untouched. The repair
+converts the exception in the *router*; these cases call the provider coroutines
+directly, below it, so what arrives here is still the raw
+:class:`~httpx.HTTPStatusError` with the URL in its message.
+``tests/test_provider_credential_disclosure.py`` owns the repaired boundary.
 """
 
 from __future__ import annotations

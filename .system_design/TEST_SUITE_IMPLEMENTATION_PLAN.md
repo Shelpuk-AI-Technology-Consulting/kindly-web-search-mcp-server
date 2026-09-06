@@ -1253,7 +1253,10 @@ duplicating tests or touching the same files.
   step found and deliberately did **not** repair are in §14: SerpBase's API key
   reaching the caller inside an httpx error message, SearXNG's default arming no
   request timeout at all, and the six providers disagreeing on what a reshaped
-  result container means. **Nothing was retired** — the three overlapping SearXNG
+  result container means. **The first of those three is now CLOSED**, repaired as
+  a standalone change once it was measured to reach the *client* rather than only
+  a local log; §14 carries the repair and a second disclosure of the same class
+  found alongside it. The other two remain open and still have no owner. **Nothing was retired** — the three overlapping SearXNG
   cases were rewritten in place, so no `## Relocated claims` row was needed.
 
 ---

@@ -35,13 +35,37 @@ Every provider module must:
 2. Return `list[WebSearchResult]` with all four required fields populated —
    `page_content` is documented as always a string, so a provider that leaves it
    empty must leave it `""`, never `None`.
-3. Raise `WebSearchProviderError` for a provider-side failure. An `httpx`
-   exception escaping to the router is a finding: the router cannot tell a bad
-   key from a network blip if it sees the transport's exception type.
+3. Let an `httpx.HTTPError` reach the router, which converts it. **This rule
+   used to say the opposite** — that an `httpx` exception escaping to the router
+   was a finding — and it described something that never existed: no provider
+   raises `WebSearchProviderError`, and five of the six call `raise_for_status()`
+   and let httpx's exception out. The router is now the enforcement point.
+   `search_web` catches the whole `httpx.HTTPError` family and re-raises
+   `SearchProviderTransportError`, whose message is built from the provider's
+   label and the HTTP status, chained `from` the original so the status stays
+   readable through `__cause__`.
+
+   The finding is therefore the opposite shape: **a provider that catches an
+   `httpx` error and re-quotes its message is a finding**, because that message
+   contains the request URL and the conversion at the router can no longer remove
+   it. `searxng.py`'s aggregate is the one place this shape exists; it is
+   measured not to disclose today and is called out in TEST_SUITE.md §14. A
+   provider that wraps `raise_for_status()` to "comply" with the old wording
+   bypasses the conversion entirely.
 4. **Never put the API key anywhere but the request it authenticates.** Not in a
    log line, not in an exception message, not in a diagnostics payload. Check
    every new error path — a common shape is `raise ... f"{response.text}"` where
    the provider echoed the request back.
+
+   Two credentials do not travel in a header and so are reachable through a URL:
+   SerpBase's `api_key` query parameter and SearXNG's base-URL userinfo. Both
+   have disclosed to the MCP client in the past — see TEST_SUITE.md §14 — so
+   **anything derived from a request URL or from `SEARXNG_BASE_URL` is
+   credential-bearing until shown otherwise**, including a log line. Redaction is
+   not automatically the answer: `redact_url_credentials` matches `://user:pass@`
+   and is measured useless on a value with no scheme, which is exactly what
+   reaches the "no valid URLs" branch. Prefer dropping the value over filtering
+   it. `tests/test_provider_credential_disclosure.py` holds this.
 
 `serpbase.py` is the shared SERP base class. A change there applies to every
 provider built on it; check the others still hold their contract afterwards.

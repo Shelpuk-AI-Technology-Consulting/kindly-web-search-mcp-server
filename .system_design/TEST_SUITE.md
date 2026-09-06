@@ -313,7 +313,10 @@ assertion passes on an exchange that never happened.
 reads `response.status_code`. Not tidiness: SerpBase sends its credential as a
 URL query parameter, so httpx's own error message quotes a URL containing the API
 key, and a message assertion would make that key part of a pinned expectation.
-§14 records the leak itself.
+§14 records the leak, which is now **closed** — and records why this practice
+survives the repair unchanged. The repair converts the exception at the *router*;
+these cases drive the provider coroutines directly, below it, so the raw
+`httpx.HTTPStatusError` they receive still quotes the URL.
 
 **One production defect was in scope here rather than filed separately** —
 **FIXED in E5-8 (2026-09-05)** — because it is the thing that made these errors
@@ -4134,20 +4137,113 @@ is nothing to test.
   `_is_snap_browser`), which implies breakage has happened and will recur.
 - **`_split_worker_diagnostics` is dead code** (§4.3), flagged for removal under
   a separate change.
-- **SerpBase's API key travels in the URL, and reaches the caller in an error
-  message.** `serpbase.py` puts `api_key` in the request `params`, so httpx's
-  `HTTPStatusError` message quotes the full URL — key included — and
-  `server.py`'s `search_web` call has no `except` around it, so a provider
-  exception propagates out of the MCP tool. Measured on a `401`: the message
-  reads `Client error '401 Unauthorized' for url
-  'https://api.serpbase.dev/google/search?q=…&api_key=<the key>'`.
-  `redact_url_credentials` does not help as written — it strips URL *userinfo*,
-  not a query parameter. **Found by E5-8 while pinning the error paths; not
-  repaired there**, because the repair is a redaction change in a different
-  subsystem and the step was scoped to a single production edit. E5-8's cases
-  read the status structurally instead of matching the message, so nothing in
-  the suite pins the leaking string. E9-1 owns the emit boundary and is the
-  natural home; the parameter itself is SerpBase's API and cannot move.
+- **SerpBase's API key travelled in the URL and reached the MCP client in an
+  error message. CLOSED**, with a second disclosure of the same class found and
+  closed alongside it. `serpbase.py` puts `api_key` in the request `params`;
+  `httpx.HTTPStatusError`'s message quotes the full URL, key included; and
+  `search_web` was called with no `except` around it, so the provider exception
+  propagated out of the MCP tool and FastMCP rendered its message into the
+  `ToolError` returned to the caller. Measured end-to-end through
+  `mcp.call_tool` on `401`, `429` and `500`, not only at the provider.
+
+  **The worse fact, and the reason it was repaired rather than left for E9-1:
+  the exposure reached the client, not only a local log.** For this server the
+  client is an LLM agent, so the key landed in a model provider's request and in
+  the conversation transcript.
+
+  **Repaired by interception, not by redaction**, and the choice was forced by a
+  measurement rather than preferred. FastMCP composes the client-visible text out
+  of `str(exc)` of whatever the tool raises — measured: `__cause__` and the
+  traceback are *not* rendered — so nothing that only sanitises a string can
+  change what the client receives without the exception first being caught. Given
+  that a catch was required anyway, dropping the URL beats filtering it: a rule
+  stripping parameters named `api_key`, `key` or `token` is a denylist that fails
+  open and silently on the first provider that names its parameter something
+  else. `search_web` now converts the whole `httpx.HTTPError` family into
+  `SearchProviderTransportError`, whose message is built from the provider's
+  label and the HTTP status alone, chained `from` the original so the status
+  stays readable structurally. The conversion sits in the router, not in the tool
+  function, because the router is the only place the selected provider's label is
+  known — deriving it a second time in `server.py` would duplicate the selection
+  and let the two disagree.
+
+  **The whole `httpx.HTTPError` family is caught although only one member
+  disclosed.** Measured against a URL carrying both userinfo and a query-string
+  secret: `HTTPStatusError` alone quotes the URL in its message, while
+  `ReadTimeout`, `ConnectTimeout`, `ConnectError`, `ReadError` and
+  `RemoteProtocolError` reach the URL only through `.request.url`, which nothing
+  renders. Catching the base class makes the repair independent of httpx's
+  message formatting, for the same reason the URL is dropped rather than
+  pattern-matched.
+
+  **Second disclosure, found while repairing the first.**
+  `_get_searxng_base_urls` quoted its raw input back —
+  `f"No valid URLs found in SEARXNG_BASE_URL: {raw!r}"` — and `SEARXNG_BASE_URL`
+  carries its credential in the URL's *userinfo*. The branch is reached whenever
+  no entry parses to both a scheme and a host, which an operator meets by
+  mistyping or omitting the scheme. Measured through the real tool: the password
+  came back in the `ToolError`. Not an HTTP-error path, so the interception above
+  does not cover it — the exception is provider-authored and passes through by
+  design. The message now names the variable and the shape required of it.
+  `redact_url_credentials` was no help here either, and for the same reason it
+  was no help with the first: it matches `://user:pass@`, and a value with no
+  scheme is exactly what reaches this branch.
+
+  **E5-8's practice of reading the status structurally is unchanged and still
+  required.** Those cases drive the provider coroutines *directly*, below the
+  router, where `httpx.HTTPStatusError` still carries the URL — the repair is at
+  the router, not in httpx. A message assertion there would still pin a
+  credential.
+
+  Held by `tests/test_provider_credential_disclosure.py` at two layers: the
+  conversion as a unit, and the text a client actually receives through
+  `mcp.call_tool`. Ten mutations, no survivor. The six-provider sweep is kept
+  non-vacuous by a control asserting each row's credential was genuinely in
+  flight — in the URL for the two providers that carry it there, in a header for
+  the four that do not — because an absence assertion over a provider that never
+  sends a credential proves nothing. Fourteen mutations, no survivor.
+
+  **The log path is the exception path's sibling, and was repaired with it.**
+  Three `searxng.py` log sites wrote the base URL, userinfo included: the `INFO`
+  naming the instance about to be queried, the `WARNING` naming the one that
+  failed, and the `WARNING` reporting a rejected entry. Under the stdio transport
+  the server's stderr is read by the MCP host, so these persist rather than
+  vanish, and `.github/review/rules/search-providers.md` already forbade a key in
+  a log line. Deferring them would have left the leak on the exact input the new
+  module proves clean. **The obvious repair works at two of the three sites and
+  not the third**, which is the part worth remembering: `redact_url_credentials`
+  strips `://user:pass@`, so it fixes the two URLs that passed validation and is
+  measured to return the *rejected* entry unchanged — an entry reaches that
+  branch precisely because it has no usable scheme. That site drops the value and
+  reports the entry's position instead. Using the helper unchanged at two new
+  call sites does not widen it, so E5-7's scope is untouched.
+
+  **One reason recorded here was too broad and has been narrowed to what was
+  measured.** The catch covers `httpx.HTTPError`, and the justification first
+  written — "every httpx error carries `.request.url`" — is false. On httpx
+  0.28.1 `InvalidURL`, `CookieConflict` and `StreamError` are **not** `HTTPError`
+  subclasses, and `InvalidURL` has no `.request` at all. They are unreachable
+  from the five providers that build their URL from a constant; a provider added
+  later that derives its URL from configuration would inherit an uncaught family.
+
+  **A provider-authored message can still be httpx-formatted**, which qualifies
+  the pass-through rule. `search_searxng`'s aggregate interpolates
+  `f"... Last error: {last_error}"`, where `last_error` is whatever the client
+  raised. `SearxngError` is not an `httpx.HTTPError`, so the router passes it
+  through untouched. Measured across `ConnectError`, `UnsupportedProtocol` and
+  `InvalidURL`: none of their messages quotes the URL, so there is no live leak —
+  but this is the one place where the upstream change the family-wide catch
+  exists to survive would reopen the disclosure anyway. The provider rules now
+  name re-quoting an httpx message as the finding.
+
+  **No plan step owns this change, deliberately.** It is a standalone repair of a
+  defect an earlier step found and scoped out, which is the same shape as the
+  `_is_snap_browser` entry below — that one also landed as a change of its own and
+  is recorded here rather than as a step. E9-1 still owns the diagnostics emit
+  boundary and §7.1's credential-bearing-query-parameter rule for diagnostics
+  payloads; **this entry does not discharge it.** This change does not touch
+  `redact_url_credentials`, so E9-1's scope and E5-7's "existing behaviour only"
+  scope are both intact.
 - **SearXNG requests carry no deadline in the shipped default.**
   `_get_request_timeout_seconds` returns `None` when `SEARXNG_TIMEOUT_SECONDS` is
   unset, and that `None` is passed explicitly as `client.get(timeout=None)`. In

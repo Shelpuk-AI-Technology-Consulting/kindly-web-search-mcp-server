@@ -33,6 +33,7 @@ from .youcom import search_youcom
 __all__ = [
     "PROVIDERS",
     "SearchProviderSpec",
+    "SearchProviderTransportError",
     "WebSearchProviderError",
     "any_provider_configured",
     "provider_env_vars",
@@ -47,7 +48,39 @@ __all__ = [
 
 
 class WebSearchProviderError(RuntimeError):
-    pass
+    """Report that no search provider is configured at all.
+
+    A configuration fault rather than a request fault: nothing was attempted and
+    no provider was selected. Kept distinct from
+    :class:`SearchProviderTransportError`, which reports a selected provider's
+    request failing -- see that class for why the two are siblings rather than a
+    base and its subclass.
+    """
+
+
+class SearchProviderTransportError(RuntimeError):
+    """Report a provider's HTTP failure without quoting the request URL.
+
+    Raised in place of any :class:`httpx.HTTPError` a provider lets out.
+    :meth:`httpx.HTTPStatusError.__str__` quotes the full request URL, and at
+    least one provider -- SerpBase -- authenticates with a query parameter, so
+    the unmodified message carries an API key. Because that message is rendered
+    into the error a FastMCP tool returns, the key would reach the MCP client,
+    which for this server is an LLM agent.
+
+    The URL is dropped rather than filtered. Stripping parameters whose names
+    look credential-shaped is a denylist, and it fails open and silently on the
+    first provider that names its parameter something else. The original
+    exception stays reachable as ``__cause__``, so the status remains readable
+    structurally even though it is no longer parsed out of a message.
+
+    Deliberately **not** a subclass of :class:`WebSearchProviderError`, which
+    means "no provider is configured". Every provider's ``*ConfigError`` already
+    subclasses its ``*Error``, and that relationship has let a test satisfy an
+    assertion aimed at a transport failure while sending no request at all.
+    Sibling types keep an ``isinstance`` check and an exact-class check in
+    agreement.
+    """
 
 
 @dataclass(frozen=True)
@@ -140,6 +173,33 @@ def provider_env_vars() -> tuple[str, ...]:
     return tuple(provider.env_var for provider in PROVIDERS)
 
 
+def _without_request_url(
+    label: str, error: httpx.HTTPError
+) -> SearchProviderTransportError:
+    """Rebuild a provider's HTTP failure as a message safe to return to a client
+
+    Args:
+        label: The provider's human-readable name, taken from its registry entry
+            so the message and the diagnostics cannot name different providers.
+        error: The failure the provider let out.
+
+    Returns:
+        An exception naming the provider and, when the failure carries one, the
+        HTTP status -- and nothing else. Never the URL, and so never a credential
+        the URL happens to carry.
+    """
+    # A status is the actionable half of the message for an operator: it
+    # separates a rejected key from a quota from a provider-side fault. Failures
+    # with no response -- timeouts, connection errors -- have only their class.
+    if isinstance(error, httpx.HTTPStatusError):
+        detail = f"HTTP {error.response.status_code}"
+    else:
+        detail = type(error).__name__
+    return SearchProviderTransportError(
+        f"The {label} search provider failed: {detail}."
+    )
+
+
 async def search_web(
     query: str,
     *,
@@ -166,6 +226,11 @@ async def search_web(
 
     Raises:
         WebSearchProviderError: If no provider is configured.
+        SearchProviderTransportError: If the selected provider's request fails at
+            the HTTP layer. Replaces the ``httpx`` exception rather than letting
+            it out, because that exception's message quotes the request URL --
+            which for SerpBase carries the API key. The original is chained as
+            ``__cause__``.
     """
     # Read each provider's configuration once, so the selection and the emitted
     # diagnostic cannot disagree if the environment changes mid-call.
@@ -197,8 +262,15 @@ async def search_web(
     async def _run(client: httpx.AsyncClient) -> list[WebSearchResult]:
         return await provider_fn(query, num_results=num_results, http_client=client)
 
-    if http_client is not None:
-        return await _run(http_client)
+    # Converted here rather than in the MCP tool because this is the only place
+    # the selected provider's label is known; deriving it a second time in the
+    # tool would duplicate the selection and let the two disagree. It also means
+    # the unconverted exception never travels further than this frame.
+    try:
+        if http_client is not None:
+            return await _run(http_client)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        return await _run(client)
+        async with httpx.AsyncClient(timeout=30) as client:
+            return await _run(client)
+    except httpx.HTTPError as exc:
+        raise _without_request_url(selected.label, exc) from exc

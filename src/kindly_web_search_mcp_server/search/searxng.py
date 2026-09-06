@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ..models import WebSearchResult
+from ..utils.diagnostics import redact_url_credentials
 
 
 class SearxngError(RuntimeError):
@@ -36,18 +37,34 @@ def _get_searxng_base_urls() -> list[str]:
         )
 
     urls: list[str] = []
-    for part in raw.split(","):
+    for index, part in enumerate(raw.split(","), start=1):
         part = part.strip()
         if not part:
             continue
         parsed = urlparse(part)
         if not parsed.scheme or not parsed.netloc:
-            LOGGER.warning("Ignoring invalid SearXNG URL in list: %r", part)
+            # The entry itself is deliberately not logged. It carries its
+            # credential in the userinfo, and `redact_url_credentials` cannot
+            # remove it here: that helper matches `://user:pass@`, and an entry
+            # reaching this branch is one with no usable scheme -- which is
+            # exactly why it was rejected. Measured. The position is enough to
+            # find it in a comma-separated list.
+            LOGGER.warning(
+                "Ignoring entry %d of SEARXNG_BASE_URL: no scheme or host.", index
+            )
             continue
         urls.append(part.rstrip("/"))
 
     if not urls:
-        raise SearxngConfigError(f"No valid URLs found in SEARXNG_BASE_URL: {raw!r}")
+        # The raw value is deliberately not quoted back. A base URL carries its
+        # credential in the userinfo, and the commonest way to reach this branch
+        # is mistyping the scheme -- which would hand that password to whoever
+        # reads the error, the MCP client included. The required shape is the
+        # more useful thing to say anyway.
+        raise SearxngConfigError(
+            "No valid URLs found in SEARXNG_BASE_URL. Each entry must include a "
+            "scheme and a host, for example https://searx.example.org."
+        )
 
     return urls
 
@@ -161,7 +178,12 @@ async def search_searxng(
     data = None
 
     for base_url in base_urls:
-        LOGGER.info("Attempting SearXNG query on instance: %s", base_url)
+        # Redacted rather than dropped: unlike the rejected entry above, a URL
+        # that got this far has a scheme, so the helper strips its userinfo and
+        # leaves the host readable -- which is the whole point of logging it.
+        LOGGER.info(
+            "Attempting SearXNG query on instance: %s", redact_url_credentials(base_url)
+        )
         try:
             if http_client is None:
                 async with httpx.AsyncClient(timeout=30) as client:
@@ -170,7 +192,9 @@ async def search_searxng(
                 data = await _do_request_for_url(http_client, base_url)
             break
         except Exception as exc:
-            LOGGER.warning("SearXNG query failed on %s: %s", base_url, exc)
+            LOGGER.warning(
+                "SearXNG query failed on %s: %s", redact_url_credentials(base_url), exc
+            )
             last_error = exc
             continue
 
