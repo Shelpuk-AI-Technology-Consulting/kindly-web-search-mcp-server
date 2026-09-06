@@ -67,8 +67,11 @@ annotation is erased at run time and always could have been handed a fake;
 nothing about the process boundary moved. The rule that follows from it:
 structural and contract claims about these two helpers may use a double,
 behavioural claims about process termination stay ``subsystem``, because this
-module is outside the coverage gate and a hermetic test here earns nothing while
-blurring the classification.
+module is outside the coverage gate and a hermetic test *of process termination*
+here earns nothing while blurring the classification. The qualifier is
+load-bearing: unqualified, that clause would say a hermetic test of this module
+earns nothing in general, which the frame-format contract suite falsifies — it
+drives the stderr reader with exact chunks and is the only instrument that can.
 
 **Two Windows guards, deliberately spelled differently.** The procedure, so a
 new branch does not have to re-derive it:
