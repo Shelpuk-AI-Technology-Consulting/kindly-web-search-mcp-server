@@ -3,8 +3,18 @@
 FastMCP derives each tool's JSON Schema from its Python signature and its
 description from its docstring, then serves both over
 :meth:`~mcp.server.fastmcp.FastMCP.list_tools`. That payload is this server's
-public API: renaming a parameter breaks every client, and until this file existed
-nothing in the suite noticed.
+public API: renaming a parameter breaks every client, and before this file the
+suite checked no part of that payload.
+
+It did notice *some* such changes incidentally, which is worth stating precisely
+rather than overclaiming. Measured 2026-09-06 against the fast lane with this file
+excluded: renaming ``num_results`` reddens four cases, because
+``test_page_content_resolver.py`` and ``test_server.py`` call the tool with that
+keyword and raise ``TypeError``. Renaming ``query`` -- passed positionally
+everywhere -- changes nothing, and neither does moving the default from 3 to 5 or
+annotating a tool so it starts advertising an ``outputSchema``: 718 passed in every
+one of those three cases. A ``TypeError`` at a call site is not a contract check;
+it fires only for the parameters the suite happens to name.
 
 The comparison is normalized before it is made. Generated ``title`` keywords are
 dropped and description *wording* is replaced by a sentinel, because the allowed
