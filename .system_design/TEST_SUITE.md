@@ -4263,7 +4263,13 @@ is nothing to test.
   measured.** The catch covers `httpx.HTTPError`, and the justification first
   written — "every httpx error carries `.request.url`" — is false. On httpx
   0.28.1 `InvalidURL`, `CookieConflict` and `StreamError` are **not** `HTTPError`
-  subclasses, and `InvalidURL` has no `.request` at all. Five providers build
+  subclasses — `InvalidURL` and `CookieConflict` derive from `Exception`,
+  `StreamError` from `RuntimeError` — and `InvalidURL` has no `.request` at all.
+  **That boundary is now pinned by a case rather than recorded as prose**
+  (`test_the_httpx_error_family_has_the_shape_the_conversion_assumes`, both
+  directions, seven classes): it is a version-scoped claim about a dependency this
+  project does not pin to an exact release, so an upgrade could otherwise have
+  made this paragraph quietly false with nothing to notice. Five providers build
   their URL from a constant and cannot reach them. **SearXNG can, and does** — it
   derives its URL from configuration, and a `SEARXNG_BASE_URL` of
   `https://user:pw@host:notaport` raises `InvalidURL("Invalid port: 'notaport'")`,

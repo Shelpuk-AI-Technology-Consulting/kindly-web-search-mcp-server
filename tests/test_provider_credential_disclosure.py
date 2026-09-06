@@ -11,10 +11,11 @@ rather than only where the message is built.
 The unit layer pins the conversion in
 :func:`~kindly_web_search_mcp_server.search.search_web`: an ``httpx`` failure
 becomes an exception whose message is built from the provider's label and the
-HTTP status, with the request URL dropped. The contract layer drives the real
-``mcp.call_tool`` surface, because the text a client receives is composed by
-FastMCP out of the exception this code raises -- so no unit test of the
-conversion can prove what the client actually sees. Measured on ``mcp`` 1.29.1
+HTTP status, with the request URL dropped. The contract layer drives the
+low-level ``CallToolRequest`` handler rather than ``mcp.call_tool``, because
+``call_tool`` raises FastMCP's ``ToolError`` and the served text and ``isError``
+are composed one layer below it -- so no unit test of the conversion, and no
+assertion on the ``ToolError``, can prove what the client actually sees. Measured on ``mcp`` 1.29.1
 and ``httpx`` 0.28.1: the served ``CallToolResult`` carries ``str(exc)`` alone and
 exposes neither ``__cause__`` nor a traceback. Those cases drive the low-level
 ``CallToolRequest`` handler rather than ``mcp.call_tool``, because ``call_tool``
@@ -704,3 +705,57 @@ async def test_the_searxng_aggregate_does_not_quote_a_credentialed_message(
     assert type(raised) is SearxngError
     assert "failed connecting to" in str(raised), "the message was not quoted at all"
     assert SENTINEL not in str(raised)
+
+
+@pytest.mark.parametrize(
+    ("name", "inside_the_family"),
+    (
+        ("HTTPStatusError", True),
+        ("ReadTimeout", True),
+        ("ConnectError", True),
+        ("UnsupportedProtocol", True),
+        ("InvalidURL", False),
+        ("CookieConflict", False),
+        ("StreamError", False),
+    ),
+)
+def test_the_httpx_error_family_has_the_shape_the_conversion_assumes(
+    name: str, inside_the_family: bool
+) -> None:
+    """Pin the class boundary the router's single ``except`` clause rests on.
+
+    ``search_web`` catches ``httpx.HTTPError`` and nothing else, so which classes
+    fall inside that family *is* the scope of the repair. Both directions are
+    asserted, because each answers a different question. The four inside are the
+    ones the conversion must cover -- if any left the family, a provider failure
+    would reach the client unconverted. The three outside are the documented
+    limit: ``InvalidURL``, ``CookieConflict`` and ``StreamError`` derive from
+    ``Exception`` and ``RuntimeError``, not from ``HTTPError``.
+
+    Written because that limit was recorded as prose in a docstring and in
+    ``.system_design/TEST_SUITE.md`` section 14, scoped to a version, against a
+    dependency this project does not pin to an exact release -- so an ``httpx``
+    upgrade could have made the documentation quietly false with nothing to
+    notice. It is a claim about a third party, which is exactly the kind that
+    decays without a case holding it.
+
+    Args:
+        name: The ``httpx`` attribute naming the exception class.
+        inside_the_family: Whether it is expected to subclass ``httpx.HTTPError``.
+    """
+    error_class = getattr(httpx, name)
+
+    assert issubclass(error_class, httpx.HTTPError) is inside_the_family
+
+
+def test_invalid_url_carries_no_request_to_read_a_url_from() -> None:
+    """The one outside the family that a configuration-derived URL can reach.
+
+    SearXNG builds its URL from ``SEARXNG_BASE_URL``, so unlike the five
+    constant-URL providers it can raise ``InvalidURL`` -- and being outside the
+    family, the router never sees it. What keeps that harmless is asserted here:
+    the exception carries no ``request``, so there is no URL on it for anything
+    downstream to render. Section 14 records that SearXNG's own blanket
+    ``except`` is what actually absorbs it.
+    """
+    assert not hasattr(httpx.InvalidURL("Invalid port: 'notaport'"), "request")
