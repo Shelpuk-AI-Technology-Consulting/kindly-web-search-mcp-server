@@ -746,6 +746,47 @@ def test_the_line_router_caps_its_malformed_frame_samples_at_three() -> None:
     assert state.parse_errors == ['{"n": 0', '{"n": 1', '{"n": 2']
 
 
+def test_a_frame_whose_payload_is_empty_is_sampled_rather_than_sent_to_the_tail() -> None:
+    """Hold the outcome the ``None``-versus-``""`` split exists to produce
+
+    `frame_payload`'s docstring makes that split load-bearing, and until this
+    case nothing drove it through the **router**: `decode_frame_payload("") is
+    None` was pinned, but a mutation returning `None` for an empty payload —
+    sending a bare marker line to the tail as though it were ordinary browser
+    output — left every other case green.
+
+    The three lines below are the whole distinction. A line that is only the
+    marker is a frame with nothing in it, and malformed. A line carrying the
+    marker *without* its trailing space is not the marker at all. A blank line is
+    discarded before the codec is consulted, so it reaches neither channel — the
+    docstring claimed it reached the tail, which was wrong in the direction that
+    matters, because "it goes to the tail" is exactly the mutation's behaviour.
+    """
+    state = worker_runner._StderrAccumulator()
+
+    for line in (FRAME_PREFIX, "KINDLY_DIAGNOSTICS=1", ""):
+        worker_runner._consume_stderr_line(state, line, tail_limit=MAX_STDERR_CHARS)
+
+    # The bare marker: sampled, and specifically *not* in the tail.
+    assert state.parse_errors == [""]
+    # The near-miss line is ordinary output; the blank line contributed nothing.
+    assert state.tail == "KINDLY_DIAGNOSTICS=1\n"
+    assert state.worker_entries == []
+
+
+def test_a_bare_marker_line_is_sampled_when_it_arrives_through_the_stream() -> None:
+    """Drive the same split through the real reader rather than the router alone
+
+    The router case above feeds a line directly. This one proves the same
+    outcome survives the path a child actually takes, terminator included.
+    """
+    state, _ = _run([FRAME_PREFIX.encode() + b"\nchrome: noise\n"])
+
+    assert state.parse_errors == [""]
+    assert state.tail == "chrome: noise\n"
+    assert state.worker_entries == []
+
+
 def test_a_malformed_sample_is_truncated_rather_than_kept_whole() -> None:
     """Bound one sample as well as the number of them
 

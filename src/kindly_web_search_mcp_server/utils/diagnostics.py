@@ -269,10 +269,17 @@ def frame_payload(line: str) -> str | None:
     separates a frame from ordinary child output, and
     :func:`decode_frame_payload` separates a good frame from a malformed one.
 
-    ``None`` rather than ``""`` for a non-frame line, because a frame whose
-    payload is genuinely empty is malformed and must be *sampled*, while an
-    ordinary blank line must reach the stderr tail. One falsy value cannot carry
-    both.
+    ``None`` rather than ``""`` for a non-frame line, and the difference is
+    load-bearing: a line that is *only* the marker is a frame whose payload is
+    empty, which is malformed and must be **sampled**, while a line that is not a
+    frame is ordinary output and joins the tail. Both are falsy, so one falsy
+    return value cannot carry both — ``""`` means "a frame, with nothing in it"
+    and ``None`` means "not a frame".
+
+    A genuinely blank line reaches neither: the router discards it before asking
+    this function anything. An earlier draft of this paragraph claimed a blank
+    line "must reach the stderr tail", which is not what the router does and was
+    never what this distinction was for.
 
     The ``strip`` is load-bearing rather than tidy: it is what lets a
     ``\\r\\n``-terminated frame decode even though the carriage return is removed
