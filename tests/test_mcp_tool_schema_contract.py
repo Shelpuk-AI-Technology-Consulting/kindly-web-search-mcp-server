@@ -10,11 +10,30 @@ The comparison is normalized before it is made. Generated ``title`` keywords are
 dropped and description *wording* is replaced by a sentinel, because the allowed
 SDK range (``mcp>=1.25,<2``) may reorder keys or rewrite generated text in a minor
 release. Nothing else is dropped: a key a future SDK adds fails the golden, which
-is what a golden over a public API is for. Measured on 2026-09-06, the payload is
-in fact byte-identical on ``1.25.0`` and ``1.29.1``, titles included, so the
-normalization is a forward guard rather than a compatibility shim -- which is why
-:func:`test_normalization_strips_keywords_but_never_a_parameter_named_like_one`
-exercises it on a synthetic schema instead.
+is what a golden over a public API is for.
+
+**One of those rules is exercised by the live payload and the rest are not**, which
+decides where each is tested. Measured 2026-09-06 by deleting each rule in turn:
+
+- the ``title`` strip is **live** -- the served schema carries a generated title on
+  every property and on the argument model itself, while the golden literals here
+  are written without them, so removing the strip fails both goldens on both SDK
+  ends;
+- the description sentinel, the ``required`` sort, the list recursion and the
+  level-awareness that protects a parameter *named* ``title`` have **no live
+  input** -- no parameter carries a description, ``required`` holds one element, no
+  list of subschemas appears, and neither tool has a parameter named like a
+  keyword. Deleting any of them leaves every live case green.
+
+Those four are therefore exercised on hand-built schemas by
+:func:`test_normalization_strips_keywords_but_never_a_parameter_named_like_one` and
+:func:`test_normalization_leaves_a_schema_without_required_unchanged_in_that_respect`,
+without which they would be untested branches that merely read as coverage.
+
+Both ends of the range emit byte-identical payloads, so the *cross-version*
+tolerance the SDK bound motivates is a forward guard: it is the schema differing
+from the golden, not the two SDKs differing from each other, that the title strip
+absorbs today.
 
 Both halves of this file assert facts about the same served payload. The schema
 half pins its shape;
@@ -234,11 +253,16 @@ async def test_the_tool_ships_a_description(contract: ToolContract) -> None:
 def test_normalization_strips_keywords_but_never_a_parameter_named_like_one() -> None:
     """Distinguish a generated ``title`` keyword from a parameter called ``title``.
 
-    The live payload cannot exercise this: neither tool has a parameter named
-    ``title`` or ``description``, and both SDK ends emit identical text, so the
-    stripping rules have no discriminating input there. This synthetic schema
-    supplies one, so removing either rule -- or making the walk blind to which
-    level it is on -- fails a case.
+    The live payload cannot exercise the *level-awareness*: neither tool has a
+    parameter named ``title`` or ``description``, so a walk that stripped by key
+    name at every depth would pass every live case while silently deleting such a
+    parameter from both sides of the comparison. Nor can it exercise the
+    description sentinel (no parameter carries one) or the list recursion (no
+    ``anyOf`` appears). This schema supplies input for all three, so deleting any
+    one of them fails this case alone.
+
+    The ``title`` strip itself needs no help: the served payload does carry
+    generated titles, so removing that rule fails both goldens.
     """
     normalized = _normalize(
         {

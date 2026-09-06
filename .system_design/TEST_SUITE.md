@@ -872,13 +872,23 @@ release. Run against the minimum (`1.25.0`) and the newest allowed release
 included, and no parameter carries a `description` at all.** Two consequences the
 implementer must not re-derive. First, "descriptions present" can only mean the
 **tool-level** description — asserting per-parameter descriptions would assert
-something that does not exist. Second, the normalization is a **forward guard,
-not a compatibility shim**: no input in the allowed range distinguishes a
-normalizer from a plain comparison, so the stripping rules must be exercised on a
-synthetic schema or they are untested by construction. That synthetic case is also
-the only place the `title` collision is reachable — `WebSearchResult` has a `title`
-field, so a walk that deletes any key named `title` would delete a *parameter* of
-that name and mask a real contract change.
+something that does not exist. Second, **the rules split into one the live
+payload exercises and several it cannot**, and that decides where each is tested.
+The `title` strip is live: the served payload carries a generated title on every
+property and on the argument model, while a golden literal is written without them,
+so deleting the strip fails the goldens. The description sentinel, the `required`
+sort, the list recursion and the level-awareness have no live input at all —
+no parameter carries a description, `required` holds one element, no list of
+subschemas appears, and neither tool has a parameter named like a keyword — so
+those must be exercised on a synthetic schema or they are untested branches that
+read as coverage. The synthetic case is also the only place the `title` collision
+is reachable: `WebSearchResult` has a `title` field, so a walk that deletes any key
+named `title` would delete a *parameter* of that name and mask a real contract
+change.
+
+What the identical payloads *do* mean is that the **cross-version** tolerance the
+SDK bound motivates is a forward guard rather than a compatibility shim: nothing in
+the allowed range makes `1.25.0` and `1.29.1` disagree today.
 
 **(d) The ceiling the description states.** The `web_search` description tells the
 model that `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` is "clamped 1..5". That number is
