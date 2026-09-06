@@ -302,11 +302,14 @@ jobs:
     # observed run is 207s are exactly the lightweight workload that label is for. The
     # review workflow and the two `ci.yml` review jobs therefore no longer share one
     # label, which is a real cost -- see `ci.yml`, where it is recorded on both jobs.
-    # ⚠️ "The two workflows" is how this read before the test jobs landed; there are
-    # three workflow files now, and `tests-broad.yml` runs on `ubuntu-latest` too. The
-    # cost this sentence records is unchanged -- it was always about these jobs and
-    # that one -- but its arithmetic was not, so it is corrected rather than left to
-    # be read as a claim about the tree.
+    # ⚠️ This used to count the workflows in the tree rather than name the jobs it
+    # is about, and went wrong the moment the test jobs landed. The cost it records
+    # is unchanged -- it was always about these two jobs and this one -- so it now
+    # names them and counts nothing. 🔴 **A count in prose is a claim nothing
+    # checks**, which is why `rules/ci.md` had its own removed in the same branch;
+    # this comment then reintroduced one two commits later, in the one file no
+    # guard reads. Name what a sentence is about; leave the arithmetic to the
+    # `EXPECTED_WORKFLOW_FILES` set, which is pinned against the tree.
     #
     # ⚠️ The pairing of this label with the cap below is now checked by
     # `DeclaredJobCapIsEnforceableTests`, so neither line can move without the other.
