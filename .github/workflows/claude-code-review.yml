@@ -12,11 +12,14 @@ name: Claude Code Review
 #
 # ⚠️ **THAT LAST CATEGORY IS THE ONE TO READ CAREFULLY.** The reference repository
 # pairs this workflow with four `lint`-job guard scripts and a set of design
-# documents. **This repository has neither** -- `claude-code-review.yml` is its
-# only workflow. Where a comment below used to cite a guard as enforcement, it now
-# says plainly that the invariant is a convention instead. A convention that reads
-# like an enforced invariant is worse than an acknowledged one, because the next
-# person trusts it.
+# documents. **This repository has neither of those**, and the sentence that used
+# to follow -- that this was its only workflow -- is no longer true either: there
+# is a `ci.yml` running the review system's own tests and the repository's broad
+# test selection. What has not changed is the point the sentence was making.
+# Where a comment below used to cite an upstream guard as enforcement, it now
+# says plainly that the invariant is a convention instead. A convention that
+# reads like an enforced invariant is worse than an acknowledged one, because the
+# next person trusts it.
 #
 # ⚠️ **Every measurement quoted below was taken on the reference repository, not
 # on this one.** They are kept because they are what sized these numbers, and each

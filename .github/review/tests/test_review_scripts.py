@@ -85,6 +85,14 @@ WORKFLOW_DIR = Path(__file__).resolve().parents[2] / "workflows"
 RUNNER_JOB_CEILING_MINUTES = {
     "ubuntu-slim": 15,
     "ubuntu-latest": 360,
+    # Added with the first matrix job. An ordinary GitHub-hosted 4-CPU VM
+    # runner, so the 6-hour figure applies to it exactly as it does to the
+    # `ubuntu-*` labels; only the single-CPU tier is special. Re-confirmed
+    # against GitHub's Actions limits reference, which states the general rule
+    # in one sentence: *"Each job in a workflow can run for up to 6 hours of
+    # execution time. If a job reaches this limit, the job is terminated and
+    # fails."*
+    "windows-latest": 360,
     "ubuntu-24.04": 360,
     "ubuntu-22.04": 360,
     "[self-hosted, cap-main, noble]": 7200,
@@ -92,6 +100,38 @@ RUNNER_JOB_CEILING_MINUTES = {
     "[self-hosted, cap-nano, noble]": 7200,
     "[self-hosted, cap-pico, noble]": 7200,
 }
+
+def _lowest_ceiling(runners):
+    """Return the platform ceiling a job with these runners must clear.
+
+    🔴 **The minimum, because a matrix job is as constrained as its most
+    constrained leg.** Taking the highest -- or the first -- would call a
+    60-minute cap enforceable on a matrix that also runs on a 15-minute runner,
+    and that leg would then die at a limit no file in the repository mentions.
+    That is the original defect this whole mechanism was written after,
+    reproduced one level up.
+
+    ⚠️ **One unrecorded label makes the whole answer ``None``**, rather than a
+    minimum over the labels that happened to be recorded. The unrecorded label
+    already fails its own check; returning a number here as well would have the
+    cap check report a verdict it cannot support.
+
+    Args:
+        runners: The resolved runner labels, as :func:`_resolve_runners` returns
+            them.
+
+    Returns:
+        The lowest recorded ceiling in minutes, or ``None`` when any label has
+        none recorded.
+    """
+
+    ceilings = [
+        RUNNER_JOB_CEILING_MINUTES[label]
+        for label in runners
+        if label in RUNNER_JOB_CEILING_MINUTES
+    ]
+    return min(ceilings) if len(ceilings) == len(runners) else None
+
 
 #: Every job this repository runs, as ``(workflow file name, job id)``.
 #:
@@ -103,13 +143,19 @@ RUNNER_JOB_CEILING_MINUTES = {
 EXPECTED_JOBS = {
     ("ci.yml", "review-scripts"),
     ("ci.yml", "review_replies"),
+    # The caller job and the aggregate it feeds. `ci.yml/broad` declares only
+    # `uses:` and is the repository's first caller job, which is what stops
+    # `test_a_caller_job_really_declares_neither_key` being vacuous.
+    ("ci.yml", "broad"),
+    ("ci.yml", "ci-required"),
+    ("tests-broad.yml", "broad"),
     ("claude-code-review.yml", "review"),
 }
 
 #: The workflow files themselves, pinned for the same reason one level up: the
 #: sweep globs rather than enumerates, so a file added later is checked -- and
 #: this set is what fails if one is added, renamed or deleted without a thought.
-EXPECTED_WORKFLOW_FILES = {"ci.yml", "claude-code-review.yml"}
+EXPECTED_WORKFLOW_FILES = {"ci.yml", "claude-code-review.yml", "tests-broad.yml"}
 
 
 def _workflow_files():
@@ -151,6 +197,177 @@ def _jobs_section(text: str) -> str:
     return tail[: following.start()] if following else tail
 
 
+#: A `runs-on:` value that defers to a matrix, e.g. ``${{ matrix.os }}``. Only
+#: this one expression shape is resolvable from the file alone: `vars.` and
+#: `inputs.` name values decided outside it, and are refused.
+MATRIX_RUNNER = re.compile(r"^\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}$")
+
+#: A concrete runner label, or one whole flow-list runner specification. The
+#: second alternative is why `runs-on: [self-hosted, cap-main, noble]` stays a
+#: single string: under `runs-on:` a flow list is ONE machine that must carry
+#: every label in it, and :data:`RUNNER_JOB_CEILING_MINUTES` records it spelled
+#: exactly that way. Under `strategy.matrix` the same punctuation means a list of
+#: alternatives, which is the collision :func:`_matrix_values` keeps apart.
+RUNNER_LABEL = re.compile(r"^(?:\[[A-Za-z0-9 ,._-]+\]|[A-Za-z0-9][A-Za-z0-9._-]*)$")
+
+
+def _strategy_block(body: str) -> str | None:
+    """Return one job's ``strategy:`` block, bounded to that job.
+
+    Bounded rather than swept, for the reason :func:`_jobs_section` gives one
+    level up: an unbounded scan reads the *next* job's matrix, and a job that
+    declares no strategy of its own then acquires a resolved runner it never
+    named.
+
+    Args:
+        body: One job's text, as sliced by :func:`_declared_jobs`.
+
+    Returns:
+        The block's text, or ``None`` when the job declares no ``strategy:``.
+    """
+
+    opening = re.search(r"^ {4}strategy:[ \t]*$", body, re.M)
+    if opening is None:
+        return None
+    tail = body[opening.end() :]
+    # The block ends at the next key at job depth -- four spaces and not deeper.
+    following = re.search(r"^ {4}\S", tail, re.M)
+    return tail[: following.start()] if following else tail
+
+
+def _matrix_values(block: str, key: str):
+    """Return every concrete value a matrix assigns to one key.
+
+    🔴 **`include:` entries are unioned in rather than skipped.** They may name a
+    runner the top-level list never does, and a label this function does not
+    return is a label the ceiling check never sees -- the guard going quietly
+    hollow, which is the failure it exists to prevent. `exclude:` is deliberately
+    NOT honoured: it only removes combinations, so ignoring it over-approximates,
+    which is the safe direction.
+
+    ⚠️ **Anything it cannot read makes the whole answer ``None``.** A partially
+    resolved label set is worse than an unresolved one, because it reports a
+    verdict on the labels it happened to understand.
+
+    Args:
+        block: The job's ``strategy:`` block.
+        key: The matrix key the `runs-on:` expression referenced.
+
+    Returns:
+        The values, sorted and de-duplicated, or ``None`` when the key is absent
+        or any of its values is a shape this parser cannot resolve.
+    """
+
+    found = set()
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        # Both `os: ...` and an `include:` entry's `- os: ...` reach here.
+        # The same trailing-comment tolerance the `runs-on:` and
+        # `timeout-minutes:` patterns already carry, and for the reason stated
+        # there: a parser lenient about one key and strict about another, for no
+        # recorded reason, sends the author the wrong way. Measured before this
+        # was added -- `os: [ubuntu-latest, windows-latest]  # both platforms`
+        # resolved to None, so a legal and well-commented matrix was refused.
+        match = re.match(
+            rf"^(\s+)(?:-\s+)?{re.escape(key)}:[ \t]*(.*?)[ \t]*(?:#.*)?$", line
+        )
+        if match is None:
+            continue
+        indent, value = len(match.group(1)), match.group(2)
+        if value:
+            parsed = _scalar_or_flow_list(value)
+            if parsed is None:
+                return None
+            found.update(parsed)
+            continue
+        # An empty value means a block sequence follows, indented further.
+        items = _block_sequence(lines[index + 1 :], indent)
+        if items is None:
+            return None
+        found.update(items)
+
+    return tuple(sorted(found)) if found else None
+
+
+def _scalar_or_flow_list(value: str):
+    """Read a matrix value written inline, as a scalar or a flow list.
+
+    Args:
+        value: The text after the key's colon, already stripped.
+
+    Returns:
+        The labels it names, or ``None`` for a shape this parser cannot read --
+        an expression, or a token that is not a plain label.
+    """
+
+    inner = value[1:-1] if value.startswith("[") and value.endswith("]") else value
+    labels = []
+    for token in inner.split(","):
+        token = token.strip().strip("'\"")
+        # An expression has no answer in this file, so neither does the job.
+        if not token or "${{" in token or not RUNNER_LABEL.match(token):
+            return None
+        labels.append(token)
+    return labels
+
+
+def _block_sequence(lines, key_indent: int):
+    """Read a block-style YAML sequence following a key with an empty value.
+
+    Args:
+        lines: The lines after the key's own line.
+        key_indent: The key's indentation, in spaces. Items must be deeper.
+
+    Returns:
+        The labels, or ``None`` when the sequence is empty or carries a shape
+        this parser cannot read.
+    """
+
+    labels = []
+    for line in lines:
+        if not line.strip():
+            continue
+        item = re.match(r"^(\s+)-[ \t]+(\S.*?)[ \t]*(?:#.*)?$", line)
+        if item is None or len(item.group(1)) <= key_indent:
+            break
+        token = item.group(2).strip("'\"")
+        if "${{" in token or not RUNNER_LABEL.match(token):
+            return None
+        labels.append(token)
+    return labels or None
+
+
+def _resolve_runners(runner: str | None, body: str):
+    """Resolve a job's `runs-on:` to the concrete labels it can run on.
+
+    This is the field every ceiling verdict reads. ``runner`` survives beside it
+    only to carry the text a failure message quotes -- a job spelling
+    ``runs-on: ${{ inputs.os }}`` has a ``runner`` and no resolvable label at
+    all, so a check reading ``runner`` would wave it through.
+
+    Args:
+        runner: The `runs-on:` scalar exactly as written, or ``None``.
+        body: The whole job body, for its ``strategy:`` block.
+
+    Returns:
+        A tuple of one or more labels, or ``None`` when the job names no runner
+        this parser can resolve. ``None`` is refused by the caller, never
+        skipped.
+    """
+
+    if runner is None:
+        return None
+    if "${{" not in runner:
+        return (runner,) if RUNNER_LABEL.match(runner) else None
+    reference = MATRIX_RUNNER.match(runner)
+    if reference is None:
+        return None
+    block = _strategy_block(body)
+    if block is None:
+        return None
+    return _matrix_values(block, reference.group(1))
+
+
 def _declared_jobs(path):
     """Parse one workflow file's jobs into what the ceiling check needs.
 
@@ -167,11 +384,14 @@ def _declared_jobs(path):
         path: The workflow file.
 
     Returns:
-        One dict per job with ``file``, ``job``, ``runner``, ``timeout`` and
-        ``caller``. ``runner`` and ``timeout`` are ``None`` when the key is
-        absent *or* spelled in a form this parser does not resolve -- the caller
-        fails on ``None`` rather than skipping, so an unresolvable shape is
-        loud.
+        One dict per job with ``file``, ``job``, ``runner``, ``runners``,
+        ``timeout`` and ``caller``. ``runner`` and ``timeout`` are ``None`` when
+        the key is absent *or* spelled in a form this parser does not resolve --
+        the caller fails on ``None`` rather than skipping, so an unresolvable
+        shape is loud. ``runners`` is the resolved tuple of concrete labels and
+        is what every ceiling verdict reads; it is ``None`` for a `runs-on:`
+        naming no label this file can settle, including a matrix reference with
+        no matrix behind it.
     """
 
     section = _jobs_section(path.read_text(encoding="utf-8"))
@@ -219,11 +439,15 @@ def _declared_jobs(path):
         timeout = re.findall(
             r"^ {4}timeout-minutes:[ \t]*(\d+)[ \t]*(?:#.*)?$", body, re.M
         )
+        resolved = runner[0] if len(runner) == 1 else None
         jobs.append(
             {
                 "file": path.name,
                 "job": name,
-                "runner": runner[0] if len(runner) == 1 else None,
+                "runner": resolved,
+                # The field every ceiling verdict reads -- see
+                # :func:`_resolve_runners` for why `runner` is not it.
+                "runners": _resolve_runners(resolved, body),
                 "timeout": int(timeout[0]) if len(timeout) == 1 else None,
                 # A reusable-workflow call legally declares neither key, so it is
                 # exempted BY NAME rather than by falling through a condition --
@@ -6072,10 +6296,21 @@ class ReviewRepliesWiringTests(unittest.TestCase):
         self.assertIn("pull-requests: read", block)
 
     def test_the_ci_job_runs_only_on_pull_requests(self):
-        """🔴 AC14c — `ci.yml` also fires on `push: [main]`, a nightly
-        `schedule` and `workflow_dispatch`. There is no pull request on those,
-        and a gate that fails when it cannot check would turn that into a red
-        `main` and a red cron every morning."""
+        """🔴 AC14c — `ci.yml` also fires on `push: [main]` and
+        `workflow_dispatch`. There is no pull request on either, and a gate that
+        failed when it cannot check would turn every push to `main` red.
+
+        ⚠️ **Corrected when the test jobs landed.** This docstring was carried
+        across from the upstream repository and also claimed a nightly
+        `schedule`; there has never been one here. `push` was equally untrue
+        until the same change added it, so the sentence described a file that
+        did not exist in either direction.
+
+        🔴 **This condition is now mirrored by `ci-required`**, which excuses
+        this job from its strict `success` comparison on exactly the events
+        where this `if:` skips it. `test_the_conditional_clause_mirrors_that_jobs_own_condition`
+        holds the two together; loosening this line without that one is what
+        would turn the excuse into a hole."""
         block = self._job_block("review_replies")
 
         self.assertIn("github.event_name == 'pull_request'", block)
@@ -11244,31 +11479,42 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
     def test_every_job_names_a_runner_whose_ceiling_is_recorded(self):
         """An unrecorded label cannot be checked, so it is refused.
 
-        ⚠️ **This is the clause the CI epic will hit first, deliberately.** A
-        matrix job spells its runner `${{ matrix.os }}`, which resolves to no
-        entry here and fails with the message below rather than being waved
-        through. The ceiling for a matrix runner is a decision worth making when
-        the matrix is written; discovering later that the check went hollow is
-        the expensive order.
+        🔴 **This is the clause the first matrix job hit, exactly as intended,
+        and the record of what happened next belongs here.** That job spells its
+        runner `${{ matrix.os }}`. Before the parser could resolve it, the label
+        reaching this check was the expression itself, it matched no entry, and
+        the job failed with the message below rather than being waved through --
+        which is what forced the ceiling for a matrix runner to be decided when
+        the matrix was written. The fix was to teach the parser to resolve the
+        expression against the job's own `strategy:` block and to record
+        `windows-latest`, NOT to relax this check. Weakening it to accept an
+        unresolved runner would have been the cheap way past, and it is the one
+        edit that makes this whole class hollow.
         """
 
         for job in self._jobs():
             if job["caller"]:
                 continue
             with self.subTest(file=job["file"], job=job["job"]):
+                # 🔴 `runners`, NOT `runner`. A job spelling
+                # `runs-on: ${{ inputs.os }}` has a `runner` and no resolvable
+                # label at all, so a check reading `runner` would find a
+                # non-empty string and wave it through.
                 self.assertIsNotNone(
-                    job["runner"],
-                    "declares no `runs-on:` this parser can resolve -- a block "
-                    "sequence, a flow list or a matrix expression reaches here "
-                    "as unresolved, and is refused rather than skipped",
+                    job["runners"],
+                    f"declares `runs-on: {job['runner']}`, which this parser "
+                    "cannot resolve to a label -- an expression naming "
+                    "anything but a matrix key of this same job reaches here "
+                    "unresolved, and is refused rather than skipped",
                 )
-                self.assertIn(
-                    job["runner"],
-                    RUNNER_JOB_CEILING_MINUTES,
-                    f"names runner {job['runner']!r}, whose platform job "
-                    "ceiling is not recorded; add it to "
-                    "RUNNER_JOB_CEILING_MINUTES with its documented limit",
-                )
+                for label in job["runners"]:
+                    self.assertIn(
+                        label,
+                        RUNNER_JOB_CEILING_MINUTES,
+                        f"names runner {label!r}, whose platform job "
+                        "ceiling is not recorded; add it to "
+                        "RUNNER_JOB_CEILING_MINUTES with its documented limit",
+                    )
 
     def test_every_job_declares_a_cap(self):
         """A job with no cap escapes the ceiling check entirely.
@@ -11331,9 +11577,9 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
         # into three failures. Nothing reaches a `continue` without having
         # already failed something.
         for job in self._jobs():
-            if job["caller"] or job["timeout"] is None:
+            if job["caller"] or job["timeout"] is None or job["runners"] is None:
                 continue
-            ceiling = RUNNER_JOB_CEILING_MINUTES.get(job["runner"])
+            ceiling = _lowest_ceiling(job["runners"])
             if ceiling is None:
                 continue
             with self.subTest(file=job["file"], job=job["job"]):
@@ -11341,11 +11587,12 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
                     job["timeout"],
                     ceiling,
                     f"declares timeout-minutes: {job['timeout']} on runner "
-                    f"{job['runner']!r}, whose platform ceiling is {ceiling} "
-                    "minutes and cannot be raised from configuration; the "
-                    "declared number is a fiction and the job dies at the "
-                    "ceiling with an annotation naming a limit this repository "
-                    "does not declare anywhere",
+                    f"{job['runner']!r} -- resolving to {job['runners']} -- "
+                    f"whose lowest platform ceiling is {ceiling} minutes and "
+                    "cannot be raised from configuration; the declared number "
+                    "is a fiction and the job dies at the ceiling with an "
+                    "annotation naming a limit this repository does not "
+                    "declare anywhere",
                 )
 
 
@@ -11466,6 +11713,751 @@ class WorkflowJobParserTests(unittest.TestCase):
             "jobs:\n  a:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n"
         )
         self.assertEqual([job["job"] for job in jobs], ["a"])
+
+class CiRequiredAggregatorTests(unittest.TestCase):
+    """The one required check, held to the shape that makes it one.
+
+    🔴 **Every failure this class guards against is GREEN.** An aggregate that
+    lost `always()` is *skipped* rather than failed on the runs it exists to
+    block; one that accepted `skipped` reports success over a job that quietly
+    stopped running; one whose `needs` omitted a job reports success having
+    never waited for it. None of the three produces a red check anywhere, which
+    is why they are pinned here rather than left to be noticed.
+
+    ⚠️ **Read as text, not parsed.** This suite runs on a bare interpreter with
+    no dependency install, exactly as the existing workflow assertions do.
+    """
+
+    CI = Path(__file__).resolve().parents[2] / "workflows" / "ci.yml"
+    AGGREGATE = "ci-required"
+
+    def _text(self):
+        """Return the whole workflow file.
+
+        Returns:
+            `ci.yml` as text.
+        """
+
+        return self.CI.read_text(encoding="utf-8")
+
+    def _aggregate_block(self):
+        """Return the aggregate job's own text, bounded to that job.
+
+        Bounded rather than swept to end-of-file: an unbounded window makes
+        every `assertIn` below pass by reading some other job's lines, which is
+        the mirror mistake of an empty window and the one that stays green.
+
+        Returns:
+            The job's text.
+        """
+
+        text = self._text()
+        start = text.index("\n  " + self.AGGREGATE + ":")
+        rest = text[start + 1 :]
+        end = re.search(r"\n  [A-Za-z_][\w-]*:\n", rest)
+        block = rest[: end.start()] if end else rest
+        self.assertIn(f"{self.AGGREGATE}:", block)
+        self.assertLess(len(block), len(text) // 2, "the job window did not close")
+        return block
+
+    def _declared_needs(self):
+        """Return the job ids the aggregate declares it depends on.
+
+        Returns:
+            The ids, in the order written.
+
+        Raises:
+            AssertionError: The aggregate declares no flow-style `needs:`.
+        """
+
+        found = re.search(r"^    needs: \[(.+)\]$", self._aggregate_block(), re.M)
+        self.assertIsNotNone(found, "the aggregate declares no flow-style `needs:`")
+        return [item.strip() for item in found.group(1).split(",")]
+
+    def test_the_aggregate_depends_on_every_other_job_in_the_file(self):
+        """🔴 The clause a job added later must fail rather than slip past.
+
+        Derived from the file rather than from a list kept beside it: a
+        hand-maintained list guards the jobs somebody remembered, and the next
+        job lands outside the aggregate while every check stays green. That is
+        the exact shape of a required check that protects less than it claims.
+        """
+
+        in_file = {
+            job["job"] for job in _declared_jobs(self.CI) if job["job"] != self.AGGREGATE
+        }
+        self.assertEqual(
+            set(self._declared_needs()),
+            in_file,
+            "a job in this workflow is not a dependency of the aggregate, so a "
+            "pull request can go green without it having succeeded",
+        )
+
+    def test_the_aggregate_opts_out_of_being_skipped(self):
+        """Without `always()` it is skipped, not failed, when a dependency fails.
+
+        GitHub skips a job whose dependency failed unless the job says
+        otherwise, and a skipped required check does not report failure. The
+        aggregate would then be absent from the very runs it exists to block.
+        """
+
+        self.assertIn("if: ${{ always() }}", self._aggregate_block())
+
+    def test_every_dependency_is_compared_against_success_by_name(self):
+        """The strict comparison, once per dependency.
+
+        A dependency present in `needs` but absent from the comparison is
+        waited for and then ignored -- which reads exactly like a job that is
+        checked.
+        """
+
+        block = self._aggregate_block()
+        for dependency in self._declared_needs():
+            with self.subTest(dependency=dependency):
+                # 🔴 A hyphenated job id is NOT reachable by property access in
+                # an Actions expression -- the parser reads the hyphen as an
+                # operator -- so `needs.fast-extras.result` does not fail
+                # loudly, it evaluates to something else entirely. The index
+                # form is mandatory for those ids and optional for the rest,
+                # which is why this asks for the right one per id rather than
+                # accepting either everywhere.
+                reference = (
+                    f"needs['{dependency}'].result != 'success'"
+                    if "-" in dependency
+                    else f"needs.{dependency}.result != 'success'"
+                )
+                self.assertIn(
+                    reference,
+                    block,
+                    f"{dependency!r} is waited for but never compared against "
+                    "`success` in the spelling its id requires, so its result "
+                    "cannot fail this check",
+                )
+
+    def test_the_loose_result_test_is_absent(self):
+        """`!contains(needs.*.result, 'failure')` treats `skipped` as acceptable.
+
+        Which is exactly how a required job that quietly stopped running goes
+        unnoticed. The strict form costs a line per dependency and says what it
+        means.
+        """
+
+        self.assertNotIn("needs.*.result", self._aggregate_block())
+
+    def test_the_only_conditional_dependency_is_the_one_that_skips_by_design(self):
+        """🔴 The event-conditional clause is an exemption and must stay narrow.
+
+        `review_replies` runs on `pull_request` only -- there is no pull request
+        to ask about on a push or a manual run -- so it is skipped there by
+        design. Requiring `success` unconditionally would paint `main` red on
+        every push; accepting `skipped` unconditionally would hide a job that
+        genuinely stopped running. Requiring success exactly on the event where
+        the job is scheduled is neither, and it is sound only while it applies
+        to that one job. A second dependency acquiring the same clause is a
+        second job nobody checks on three of the four events, so it is refused
+        here rather than discovered later.
+        """
+
+        block = self._aggregate_block()
+        guarded = re.findall(r"github\.event_name == 'pull_request' &&\s*\n?\s*needs\.([A-Za-z_][\w-]*)\.result", block)
+        self.assertEqual(
+            guarded,
+            ["review_replies"],
+            "exactly one dependency may be compared conditionally, and only "
+            "because its own `if:` skips it on every other event",
+        )
+
+    def test_the_conditional_clause_mirrors_that_jobs_own_condition(self):
+        """The exemption is only sound while the two conditions agree.
+
+        If `review_replies` stopped being `pull_request`-only, the clause above
+        would start excusing a job that was scheduled and skipped anyway. The
+        two lines live four hundred apart in one file, which is precisely the
+        arrangement that produced the runner-ceiling defect.
+        """
+
+        text = self._text()
+        self.assertEqual(
+            text.count("github.event_name == 'pull_request'"),
+            2,
+            "the aggregate's conditional clause and `review_replies`'s own "
+            "`if:` must both be present and must be the only two",
+        )
+
+    def test_no_expression_reaches_a_shell(self):
+        """🔴 The comparison happens in `if:`; the step is a bare `exit 1`.
+
+        A `${{ }}` expression is substituted as TEXT before the shell parses the
+        line, and `needs` carries job OUTPUTS as well as results -- so an
+        apostrophe or a crafted output breaks the quoting or injects commands.
+        It also prints every dependency's outputs into the log for no reason.
+        """
+
+        block = self._aggregate_block()
+        scripts = re.findall(r"^        run: (.+)$", block, re.M)
+        self.assertEqual(scripts, ["exit 1"])
+
+
+class MatrixRunnerResolutionTests(unittest.TestCase):
+    """`runs-on: ${{ matrix.os }}` names real labels, and the guard must see them.
+
+    🔴 **The ceiling guard is worthless against a matrix job it cannot read.**
+    Every check in :class:`DeclaredJobCapIsEnforceableTests` reads one runner
+    label, and the canonical spelling for a two-platform matrix is an expression
+    rather than a label. Refusing it -- which is what this parser did before this
+    class existed -- is the safe answer but not a usable one: the first matrix
+    job in the repository would then have had to choose between an unenforceable
+    cap and a weakened guard, which is the trade the whole mechanism exists to
+    refuse.
+
+    ⚠️ **`runner` keeps its meaning; `runners` is the new one and is the only
+    field a verdict reads.** `runner` is the scalar exactly as written, so it
+    still carries the text a failure message quotes. `runners` is the resolved
+    tuple of concrete labels, or ``None`` when this parser cannot resolve them.
+    The distinction is load-bearing rather than cosmetic: a job spelling
+    ``runs-on: ${{ inputs.os }}`` satisfies "``runner`` is not None" while having
+    no resolvable label at all, so a check reading `runner` would wave it
+    through.
+
+    ⚠️ **`exclude:` is deliberately not honoured.** It removes combinations, so
+    ignoring it can only over-approximate the label set -- the guard may demand a
+    recorded ceiling for a label that never actually runs. That is the safe
+    direction, and it is written down here so the next reader does not have to
+    ask.
+    """
+
+    def _write(self, body):
+        """Write a throwaway workflow and parse it.
+
+        Args:
+            body: The file's whole text.
+
+        Returns:
+            The parsed job dicts.
+        """
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "throwaway.yml"
+        path.write_text(body, encoding="utf-8")
+        return _declared_jobs(path)
+
+    HEAD = "name: T\non:\n  workflow_dispatch:\njobs:\n"
+
+    def test_a_literal_runner_resolves_to_a_single_label(self):
+        """The unchanged case, pinned so the new field cannot regress it.
+
+        Every job in this repository today spells its runner literally. Were
+        ``runners`` not to cover that shape, the guard would start refusing
+        files it has been reading correctly for weeks.
+        """
+
+        jobs = self._write(
+            self.HEAD + "  a:\n    runs-on: ubuntu-slim\n    timeout-minutes: 5\n"
+        )
+        self.assertEqual(jobs[0]["runner"], "ubuntu-slim")
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-slim",))
+
+    def test_a_flow_list_runs_on_is_one_runner_spec_and_not_a_label_list(self):
+        """🔴 The collision that would silently invent three unrecorded labels.
+
+        A flow list means two different things in the two places this parser
+        reads one. Under `runs-on:` it is ONE runner specification -- a set of
+        labels that must all be present on a single machine -- and
+        :data:`RUNNER_JOB_CEILING_MINUTES` already carries keys spelled exactly
+        that way. Under `strategy.matrix.<key>` it is a list of alternatives.
+        An implementation that "splits flow lists" wherever it finds them would
+        explode the self-hosted key into three labels, none of them recorded,
+        and report the wrong fault to whoever moved a job back to that fleet.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: [self-hosted, cap-main, noble]\n"
+            + "    timeout-minutes: 5\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("[self-hosted, cap-main, noble]",))
+        self.assertIn(jobs[0]["runners"][0], RUNNER_JOB_CEILING_MINUTES)
+
+    def test_a_flow_list_matrix_resolves_to_every_label_it_names(self):
+        """The shape this repository is about to commit."""
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n"
+            + "        os: [ubuntu-latest, windows-latest]\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-latest", "windows-latest"))
+
+    def test_a_block_sequence_matrix_resolves_too(self):
+        """Legal YAML that GitHub accepts, so refusing it would be a wall.
+
+        ⚠️ The alternative -- refuse the block form and tell the author to write
+        a flow list -- was considered and rejected. A guard that dictates the
+        YAML style of the file it checks gets edited into silence the first time
+        that style is inconvenient.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n        os:\n"
+            + "          - ubuntu-latest\n          - windows-latest\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-latest", "windows-latest"))
+
+    def test_an_include_entry_adds_its_label_rather_than_being_ignored(self):
+        """🔴 A label the guard cannot see is a label it does not check.
+
+        ``strategy.matrix.include`` may introduce a runner the top-level list
+        never names. A parser reading only the list would resolve this job to
+        one label while the platform ran it on two, and the second would carry
+        an unchecked cap -- a guard that quietly stopped checking, which is the
+        exact shape the ceiling guard was written after.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n"
+            + "        os: [ubuntu-latest]\n"
+            + "        include:\n          - os: ubuntu-slim\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-latest", "ubuntu-slim"))
+
+    def test_a_matrix_expression_with_no_strategy_block_is_refused(self):
+        """Nothing to resolve against, so the answer is ``None``, not a guess."""
+
+        jobs = self._write(
+            self.HEAD + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+        )
+        self.assertIsNone(jobs[0]["runners"])
+
+    def test_a_matrix_naming_a_key_the_strategy_never_defines_is_refused(self):
+        """The expression reads the ``os`` key; the matrix defines ``python``.
+
+        GitHub would run this job with an empty `runs-on`. Resolving it against
+        some *other* key would be worse than refusing: the guard would then
+        report a ceiling for a runner this job never uses.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n        python: ['3.13']\n"
+        )
+        self.assertIsNone(jobs[0]["runners"])
+
+    def test_a_matrix_value_this_parser_cannot_read_is_refused(self):
+        """``fromJSON(...)`` and a nested expression both reach here unresolved.
+
+        Refused rather than partially resolved: half a label set checked is the
+        hollow guard again, and this parser is being extended precisely because
+        a check that cannot read a shape must say so.
+        """
+
+        for spelling in (
+            "        os: ${{ fromJSON(needs.setup.outputs.matrix) }}\n",
+            "        os: [ubuntu-latest, '${{ env.EXTRA }}']\n",
+        ):
+            with self.subTest(spelling=spelling.strip()):
+                jobs = self._write(
+                    self.HEAD
+                    + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+                    + "    strategy:\n      matrix:\n"
+                    + spelling
+                )
+                self.assertIsNone(jobs[0]["runners"])
+
+    def test_a_non_matrix_expression_is_refused(self):
+        """Only a matrix reference is resolvable; every other expression is not.
+
+        ⚠️ **The `inputs` case is the one that matters here.** A reusable
+        workflow could take its runner as an input, and the caller would then
+        decide it -- so the label is not in this file at all. That spelling
+        satisfies "``runner`` is not None", which is exactly why the verdict
+        reads ``runners`` instead.
+        """
+
+        for expression in ("${{ vars.RUNNER }}", "${{ inputs.os }}"):
+            with self.subTest(expression=expression):
+                jobs = self._write(
+                    self.HEAD
+                    + f"  a:\n    runs-on: {expression}\n    timeout-minutes: 60\n"
+                )
+                self.assertIsNotNone(jobs[0]["runner"])
+                self.assertIsNone(jobs[0]["runners"])
+
+    def test_the_strategy_block_of_another_job_is_not_read_as_this_ones(self):
+        """The block is bounded to the job, and the bound is the point.
+
+        Without it a job with no `strategy:` resolves against its neighbour's,
+        which is how a runner nobody declared for it acquires a recorded
+        ceiling.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "  b:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n"
+            + "    strategy:\n      matrix:\n        os: [ubuntu-latest]\n"
+        )
+        by_name = {job["job"]: job for job in jobs}
+        self.assertIsNone(by_name["a"]["runners"])
+
+    def test_a_key_outside_the_strategy_block_is_not_read_as_a_matrix_value(self):
+        """`env:` may legally carry an `os:` of its own, and it is not the matrix.
+
+        The scan is bounded to `strategy:` rather than run over the whole job
+        for this reason. An unbounded one resolves the job against a value that
+        has nothing to do with where it runs, and reports a confident wrong
+        ceiling rather than refusing.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    env:\n      os: ubuntu-slim\n"
+        )
+        self.assertIsNone(jobs[0]["runners"])
+
+    def test_a_matrix_is_held_to_the_LOWEST_ceiling_of_its_labels(self):
+        """🔴 A matrix job is as constrained as its most constrained leg.
+
+        Taking the highest, or the first, would declare a 60-minute cap
+        enforceable on a matrix that includes a 15-minute runner -- and the
+        Windows leg would pass while the slim leg died at a limit no file
+        mentions. That is the original defect, reproduced one level up.
+        """
+
+        self.assertEqual(
+            _lowest_ceiling(("ubuntu-latest", "ubuntu-slim")),
+            RUNNER_JOB_CEILING_MINUTES["ubuntu-slim"],
+        )
+
+    def test_one_unrecorded_label_makes_the_whole_matrix_unresolvable(self):
+        """Not "the ceiling of the labels I recognised".
+
+        A minimum taken over the recorded subset is a confident answer about a
+        job that also runs somewhere nobody recorded. The unrecorded label
+        already fails its own check; this returns ``None`` so the cap check does
+        not additionally report a verdict it cannot support.
+        """
+
+        self.assertIsNone(_lowest_ceiling(("ubuntu-latest", "macos-latest")))
+
+    def test_a_trailing_comment_is_not_part_of_a_matrix_value(self):
+        """The tolerance `runs-on:` and `timeout-minutes:` already carry.
+
+        🔴 **Measured as a refusal before this was added.** A legal, commented
+        matrix resolved to ``None``, so the guard told the author their runner
+        was unresolvable while pointing at a line that names two ordinary
+        labels. Refusing is the safe direction, but a parser strict about one
+        key and lenient about another -- with no reason recorded for the
+        difference -- is the inconsistency this file already calls a defect.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n"
+            + "        os: [ubuntu-latest, windows-latest]  # both platforms\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-latest", "windows-latest"))
+
+    def test_a_trailing_comment_is_not_part_of_a_block_sequence_item(self):
+        """The same tolerance one level down, where the items are.
+
+        The two patterns must agree. A flow list that tolerates a comment while
+        a block sequence does not is the same unexplained asymmetry, just
+        smaller.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n        os:\n"
+            + "          - ubuntu-latest  # linux\n          - windows-latest\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-latest", "windows-latest"))
+
+    def test_a_key_whose_name_merely_starts_with_the_referenced_one_is_not_read(self):
+        """`os-arch` is not `os`, and resolving against it would be confident and wrong.
+
+        The mapping pattern is anchored on the colon for this reason. Without
+        that anchor a matrix carrying both keys resolves to the union of two
+        unrelated value sets, and the guard then demands a recorded ceiling for
+        an architecture name -- a failure that sends the reader to the wrong
+        table with no hint that the parser misread the file.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    strategy:\n      matrix:\n"
+            + "        os-arch: [x64]\n        os: [ubuntu-latest]\n"
+        )
+        self.assertEqual(jobs[0]["runners"], ("ubuntu-latest",))
+
+    def test_a_strategy_at_step_depth_is_not_read_as_the_jobs_own(self):
+        """🔴 The bound that keeps the resolution the job's, not something inside it.
+
+        `strategy:` is anchored at exactly four spaces, the depth a job's own
+        keys sit at. A deeper one -- in a step, or in any nested mapping that
+        happens to use the word -- must not answer for the job, because the
+        labels it names have nothing to do with where the job runs. Refused, not
+        guessed: this job declares a matrix runner and no matrix, which is
+        exactly the shape the guard exists to reject.
+        """
+
+        jobs = self._write(
+            self.HEAD
+            + "  a:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n"
+            + "    steps:\n      - run: true\n        strategy:\n"
+            + "          matrix:\n            os: [ubuntu-slim]\n"
+        )
+        self.assertIsNone(jobs[0]["runners"])
+
+
+class RecordedTestCountTests(unittest.TestCase):
+    """Two documents quote how many tests are in this file. Both must be true.
+
+    🔴 **A quoted count is a claim that rots silently.** `README.md` tells a
+    contributor what to expect from a local run and `ci.yml` tells an operator
+    what the job covers; a reader who runs the suite and sees a different number
+    cannot tell whether tests were added, whether some failed to load, or whether
+    the document was simply never updated. The third of those is the only one
+    that is harmless, and it is indistinguishable from the second.
+
+    ⚠️ **Measured here, never incremented.** The count comes from the loader, so
+    a case that stops being collected -- a renamed method, a class that failed to
+    import -- lowers it and fails this, which arithmetic on the previous figure
+    could not do.
+
+    ⚠️ The cost is real and is the point: adding a test to this file means
+    updating two sentences. They were 24 out of date when this guard was written,
+    which is how long it takes.
+    """
+
+    #: The documents quoting the figure. Enumerated rather than swept: a sweep
+    #: for "a number near the word tests" over the whole tree is a guess, and
+    #: these two sentences are specific claims about this module.
+    QUOTING = (
+        Path(__file__).resolve().parents[1] / "README.md",
+        Path(__file__).resolve().parents[2] / "workflows" / "ci.yml",
+    )
+
+    def _total(self):
+        """Return how many test cases this module actually defines.
+
+        Returns:
+            The loader's count, which is the number the runner prints.
+        """
+
+        loader = unittest.defaultTestLoader
+        return loader.loadTestsFromModule(sys.modules[__name__]).countTestCases()
+
+    def test_both_documents_quote_the_real_count(self):
+        """The claim. Read from the loader, compared against each document."""
+
+        total = self._total()
+        for path in self.QUOTING:
+            with self.subTest(document=path.name):
+                # 🔴 A WHOLE number, not a substring. Measured while falsifying
+                # this guard: a document quoting `5390` satisfies a substring
+                # test for `539`, so the mutation that should have killed this
+                # case passed it instead. A count is exactly the kind of value
+                # whose neighbours contain it.
+                #
+                # `assertTrue`, not `assertIn`: the latter renders the haystack,
+                # and the haystack here is an entire document. The message IS
+                # the diagnosis, so it must not arrive under eight kilobytes of
+                # the file it is about.
+                self.assertTrue(
+                    re.search(rf"\b{total}\b", path.read_text(encoding="utf-8")),
+                    f"{path.name} does not quote {total}, which is how many "
+                    "tests this module now defines; update the sentence rather "
+                    "than deleting the number, because it is what tells a "
+                    "reader whether their local run was complete",
+                )
+
+    def test_the_count_is_derived_and_not_a_constant(self):
+        """🔴 The control: a hard-coded total would pass the case above for ever.
+
+        If the loader ever returned zero -- an import that half-failed, a
+        renamed module -- the check above would look for "0", find it in some
+        unrelated line of either document, and pass. This refuses that.
+        """
+
+        self.assertGreater(self._total(), 100)
+
+
+class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
+    """Seven sentences across six files said this repository ran no tests in CI.
+
+    🔴 **All seven were true when written, and one change falsified every one of
+    them at once.** They were not clustered: they sat in the workflow header, the
+    review prompt, the review guide, the `ci` rule file, the review workflow's
+    own preamble and twice in the setup README. A change that corrected the two
+    obvious ones would have left five standing, and the next reader would have
+    trusted whichever they found first.
+
+    ⚠️ **A guard rather than the grep that found them, and this repository has
+    already paid for the difference.** The sentence about self-hosted runners was
+    corrected in the `ci` rule file and survived in the parallel block in the
+    workflow; the automated review caught it on the next round. A one-time grep
+    is an act, not an invariant.
+
+    ⚠️ **One pattern per PHRASING, not one pattern.** The claim was written five
+    different ways, and the model this class follows -- the runner-claim guard --
+    works only because the phrase it forbids appears nowhere else in the tree.
+    None of these has that property on its own, so each is anchored tightly
+    enough not to fire on ordinary prose: `no workflow-level permissions:` is a
+    real sentence in `ci.yml` and must not match.
+
+    ⚠️ **The specimens below are PARAPHRASED or marked**, following the same
+    convention: this guard reads every file under `.github/`, and its own source
+    is one of them.
+    """
+
+    #: Each retired phrasing, with the sentence it came from named in the
+    #: comment rather than quoted. Anchored so ordinary prose does not match:
+    #: `only workflow` alone would fire on "no workflow-level `permissions:`",
+    #: which is a true sentence this repository needs to keep.
+    CLAIMS = (
+        # "this repository has no CI test job" / "no CI for its own code"  # noqa: ci-claim
+        re.compile(r"no CI (?:test job|for its own)"),
+        # "`claude-code-review.yml` is its only workflow"  # noqa: ci-claim
+        re.compile(r"is its only workflow"),  # noqa: ci-claim
+        # "This directory contains one workflow"  # noqa: ci-claim
+        re.compile(r"contains one workflow"),  # noqa: ci-claim
+        # "the two CI jobs" / "the two `ci.yml` jobs" -- an undercount now that  # noqa: ci-claim
+        # the caller, the aggregate and the broad job exist.
+        re.compile(r"the two (?:CI|`ci\.yml`) jobs"),
+    )
+
+    #: Suppress a deliberate match with this marker on the line, exactly as the
+    #: runner-claim guard does. By marker rather than by line number, so editing
+    #: this class cannot silently disable the sweep.
+    MARKER = "noqa: ci-claim"
+
+    def _root(self):
+        """Return the directory both the sweep and its controls walk.
+
+        🔴 **One expression, used by both.** When each computed its own root,
+        moving the sweep's left the control green over a walk that saw nothing.
+        A control that cannot see the thing it controls is not one.
+
+        Returns:
+            The `.github/` directory this suite lives under.
+        """
+
+        return Path(__file__).resolve().parents[2]
+
+    def _files(self):
+        """Yield every readable file under the swept root.
+
+        Walked rather than enumerated: an enumerated list guards the files
+        somebody thought of, and the next document lands unguarded while the
+        guard still passes.
+
+        Yields:
+            Each file path.
+        """
+
+        for path in sorted(self._root().rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts:
+                yield path
+
+    def test_every_rule_recognises_the_claim_it_forbids(self):
+        """🔴 The control the sweep cannot give itself.
+
+        The sweep below asserts an EMPTY list. A mistyped pattern passes it for
+        ever. These specimens are the retired sentences, close enough to the
+        originals to be recognised and marked so they do not become the leak
+        they describe.
+        """
+
+        specimens = (
+            "reason that is false here: this repository has no CI test job",  # noqa: ci-claim
+            "named here rather than left to be discovered: no CI for its own code",  # noqa: ci-claim
+            "`claude-code-review.yml` is its only workflow, so nothing else ran",  # noqa: ci-claim
+            "This directory contains one workflow and the review system",  # noqa: ci-claim
+            "`ubuntu-slim` for the two CI jobs, so no runner group",  # noqa: ci-claim
+            "`ubuntu-slim` for the two `ci.yml` jobs -- GitHub-hosted",  # noqa: ci-claim
+        )
+        for specimen in specimens:
+            with self.subTest(specimen=specimen):
+                self.assertTrue(
+                    any(rule.search(specimen) for rule in self.CLAIMS),
+                    "no rule recognises a sentence this guard exists to forbid",
+                )
+
+    def test_no_rule_fires_on_the_true_sentences_it_sits_beside(self):
+        """The other control: a rule matching everything would also pass.
+
+        Each of these is a real sentence in this tree that a looser pattern
+        would have caught -- and the response to a guard that cries wolf is to
+        delete the sentence, which is the reasoning this guard exists to
+        preserve.
+        """
+
+        for sentence in (
+            "This file has no workflow-level `permissions:`, so a new job",
+            "the only workflow-level binding kitty reads",
+            "the two review-system jobs stay on `ubuntu-slim`",
+            "no CI runner group has to be granted",
+        ):
+            with self.subTest(sentence=sentence):
+                firing = [rule.pattern for rule in self.CLAIMS if rule.search(sentence)]
+                self.assertFalse(firing, f"{sentence!r} -> {firing}")
+
+    def test_the_sweep_reaches_the_files_it_claims_to(self):
+        """🔴 A walk that found nothing passes the sweep below in silence.
+
+        Named files rather than a count: a count drifts with every document
+        added, so it would be edited rather than believed. These four are the
+        surfaces the claim actually lived on.
+        """
+
+        found = {path.name for path in self._files()}
+        for name in ("ci.yml", "REVIEW_PROMPT.md", "REVIEW_GUIDE.md", "README.md"):
+            with self.subTest(name=name):
+                self.assertIn(name, found)
+
+    def test_no_document_says_this_repository_has_no_test_gate(self):
+        """The sweep. Walked, not enumerated."""
+
+        root = self._root()
+        offences = []
+        for path in self._files():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                # A binary file cannot carry a reviewable sentence, and failing
+                # on one would make this guard about file types.
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if self.MARKER in line:
+                    continue
+                for rule in self.CLAIMS:
+                    if rule.search(line):
+                        offences.append(
+                            f"{path.relative_to(root).as_posix()}:{lineno}: "
+                            f"{line.strip()[:100]}"
+                        )
+
+        self.assertFalse(
+            offences,
+            "this repository DOES run its tests in CI -- `ci.yml` calls the "
+            "broad selection on both platforms and aggregates it into "
+            "`ci-required`. Rewrite each of these to say what is true now "
+            "(which jobs the gate does and does not cover) rather than "
+            "deleting the sentence, so the reasoning survives:\n  "
+            + "\n  ".join(offences),
+        )
+
 
 class NoDocumentMisdescribesTheSlimRunnerTests(unittest.TestCase):
     """`ubuntu-slim` is one of GitHub's standard public labels. Four files said otherwise.

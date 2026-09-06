@@ -182,13 +182,17 @@ Explain the failure mode in one or two sentences and give a concrete fix.
   is not only allowed but expected; verify a count rather than assuming one.
 
   ⚠️ Note the difference from the upstream repository this contract came from:
-  **there, the justification was "the repository's own checks run them". This
-  repository has no CI test job at all** — `claude-code-review.yml` is its only
-  workflow. So the reason here is narrower and worth stating plainly: you have a
+  there, the justification was "the repository's own checks run them". This
+  repository **once ran none of its own tests in CI**, and now runs them —
+  `ci.yml` calls the hermetic and subsystem selection on both platforms. The reason here is
+  still narrower than upstream's and is worth stating plainly: you have a
   writable checkout, a network path and no isolation, and running a test suite or
-  a dependency install from a review job is a side effect nobody asked for. It is
-  **not** because something else has already run them. If a change looks untested,
-  say it is untested; do not assume a green suite exists somewhere.
+  a dependency install from a review job is a side effect nobody asked for.
+
+  ⚠️ **Do not read a green check as broad coverage.** The gate runs one
+  selection; the browser, packaging, type-check, coverage and live jobs are not
+  in it yet. If a change looks untested, say it is untested rather than assuming
+  a green suite covered it somewhere.
 - **Do not claim that tests, linters, or type checks pass or fail.** You have not
   run them and will not.
 - **Do not relitigate settled decisions.** These are deliberate and documented in

@@ -1,0 +1,123 @@
+name: Tests (broad)
+
+# The repository's own test suite, on both platforms it supports.
+#
+# ⚠️ **A reusable workflow, called from `ci.yml`, and that shape is deliberate.**
+# The test-suite design commits every CI job to its own file so that `ci.yml`
+# holds nothing but `uses:` lines and one `needs:` list. Several later steps add
+# jobs in parallel; if each edited a shared workflow they would conflict, and the
+# worse outcome is a rebase that silently drops the other's edit. The `needs:`
+# list stays the one contended region, and the steps mutating it are ordered in
+# `.system_design/TEST_SUITE_IMPLEMENTATION_PLAN.md`.
+#
+# ⚠️ **Transitional by design.** Section 8B of `.system_design/TEST_SUITE.md`
+# asks for one broad selection first, so that a gate exists at all, and splits it
+# into the normative `fast` and `subsystem` jobs in the next step. This file is
+# that first selection. It is NOT the job table of section 10.3 and should not be
+# read as it.
+#
+# 🔴 **The selection deliberately INCLUDES `subsystem`.** The worker retry,
+# cleanup and streaming tests are the reason the test-suite design exists, and
+# they sit at the subsystem layer because they need a real child process. A
+# `fast`-only gate excludes them by construction, so the aggregate would go green
+# while exactly those tests sat unprotected. What is excluded is only what a
+# plain runner genuinely cannot do: a browser and the network.
+#
+# 🔴 **This job requires no repository secret, and that is an invariant worth
+# keeping rather than an accident.** GitHub withholds secrets from a workflow
+# triggered by a fork's pull request, so a job that needed one would be red on
+# every outside contribution -- and a merge gate that cannot go green for a
+# contributor is not a gate, it is a wall. The selection reaches no network and
+# `tests/conftest.py` supplies a dummy provider key when the environment has
+# none. A step added here that reads `secrets.*` breaks fork pull requests, and
+# nothing else will say so: on a fork the secret resolves to the empty string
+# rather than failing.
+#
+# 🔴 **`--ignore=tests/package` is NOT redundant with the `package` marker.** A
+# marker exclusion only helps when the marker is present. A file under
+# `tests/package/` whose author forgot `@pytest.mark.package` is still collected
+# by the marker expression alone, and would then run against the source checkout
+# while claiming to have tested an installed wheel. Path and marker together;
+# neither alone. The directory does not exist yet -- this is the job that must
+# already be right when it does.
+
+on:
+  workflow_call:
+
+jobs:
+  broad:
+    # 🔴 **The matrix lives HERE, in the called workflow, not on the caller.**
+    # A caller job may legally carry a `strategy:` and pass the leg in with
+    # `with:`, and that shape was rejected: the runner would then be spelled
+    # `runs-on: ${{ inputs.os }}`, whose value is decided by whoever calls the
+    # workflow and is therefore not resolvable from any file. The runner-ceiling
+    # guard refuses what it cannot resolve, so that arrangement would have put a
+    # job beyond the reach of the check -- which is the failure the guard exists
+    # to prevent, not a shape to route around it with.
+    strategy:
+      # Both legs report. A Windows failure that hid the Linux result would cost
+      # a whole round trip on the one platform this repository has the least
+      # evidence about.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # 🔴 Measured, not guessed, and strictly below the runner's ceiling. The
+    # selection takes 8m39s on a developer's Linux machine (785 passed, 2
+    # skipped, 787 selected); this cap is roughly seven times that, because it
+    # must also cover Windows -- where a suite that spawns child processes and
+    # shells out to mypy commonly runs two to three times slower -- plus a cold
+    # dependency install. Both labels above are ordinary GitHub-hosted runners
+    # with a 6-hour platform ceiling, and 60 is strictly under it, so this
+    # number can actually fire and produce a diagnosis of its own rather than
+    # dying at the same instant the platform kills the job.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          # 3.13 only, deliberately. The compatibility matrix over Python and
+          # `mcp` versions arrives with the normative split; adding it here
+          # would quadruple the first gate's runtime for no coverage this step
+          # is responsible for.
+          python-version: "3.13"
+      - name: Install the project and its dev extras
+        # `bash` on both platforms, so one command line is read one way. The
+        # Windows default is PowerShell, and a selection expression that must be
+        # quoted identically in two shells is a difference nobody sees until the
+        # marker expression silently changes meaning on one of them.
+        shell: bash
+        # 🔴 `.[dev]`, not the pinned ratchet lane. The selection includes
+        # `subsystem` cases that shell out to `mypy`, and `mypy` lives only in
+        # the `dev` extra. With it absent the harness's shell-out cases fail
+        # while its configuration-reading cases still pass, which reads as a
+        # partial breakage rather than a missing tool -- so the harness raises
+        # "mypy never ran" instead, naming the install as the cause.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run the hermetic and subsystem selection
+        shell: bash
+        # 🔴 **`--min-selected` is the floor, and it is read from an observed
+        # run.** `--strict-markers` rejects an unknown mark applied to a test; it
+        # says nothing about a job whose `-m` expression matches two tests when
+        # it should match seven hundred. A selector matching *nothing* is safe by
+        # accident -- pytest exits 5 and the step fails -- but the dangerous case
+        # is a selector that matches a handful, which exits 0 and goes green.
+        # The floor is enforced inside pytest, where collection is authoritative
+        # and the test exit code is preserved.
+        #
+        # ⚠️ **Update this number in the same pull request that deliberately adds
+        # tests to, or removes them from, this selection** -- and read it from
+        # the run, never from a number written down earlier. Note the shape that
+        # is NOT an addition to the selection: the first test carrying a
+        # `chromium`, `live` or `package` marker is deselected here, so it lowers
+        # this count. Today those three markers select zero of the 787, so this
+        # floor is the whole suite; the step that adds the first browser test
+        # owns lowering it, and the failure message it would otherwise get names
+        # the wrong cause.
+        run: >-
+          python -m pytest
+          --ignore=tests/package
+          -m "not live and not chromium and not package"
+          --min-selected 787

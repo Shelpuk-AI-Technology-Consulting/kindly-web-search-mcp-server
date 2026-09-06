@@ -817,6 +817,43 @@ typo'd selector fails the job.
   Merges only once E1-6 lands, so it is green from its first run.
   *Verify:* a failing test makes `ci-required` red; a **skipped** dependency also
   makes it red; a fork PR triggers the workflow; the job is green on merge.
+
+  > **Implementation notes, added on merge.**
+  >
+  > - **`ci-required.needs` includes the two review-system jobs**, not only the
+  >   test job. Excluding them would have meant either three required checks —
+  >   contradicting §10.3's "it is the only required check" — or one required
+  >   check that had silently stopped covering the `review_replies` merge gate.
+  >   `review_replies` is `pull_request`-only, so it is compared under
+  >   `github.event_name == 'pull_request'`; that is not the loose `skipped`
+  >   acceptance §10.3 forbids, it requires success exactly on the event where
+  >   the job is scheduled. Two guards hold it: one refuses a second dependency
+  >   acquiring the same clause, and one pins the two conditions to each other.
+  > - **The runner-ceiling guard was extended, not relaxed.** It failed on the
+  >   first commit exactly as this entry predicted. The parser now resolves a
+  >   matrix runner against the job's own `strategy:` block into a field
+  >   separate from the `runs-on:` scalar, every verdict reads the resolved
+  >   field, a matrix is held to the **lowest** ceiling among its labels, and
+  >   `include:` entries are unioned in. `windows-latest` was recorded at 360.
+  > - **The matrix lives in the called workflow, not on the caller.** A caller
+  >   job may carry a `strategy:`, but its runner would then be
+  >   `${{ inputs.os }}` — decided outside the file and resolvable from none of
+  >   it — which would put the job beyond the guard's reach.
+  > - **Seven sentences in six files said this repository ran no tests in CI.**
+  >   All were true when written and one change falsified them together. Each is
+  >   rewritten rather than deleted, and a sweep guard now fails on any
+  >   reintroduction, with a control per phrasing and a control that the walk
+  >   reached real files.
+  > - **`concurrency` was added to `ci.yml`** with the test jobs and not before:
+  >   the review jobs finish in seconds, so superseding them saved nothing,
+  >   while the broad selection is roughly nine minutes per leg.
+  >
+  > **Deferred:** a typo in an *exclusion* term of the marker expression is
+  > invisible to the floor, measured — `-m "... and not packaage"` still selects
+  > 787 and exits 0. The floor catches under-selection, which is the dangerous
+  > case; it cannot catch an exclusion that excludes nothing while the excluded
+  > markers select nothing anyway. This resolves itself as those markers acquire
+  > tests, and is recorded rather than solved.
 - **E4-2.** No diff to the repository. This is §8B's minimum viable gate and it
   lands immediately after green — which is why E4-3 declares `complete E4-2`
   rather than relying on prose ordering.
@@ -1286,6 +1323,17 @@ duplicating tests or touching the same files.
   are hermetic and belong in the fast lane. Every claim this step adds there
   needs its own `chromium` or `subsystem` marker, or a step written against a
   locally installed Chromium quietly acquires cases that run everywhere.
+  **This step therefore owns lowering the broad job's `--min-selected` floor,
+  and its acceptance check must say so.** E4-1 measured that floor at 787 —
+  which is the *whole* suite, because `chromium`, `live` and `package` today
+  select zero of it. The first `chromium`-marked case this step adds is
+  deselected by the broad job and drops the count below the floor, so the job
+  exits 4 with *"check the -m expression against the registered markers"*: a
+  message naming the wrong cause, on a step whose selector is fine. §10.3's
+  maintenance rule covers deliberate additions **to** a selection and does not
+  cover this shape, which is a deliberate addition **outside** one.
+  *Verify, added:* the broad job's floor is lowered in the same pull request by
+  exactly the number of cases this step marks, read from an observed run.
   **Added scope: settle one §10.4 sentence this step is now the owner of.** §10.4
   holds two positions about hermetic tests on `omit`-ed modules and nothing
   reconciles them. One blesses the practice — "an L1 test on an omitted module,

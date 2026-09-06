@@ -189,11 +189,18 @@ needs to check it.
 install dependencies.
 
 ⚠️ Be precise about why, because the upstream version of this instruction gave a
-reason that is false here: **this repository has no CI test job.**
-`claude-code-review.yml` is its only workflow, so nothing else has run the suite
-either. The reason is that you have a writable checkout, a network path and no
-isolation, and running a suite or an install from a review job is a side effect
-nobody asked for.
+reason this repository could not support and the correction has now moved twice.
+It once said this repository ran **none of its own tests in CI**; it now runs
+them. `ci.yml` calls the hermetic and subsystem selection on Linux and Windows
+and aggregates it into `ci-required`. So a green pull request does mean that selection passed.
+
+**It is still not the reason not to run anything here.** The reason is that you
+have a writable checkout, a network path and no isolation, and running a suite or
+an install from a review job is a side effect nobody asked for. And the gate is
+narrower than "the tests pass": it does not yet cover the browser tests, the
+packaging tests, the type-check job, the coverage controls or the live canaries.
+If a change looks untested, say so — do not infer from a green check that
+something has covered it.
 
 Your job is to read the change and reason about it. If a change needs a test
 that does not exist, that is a finding. If you cannot tell whether existing

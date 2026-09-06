@@ -2004,11 +2004,19 @@ plan is built would let exactly that recur while B–D are in flight.
 
 The minimum viable gate is small and ships as soon as A lands:
 
-1. One workflow running
+1. One job running
    **`pytest --ignore=tests/package -m "not live and not chromium and not package"`**
    on Linux and Windows, Python 3.13. The `--ignore` is not redundant with the
    marker: §10.3 requires it on every source-checkout job precisely because the
    marker is the thing that gets forgotten.
+
+   ⚠️ **"One job", not "one workflow" — corrected when it landed.** §1.3 of the
+   implementation plan requires each job to live in its **own reusable workflow
+   file**, with `ci.yml` holding nothing but `uses:` lines and the `needs:` list,
+   so that steps adding jobs in parallel contend only on that list. This
+   paragraph said "one workflow" and the sentence below said every later job is
+   "added to the same workflow", which is the opposite rule. Anyone implementing
+   E4-3 or E4-4 from this section alone would have followed the wrong one.
 2. The `ci-required` aggregation job (§10.3) as the **required check** under
    branch protection on `main`.
 
@@ -2021,9 +2029,10 @@ therefore excludes only what the first runner genuinely cannot do: Chromium and
 the network. Those tests are portable by design (§5.2), so both platforms can run
 them from day one.
 
-Every later job — `fast-extras`, `chromium`, `package` — is added to the same
-workflow and to `ci-required`'s `needs` as its tests come into existence, and the
-broad selection is split into the named jobs of §10.3 at that point. The
+Every later job — `fast-extras`, `chromium`, `package` — arrives as **its own
+reusable workflow file**, called from `ci.yml` and added to `ci-required`'s
+`needs` as its tests come into existence, and the broad selection is split into
+the named jobs of §10.3 at that point. The
 nightlies are **not** added to `ci-required` (§10.3).
 
 **C. Add the production seams** in §11 — the rest of the design depends on them.
@@ -2149,10 +2158,19 @@ justified in `pyproject.toml`.
 | `mutation` (nightly) | `mutmut run` over the §3.2 scope | — | Linux |
 | `types` | `mypy` over the Protocol-carrying modules | **`.[dev]`** — needs `mypy` | Python 3.13 | Linux |
 | `coverage` | pinned lane; runs the three controls of §10.4 | `requirements-ratchet.txt` (no `mypy`) | Python 3.13, pinned | Linux |
-| `ci-required` | aggregation only — no tests | — | Linux |
+| `broad` (transitional) | `--ignore=tests/package -m "not live and not chromium and not package"` | `.[dev]` | Python 3.13 | Windows + Linux |
+| `ci-required` | aggregation only — no tests | — | | Linux |
 
 `fast`, `fast-extras`, `subsystem`, `chromium`, `package`, `types` and `coverage`
 run on every push and PR.
+
+**`broad` is the CI-skeleton step's transitional job and is not part of this
+table's steady state.** §8B asks for one broad selection first, so that a gate
+exists at all before the rest of the design is built; E4-3 replaces it with
+`fast` and `subsystem`, whose union is the same set of tests. It is listed here
+so the recorded job set in `.github/review/tests/test_review_scripts.py` does not
+name a job this table never mentions — a reader finding a job there and not here
+has no way to tell a transitional one from an accident.
 
 **The `coverage` job is where §10.4's controls actually execute**, and it is a
 required dependency of `ci-required` (which remains the only *required check*).
@@ -2234,10 +2252,32 @@ Two consequences for the jobs in this table:
 2. **A matrix runner must carry a recorded ceiling before it can be named.**
    `fast` and `subsystem` above run on Windows + Linux, whose canonical spelling
    is `runs-on: ${{ matrix.os }}`. That resolves to no entry in the ceiling table
-   and will fail the guard on E4-1's first commit, by design — the ceiling for a
+   and failed the guard on E4-1's first commit, by design — the ceiling for a
    matrix runner is a decision worth making when the matrix is written rather
-   than discovered later, when the check has gone hollow. E4-1 extends the table;
-   the failure message names it.
+   than discovered later, when the check has gone hollow. The failure message
+   names the table.
+
+   **What that step did about it, since "extend the table" was only half.** The
+   parser now resolves `${{ matrix.<key> }}` against the job's **own**
+   `strategy:` block, and exposes the resolved labels as a field separate from
+   the `runs-on:` scalar; every verdict reads the resolved field, because a job
+   spelling `runs-on: ${{ inputs.os }}` has a scalar and no resolvable label at
+   all. Three consequences worth carrying:
+
+   - **A matrix job is held to the LOWEST ceiling among its labels.** Taking the
+     highest, or the first, would call a 60-minute cap enforceable on a matrix
+     that also runs somewhere with a 15-minute ceiling — the original defect,
+     one level up.
+   - **`include:` entries are unioned in; `exclude:` is deliberately ignored.**
+     An `include:` may name a runner the top-level list never does, and a label
+     the guard cannot see is a label it does not check. `exclude:` only removes
+     combinations, so ignoring it over-approximates, which is the safe direction.
+   - **The matrix must live in the called workflow, not on the caller.** A caller
+     job may legally carry a `strategy:` and pass the leg in with `with:`, but
+     the runner is then spelled `${{ inputs.os }}`, whose value is decided by
+     whoever calls the workflow and is resolvable from no file. The guard refuses
+     what it cannot resolve, so that arrangement would put a job beyond its
+     reach.
 
 A **caller job** — one that only declares `uses:` to call a reusable workflow, as
 §1.3 of the implementation plan requires `ci.yml`'s jobs to become — legally
@@ -2261,13 +2301,17 @@ default and inspect results itself:
 ```yaml
 ci-required:
   if: ${{ always() }}          # without this the job is skipped, not failed
-  needs: [fast, fast-extras, subsystem, chromium, package, types, coverage]
+  needs: [review-scripts, review_replies,
+          fast, fast-extras, subsystem, chromium, package, types, coverage]
   runs-on: ubuntu-latest
   timeout-minutes: 10          # every job declares one, strictly below its
                                # runner's ceiling -- see the paragraph above
   steps:
     - name: Fail unless every dependency succeeded
       if: >-
+        needs['review-scripts'].result != 'success' ||
+        (github.event_name == 'pull_request' &&
+         needs.review_replies.result != 'success') ||
         needs.fast.result != 'success' ||
         needs['fast-extras'].result != 'success' ||
         needs.subsystem.result != 'success' ||
@@ -2277,6 +2321,30 @@ ci-required:
         needs.coverage.result != 'success'
       run: exit 1
 ```
+
+**The two review-system jobs are dependencies too, and that is what keeps "the
+only required check" true.** They were not in this list until the CI-skeleton
+step, which is when it stopped being a list of test jobs and became the thing
+branch protection reads. Leaving them out would have meant either three required
+checks — contradicting the paragraph above — or one required check that had
+silently stopped covering the merge gate `review_replies` exists to provide.
+
+🔴 **`needs['review-scripts']`, not `needs.review-scripts`.** A job id
+containing a hyphen is not reachable by property access in an Actions expression;
+the parser reads the hyphen as an operator, so the dot spelling does not fail
+loudly — it evaluates to something else. Two ids in this list carry one.
+
+⚠️ **`review_replies` is the one dependency compared conditionally, and the
+condition mirrors that job's own `if:` rather than relaxing this one.** It runs
+on `pull_request` only — there is no pull request to ask about on a push or a
+manual run — so it is *skipped* on those events by design. Requiring `success`
+unconditionally would paint `main` red on every push; accepting `skipped`
+unconditionally is the loose form this section forbids. Requiring success exactly
+on the event where the job is scheduled is neither, and it is sound **only while
+it applies to that one job**: a second dependency acquiring the same clause is a
+second job nobody checks on three of the four events.
+`test_the_only_conditional_dependency_is_the_one_that_skips_by_design` and
+`test_the_conditional_clause_mirrors_that_jobs_own_condition` hold both halves.
 
 **No expression substitution inside `run:`.** The comparison happens in the
 Actions `if:` expression, and the shell step is a bare `exit 1`. Interpolating

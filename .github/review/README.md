@@ -90,8 +90,9 @@ To enable the workflow on this repository:
 1. Grant this repository access to the three settings above (organisation
    settings → Secrets and variables → Actions → each item → repository access).
 2. Nothing to do for runners — the workflows use GitHub-hosted labels
-   (`ubuntu-latest` for the review, `ubuntu-slim` for the two CI jobs), so no
-   runner group has to be granted.
+   (`ubuntu-latest` for the review and for `ci-required`, `ubuntu-slim` for the
+   two review-system jobs, and `ubuntu-latest` + `windows-latest` for the broad
+   test job), so no runner group has to be granted.
 
    ⚠️ **Why not the self-hosted fleet, since the organisation has one:** a runner
    group carries an *"Allow public repositories"* setting that is **off by
@@ -110,9 +111,12 @@ To enable the workflow on this repository:
    GitHub's runner reference: *"The job timeout for single-CPU runners is 15
    minutes."* The review job used to run there with `timeout-minutes: 60` and was
    killed mid-run five times before anyone paired the two lines; it now runs on
-   `ubuntu-latest`, whose ceiling is six hours. The two CI jobs stay on
-   `ubuntu-slim`, which is what that label is for. A test fails if any job ever
-   declares a cap its runner will not honour.
+   `ubuntu-latest`, whose ceiling is six hours. The two review-system jobs stay
+   on `ubuntu-slim`, which is what that label is for, and the broad test job runs
+   on the ordinary six-hour labels because it is emphatically not lightweight
+   automation. A test fails if any job ever declares a cap its runner will not
+   honour — including a matrix job, which is held to the LOWEST ceiling among the
+   labels its matrix can produce.
 3. Open a pull request. The `review` check appears on it.
 4. Once it has run green once, make `review` a required status check on `main`.
 
@@ -158,8 +162,9 @@ step 2 above.
 ## Changing the review system
 
 `.github/workflows/ci.yml` runs `tests/test_review_scripts.py` on every pull
-request — 513 tests over the selector, the classifier, the notices, the redactor,
-the schema and the workflow's own wiring. Run them locally the same way:
+request — 543 tests over the selector, the classifier, the notices, the redactor,
+the schema and the workflow's own wiring, plus the workflow parser, the
+runner-ceiling table and the `ci-required` aggregation. Run them locally the same way:
 
 ```bash
 python .github/review/tests/test_review_scripts.py

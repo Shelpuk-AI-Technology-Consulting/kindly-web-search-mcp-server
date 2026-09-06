@@ -214,20 +214,39 @@ def test_guard_stands_down_when_the_run_has_already_failed() -> None:
     )
 
 
-def test_option_default_is_zero(pytestconfig: pytest.Config) -> None:
-    """Assert the option is registered in the **running** pytest, defaulting to 0
+def test_option_is_registered_in_the_running_pytest(pytestconfig: pytest.Config) -> None:
+    """Assert the option is registered in the **running** pytest
 
     Read through ``pytestconfig`` rather than from the source: this is the case
     that notices if ``tests/conftest.py`` stops being an initial conftest and the
-    registration silently stops happening.
+    registration silently stops happening. ``getoption`` raises ``ValueError``
+    for an unregistered name, so reaching the assertion at all is most of the
+    claim.
+
+    🔴 **This case used to assert the value was 0, and that was a latent defect
+    rather than a stricter check.** ``getoption`` returns the **effective**
+    value, not the declared default, so the assertion held only for invocations
+    that omitted the option -- which was every invocation until CI began passing
+    a floor. The first real CI run would have failed here, on a test whose
+    subject is unrelated to anything the run was doing, with a message about a
+    design requirement that was being met.
+
+    ⚠️ **The default's behaviour is pinned elsewhere and deliberately not
+    re-asserted here.** ``test_without_the_option_an_empty_selection_still_exits_five``
+    runs a child with no floor over a selection matching nothing: a default above
+    zero would arm the guard, and that child would exit 4 instead of 5. That is a
+    behavioural check of the default which no supplied option can disturb, which
+    is exactly what this one could not be.
 
     Args:
         pytestconfig: The session's configuration, injected by pytest.
     """
-    assert pytestconfig.getoption(OPTION) == 0, (
-        f"pytest reports {OPTION} = {pytestconfig.getoption(OPTION)!r}; section "
-        "10.3 of TEST_SUITE.md requires a default of 0 so that every invocation "
-        "without the option is unaffected."
+    selected = pytestconfig.getoption(OPTION)
+
+    assert isinstance(selected, int) and selected >= 0, (
+        f"pytest reports {OPTION} = {selected!r}; section 10.3 of TEST_SUITE.md "
+        "requires an integer floor, and a negative one would arm the guard "
+        "against a count it can never fall below."
     )
 
 
