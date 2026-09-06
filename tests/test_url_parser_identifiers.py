@@ -25,7 +25,7 @@ a malformed URL raises out of ``urlsplit`` before any guard runs, in **all
 five** parsers, and an over-long StackExchange id raises out of ``int``. §14 of
 ``TEST_SUITE.md`` records the class and its follow-up. Stating the domain is
 what keeps the twenty-one rows below from reading as a universal that a
-27-character input falsifies.
+28-character input falsifies.
 
 **What this module deliberately does not own.** The five per-parser modules
 (``tests/test_arxiv.py`` and its siblings) hold the documented real-world URL
@@ -110,7 +110,6 @@ class ParserCase:
             catches on its behalf.
         accepted_url: A URL built from the identifiers in ``expected``.
         expected: The exact value ``parse(accepted_url)`` must return.
-        rejected_url: A URL this parser must decline.
     """
 
     name: str
@@ -118,7 +117,6 @@ class ParserCase:
     error: type[Exception]
     accepted_url: str
     expected: Any
-    rejected_url: str
 
 
 #: One row per parser, in the order the resolver tries them.
@@ -158,7 +156,6 @@ PARSER_CASES: tuple[ParserCase, ...] = (
         expected=StackExchangeTarget(
             site="es.stackoverflow", question_id=12345, answer_id=None
         ),
-        rejected_url="https://example.org/questions/12345/titulo",
     ),
     ParserCase(
         name="github_issue",
@@ -166,7 +163,6 @@ PARSER_CASES: tuple[ParserCase, ...] = (
         error=GitHubIssueError,
         accepted_url="https://github.com/octocat/hello-world/issues/42",
         expected=GitHubIssueTarget(owner="octocat", repo="hello-world", number=42),
-        rejected_url="https://github.com/octocat/hello-world/pull/42",
     ),
     ParserCase(
         name="github_discussion",
@@ -176,7 +172,6 @@ PARSER_CASES: tuple[ParserCase, ...] = (
         expected=GitHubDiscussionTarget(
             owner="octocat", repo="hello-world", number=42
         ),
-        rejected_url="https://github.com/octocat/hello-world/issues/42",
     ),
     ParserCase(
         name="wikipedia",
@@ -189,7 +184,6 @@ PARSER_CASES: tuple[ParserCase, ...] = (
             host="es.wikipedia.org",
             title="Manzana",
         ),
-        rejected_url="https://es.wikipedia.org/notwiki/Manzana",
     ),
     ParserCase(
         name="arxiv",
@@ -197,7 +191,6 @@ PARSER_CASES: tuple[ParserCase, ...] = (
         error=ArxivError,
         accepted_url="https://arxiv.org/abs/hep-th/9901001",
         expected="hep-th/9901001",
-        rejected_url="https://arxiv.org/other/2401.12345",
     ),
 )
 
@@ -653,31 +646,99 @@ SURFACE_VARIATIONS: tuple[tuple[str, Callable[[str], str]], ...] = (
 )
 
 
-@pytest.mark.parametrize(
-    ("variation_name", "vary"),
-    SURFACE_VARIATIONS,
-    ids=[name for name, _ in SURFACE_VARIATIONS],
+#: Every (rejection branch, variation) pair, minus the pairs that cannot exist
+#: and the one that does not hold.
+#:
+#: **This runs over all twenty-one branches, not over one rejected URL per
+#: parser, and the difference is not cosmetic.** An earlier version varied five
+#: URLs — one per parser — and §3.1's claim was written as though it covered the
+#: branches. Eighty-one pairs exist and exactly one fails; varying five of them
+#: could not see it, and the automated review is what found the gap.
+#:
+#: Two exclusions, and they are different in kind:
+#:
+#: * The three relative-URL rows carry no scheme, so there is nothing for the
+#:   scheme variation to vary. Arithmetic, not an exemption — 21 x 4 - 3 = 81.
+#: * ``("wiki_empty_title", "trailing_slash")`` **flips from rejection to
+#:   acceptance**, and is excluded by name with
+#:   :func:`test_a_trailing_slash_turns_the_empty_wikipedia_title_into_a_slash`
+#:   pinning what happens instead.
+REJECTION_SURFACE_ROWS: tuple[
+    tuple[str, Callable[[str], Any], type[Exception], str, str, Callable[[str], str]],
+    ...
+] = tuple(
+    (label, parse, error, url, variation_name, vary)
+    for label, parse, error, url, _fragment in REJECTION_CASES
+    for variation_name, vary in SURFACE_VARIATIONS
+    if not (variation_name == "upper_case_scheme" and not url.startswith("https://"))
+    and (label, variation_name) != ("wiki_empty_title", "trailing_slash")
 )
-@pytest.mark.parametrize("case", PARSER_CASES, ids=lambda c: c.name)
+
+
+@pytest.mark.parametrize(
+    ("label", "parse", "error", "url", "variation_name", "vary"),
+    REJECTION_SURFACE_ROWS,
+    ids=[f"{label}-{name}" for label, _, _, _, name, _ in REJECTION_SURFACE_ROWS],
+)
 def test_rejection_does_not_depend_on_the_surface_of_the_url(
-    case: ParserCase, variation_name: str, vary: Callable[[str], str]
+    default_int_digits: None,
+    label: str,
+    parse: Callable[[str], Any],
+    error: type[Exception],
+    url: str,
+    variation_name: str,
+    vary: Callable[[str], str],
 ) -> None:
     """Assert a declined URL is declined the same way after a cosmetic change.
 
-    This is the claim §3.1 states — *rejection* is stable. Acceptance stability
-    is asserted separately below, because it does not hold for one parser under
-    one variation, and collapsing the two would mean either overstating the
-    claim or dropping a parser from it entirely.
+    This is the claim §3.1 states — *rejection* is stable — and it is asserted
+    over every branch the claim quantifies over rather than over one URL per
+    parser. Acceptance stability is asserted separately below, because it holds
+    for fewer pairs and saying so is the honest shape.
 
     Args:
-        case: The parser under test and a URL it declines.
+        default_int_digits: Fixture pinning the interpreter's integer-string
+            conversion ceiling, for the same two rows the table above needs it.
+        label: The rejection branch's parametrisation id.
+        parse: The parser callable.
+        error: The class the resolver catches for this parser.
+        url: The branch's URL, before the variation.
         variation_name: The variation's parametrisation id.
         vary: The transform applied to the URL.
     """
-    with pytest.raises(case.error) as caught:
-        case.parse(vary(case.rejected_url))
+    with pytest.raises(error) as caught:
+        parse(vary(url))
 
-    assert type(caught.value) is case.error
+    assert type(caught.value) is error
+
+
+def test_a_trailing_slash_turns_the_empty_wikipedia_title_into_a_slash() -> None:
+    """Characterise the one rejection that a cosmetic change turns into a claim.
+
+    ``https://es.wikipedia.org/wiki/%09`` is declined — the tab survives
+    ``unquote``, is not a space so the underscore substitution leaves it, and
+    ``.strip()`` empties it. Append a slash and the greedy capture takes
+    ``%09/``, which unquotes to ``"\t/"`` and strips to ``"/"`` — not empty, not
+    a namespace prefix. So the parser **returns**, and the URL is claimed by the
+    Wikipedia integration instead of declining to the universal loader.
+
+    Same root cause as
+    :func:`test_a_trailing_slash_changes_the_wikipedia_title_today` — a greedy
+    ``_WIKI_PATH_RE`` capture normalised too late — and the same treatment:
+    characterised, not repaired, and recorded in ``TEST_SUITE.md`` §14 with the
+    ticket that owns the decision. This one is the worse half of the pair,
+    because it changes *whether* the parser accepts rather than only *what* it
+    returns, and it is the only one of eighty-one (branch, variation) pairs that
+    does not hold.
+
+    Found by the automated review on the pull request, after a version of this
+    module that varied one rejected URL per parser and a §3.1 sentence that read
+    as though it covered all twenty-one branches.
+    """
+    target = parse_wikipedia_url("https://es.wikipedia.org/wiki/%09/")
+
+    assert target.title == "/"
+    assert target.canonical_url == "https://es.wikipedia.org/wiki//"
 
 
 #: Every (parser, variation) pair whose *acceptance* is invariant — all of them
@@ -761,7 +822,7 @@ def test_a_trailing_slash_changes_the_wikipedia_title_today() -> None:
 
 
 #: A URL `urlsplit` refuses to parse: an unmatched bracket reads as the start of
-#: an IPv6 literal. Twenty-seven characters, and nothing exotic about it — this
+#: an IPv6 literal. Twenty-eight characters, and nothing exotic about it — this
 #: is the shape a model produces from a truncated or concatenated link.
 MALFORMED_URL = "https://[oops/abs/2401.12345"
 

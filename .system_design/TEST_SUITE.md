@@ -473,7 +473,10 @@ can state. The per-parser properties are instead:
   query-string order. **Scoped to the branches each parser's own guards reach**,
   which is narrower than "never a bare `Exception`" and is narrower for a
   measured reason: two inputs escape every parser *before* any guard runs, and
-  §14 records them.
+  §14 records them. **Asserted over all twenty-one of those branches, minus one
+  named pair that does not hold** — see the landing note below; an earlier draft
+  varied one rejected URL per parser while this sentence read as though it
+  covered the branches, which is a gap the shipped rows now close.
 
 **E5-1 shipped a production fix, following E5-8's precedent above.** A test
 step changing production code is the exception, not the rule, and the reason is
@@ -722,11 +725,13 @@ and say so in their docstring — the anchoring option this section keeps open i
 expected to **delete** them rather than work around them. The `q` row is an
 ordinary claim: that alternative is what the share dialog produces.
 
-**Done, in E5-2 (2026-09-06).** `tests/test_url_parser_identifiers.py` — 88
+**Done, in E5-2 (2026-09-06).** `tests/test_url_parser_identifiers.py` — 149
 cases over the five parsers, table-driven, no Hypothesis. It owns identifier
-preservation, typed rejection over every guard-reached branch, the
-suffix-is-not-subdomain rejection handed here by E5-1, and stability of both
-answers under four surface variations.
+preservation, typed rejection over every one of the twenty-one guard-reached
+branches, the suffix-is-not-subdomain rejection handed here by E5-1, and
+stability of both answers under four surface variations — the rejection half
+crossed against **every** branch rather than one URL per parser, which is what
+turned the eighty-first pair into a finding rather than a blind spot.
 
 **One production edit: the arXiv host guard.** `endswith("arxiv.org")` became
 `host != "arxiv.org" and not host.endswith(".arxiv.org")`. *What changed in
@@ -791,7 +796,7 @@ regression armour. Named here so a mutation report is not read as coverage.
 A malformed URL escapes all five parsers as `ValueError` before any guard runs;
 and a trailing slash joins the Wikipedia title. The first is the reason the
 typed-rejection claim above is scoped to guard-reached branches rather than
-stated as a universal — a 27-character input falsifies the universal, so the
+stated as a universal — a 28-character input falsifies the universal, so the
 universal was never written.
 
 
@@ -4231,7 +4236,7 @@ is nothing to test.
   function; `get_content` then renders the exception's text into the Markdown it
   returns to the calling model, and the URL never reaches the remaining stages or
   the HTML loader. Two mechanisms, both measured on `main` at `7fb3e59`:
-  **(a)** a malformed URL — `https://[oops/abs/2401.12345`, twenty-seven
+  **(a)** a malformed URL — `https://[oops/abs/2401.12345`, twenty-eight
   characters, an unmatched bracket read as an IPv6 literal — makes `urlsplit`
   raise `ValueError` inside `parsed.hostname`, which is the *first* statement of
   all five parse functions, so all five escape; **(b)** an id over CPython's
@@ -4254,16 +4259,28 @@ is nothing to test.
   repairs it those tests fail and point at this entry. Deciding *where* the guard
   belongs — five parsers, or one place in the resolver, which would also swallow
   genuine parser defects — is the open question and has no owner yet.
-- **A trailing slash changes the Wikipedia article title.** `_WIKI_PATH_RE` is
+- **A trailing slash changes the Wikipedia article title, and in one case
+  changes whether the parser accepts at all.** `_WIKI_PATH_RE` is
   `^/wiki/(.+)$` and captures greedily, so
   `https://es.wikipedia.org/wiki/Manzana/` yields the title `Manzana/` and a
   canonical URL carrying the slash. The MediaWiki request that follows asks for
-  an article that does not exist. The other four parsers are stable under the
-  same variation. **Characterised by E5-2, not repaired** —
-  `test_a_trailing_slash_changes_the_wikipedia_title_today` pins today's answer,
-  and the pair `("wikipedia", "trailing_slash")` is excluded by name from that
-  module's acceptance-stability rows so the exclusion is visible rather than
-  silent. §3.1 scopes E5-2's stability claim to *rejection*; normalising the
+  an article that does not exist. **The worse half of the same root cause:**
+  `…/wiki/%09` is *declined* — a tab strips to nothing — while `…/wiki/%09/`
+  captures `%09/`, which unquotes to a tab and a slash and strips to `"/"`, so
+  the parser **returns** `title="/"` and the URL is claimed by the Wikipedia
+  integration instead of declining to the universal loader. Measured across the
+  whole grid: eighty-one (rejection branch, surface variation) pairs exist and
+  that is the **only** one that does not hold. It was found by the automated
+  review on E5-2's pull request, after a version of the module that varied one
+  rejected URL per parser — five of the twenty-one branches — under a design
+  sentence that read as though it covered all of them. The other four parsers
+  are stable under the same variation. **Characterised by E5-2, not repaired** —
+  `test_a_trailing_slash_changes_the_wikipedia_title_today` and
+  `test_a_trailing_slash_turns_the_empty_wikipedia_title_into_a_slash` pin
+  today's answers, and both excluded pairs — `("wikipedia", "trailing_slash")`
+  on the acceptance rows and `("wiki_empty_title", "trailing_slash")` on the
+  rejection rows — are excluded **by name**, so each exclusion is visible in the
+  source rather than absorbed into a smaller claim. §3.1 scopes E5-2's stability claim to *rejection*; normalising the
   captured title changes which request the integration issues, which is a
   production decision with no owner yet.
 - **`nodriver` and Chromium version drift** is untested at any layer. The worker

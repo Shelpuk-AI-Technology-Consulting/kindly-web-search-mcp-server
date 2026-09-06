@@ -1112,7 +1112,7 @@ duplicating tests or touching the same files.
   `_QUESTION_RE` survives losing its `q` alternative, which real short links
   such as `https://es.stackoverflow.com/q/12345` depend on.
 
-  **Landed.** `tests/test_url_parser_identifiers.py` — 88 table-driven cases.
+  **Landed.** `tests/test_url_parser_identifiers.py` — 149 table-driven cases.
   It ships **one** production edit, the arXiv host guard, which the bullet above
   hands here by name: `endswith("arxiv.org")` became
   `host != "arxiv.org" and not host.endswith(".arxiv.org")`, so a host that
@@ -1129,7 +1129,7 @@ duplicating tests or touching the same files.
 
   **Three claims were narrowed against what was measured, and the narrowing is
   the finding.** The bullet above says a rejected URL raises the parser's own
-  type. A twenty-seven-character malformed URL falsifies that in **all five**
+  type. A twenty-eight-character malformed URL falsifies that in **all five**
   parsers — `urlsplit` raises inside `parsed.hostname`, the first statement of
   every parse function — and an over-long StackExchange id falsifies it in one.
   So the shipped claim is scoped to the branches each parser's own guards reach,
