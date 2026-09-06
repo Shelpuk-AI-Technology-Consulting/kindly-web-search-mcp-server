@@ -185,9 +185,12 @@ NOT_ENVIRONMENT_VARIABLES = frozenset(
 # this child runs the *whole* suite rather than a one-case throwaway module. On
 # the measuring machine it takes about fourteen seconds; the margin is for a
 # loaded CI runner. Only the direct child is killed on expiry -- the suite spawns
-# grandchildren of its own -- which is accepted rather than solved: cross-platform
-# process-group teardown is real machinery, and this path is reached only when
-# something is already badly wrong.
+# grandchildren of its own -- which is accepted rather than solved. That was once
+# because cross-platform tree teardown is real machinery; it now exists, in
+# `tests/harness/anti_flake.py`, and adopting it here is still declined: this
+# module is the guard that re-runs the whole suite, and giving it a dependency on
+# a helper that suite calibrates would make a broken harness look like a broken
+# baseline. The path is reached only when something is already badly wrong.
 CHILD_TIMEOUT_SECONDS = 300
 
 
