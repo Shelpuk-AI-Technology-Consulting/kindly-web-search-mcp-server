@@ -4204,7 +4204,14 @@ is nothing to test.
   credential was genuinely in flight — in the URL for the two providers that carry
   it there, in a header for the four that do not — because an absence assertion
   over a provider that never sends a credential proves nothing. The sweep rows
-  themselves assert absence only. Fifteen mutations, no survivor.
+  themselves assert absence only. Fifteen mutations, no survivor — with two
+  caveats that belong beside the number. **One mutation stopped applying** when
+  its target line gained a second operand: it printed "anchor absent" rather than
+  a death, which reads exactly like a kill if only the summary line is checked.
+  Its anchor was repaired and it was re-run. And **SearXNG's three
+  told-the-status rows are insensitive to two of the mutations** — it composes its
+  own message, which names the provider and the status whatever the router does —
+  so those two killed fifteen of the eighteen rows, not eighteen.
 
   **The log path is the exception path's sibling, and was repaired with it.**
   Three `searxng.py` log sites wrote the base URL, userinfo included: the `INFO`
@@ -4247,7 +4254,10 @@ is nothing to test.
   **No plan step owns this change, deliberately.** It is a standalone repair of a
   defect an earlier step found and scoped out, which is the same shape as the
   `_is_snap_browser` entry below — that one also landed as a change of its own and
-  is recorded here rather than as a step. E9-1 still owns the diagnostics emit
+  is recorded here rather than as a step. **E13-1's merge list is deliberately
+  untouched**: that gate enumerates the steps that must merge, and nothing here
+  was owed by a listed step, so adding a row would make the gate count a repair it
+  never scheduled. E9-1 still owns the diagnostics emit
   boundary and §7.1's credential-bearing-query-parameter rule for diagnostics
   payloads; **this entry does not discharge it, and one measured hole in that
   path is named in the next entry.** This change does not touch
@@ -4267,11 +4277,31 @@ is nothing to test.
   verbatim in the emitted `env` payload on stderr. A base URL *with* a scheme is
   redacted correctly, so this is the mistyped case — the same input the "no valid
   URLs" repair exists for. `tests/test_diagnostics_masking.py` covers only the
-  with-scheme form. Two candidate repairs, and the choice is E9-1's: mask this
-  variable by name like a credential, or give the emit boundary a rule that does
-  not depend on a value parsing as a URL. **The second is the one that
-  generalises** — every lesson in the entry above is that a pattern over a value
+  with-scheme form; a characterization case there now pins today's answer for the
+  schemeless one, so closing this is observable rather than remembered.
+
+  **Why this one is deferred when the three log sites in the entry above were
+  not** — the two disclosures look alike and the discriminator is not the
+  audience. Both reach the same stderr, which under stdio the MCP host reads, so
+  "different audience" would be two incompatible justifications for one stream.
+  The real difference is **mechanism and ownership**: the log sites were repaired
+  with `redact_url_credentials` *unchanged* at new call sites, so no helper
+  behaviour moved and neither E5-7 nor E9-1 was touched. This one cannot be
+  repaired that way. Every candidate — mask the variable by name hint, or give
+  the boundary a rule that does not depend on the value parsing as a URL —
+  **changes what `mask_env_values` does**, which is exactly what E5-7 is chartered
+  to pin as-is and what §7.1 lists as E9-1's undecided policy ("whether it redacts
+  by key name, by pattern, or both"). Of the two candidates the second is the one
+  that generalises: every lesson in the entry above is that a pattern over a value
   fails open on the shape nobody listed.
+
+  **This does not make the new module's claim false**, which was the objection
+  worth answering. That module's claim is scoped to what the *client is served*,
+  and this payload is not served. `WebSearchResponse` has **no** `diagnostics`
+  field; only `WebSearchResult` and `GetContentResponse` do, and `server.py:546`
+  fills those from the per-result `result_diag`, never from the `parent_diag` that
+  carries the env snapshot. So result-level diagnostics do reach the client — the
+  `web_search.start` env snapshot does not.
 
 - **SearXNG requests carry no deadline in the shipped default.**
   `_get_request_timeout_seconds` returns `None` when `SEARXNG_TIMEOUT_SECONDS` is

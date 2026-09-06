@@ -5,6 +5,14 @@ to env snapshots emitted to stderr when diagnostics are enabled. Those snapshots
 deliberately include proxy variables (see ``scrape/universal_html.py``), and a
 proxy URL may carry credentials in its userinfo component, so masking has to
 survive both name-based and value-based secrets.
+
+**This module does not hold the whole stream, and one case here says so.** The
+value-based rule matches ``://user:pass@``, so a variable whose name signals
+nothing and whose value has no scheme is masked by neither rule.
+``SEARXNG_BASE_URL`` is exactly that shape when an operator mistypes it, and
+``test_a_schemeless_base_url_is_not_masked_today`` characterizes the gap rather
+than hiding it -- see ``.system_design/TEST_SUITE.md`` section 14 for the
+measurement and the step that owns closing it.
 """
 
 from __future__ import annotations
@@ -82,6 +90,40 @@ def test_redacts_credentials_in_any_url_valued_variable() -> None:
     masked = mask_env_values({"SEARXNG_BASE_URL": "https://u:p@searx.example.org"})
 
     assert masked["SEARXNG_BASE_URL"] == "https://***@searx.example.org"
+
+
+def test_a_schemeless_base_url_is_not_masked_today() -> None:
+    """Pin the gap rather than the fix: a schemeless value passes through whole.
+
+    **Characterization, not enforcement.** This case asserts today's answer, and
+    today's answer is a disclosure: ``mask_env_values`` masks by *name* hint --
+    ``KEY``, ``TOKEN``, ``SECRET``, ``PASSWORD``, ``BEARER`` -- and
+    ``SEARXNG_BASE_URL`` matches none of them, so it falls through to
+    ``redact_url_credentials``, which matches ``://user:pass@`` and therefore
+    cannot touch a value with no scheme. The variable carries its credential in
+    the URL userinfo, and omitting the scheme is the ordinary way to mistype it,
+    so the password reaches the emitted ``env`` payload on stderr verbatim.
+
+    The sibling case above covers the *with-scheme* form and passes. The two
+    together are the point: the difference between them is a scheme, and nothing
+    about the variable or its value says which one an operator typed.
+
+    **Revisit trigger.** ``.system_design/TEST_SUITE.md`` section 14 records this
+    as an open gap owned by the emit-boundary step (E9-1), because every candidate
+    repair changes what ``mask_env_values`` does -- which is the behaviour E5-7 is
+    chartered to pin as-is and the policy E9-1 has yet to settle. When that step
+    lands, **this case is meant to fail**, and its failure is the good outcome:
+    delete it and assert the masking instead.
+
+    It is scoped to what was measured. It does not claim this is the only
+    unmasked shape, only that this one is unmasked.
+    """
+    leaked = "operator:notarealpassword@searx.example.org"
+
+    masked = mask_env_values({"SEARXNG_BASE_URL": leaked})
+
+    assert masked["SEARXNG_BASE_URL"] == leaked
+    assert REDACTED_USERINFO not in masked["SEARXNG_BASE_URL"]
 
 
 def test_leaves_ordinary_values_untouched() -> None:
