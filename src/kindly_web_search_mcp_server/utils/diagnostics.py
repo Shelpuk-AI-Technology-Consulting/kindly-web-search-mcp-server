@@ -35,9 +35,11 @@ MAX_LINE_CHARS = 8000
 #:
 #: The trailing space is part of the marker, not formatting. ``KINDLY_DIAGNOSTICS``
 #: — the environment variable that turns diagnostics on — shares its stem, so a
-#: sweep for the prefix without the space matches that variable in four further
-#: files. ``tests/test_worker_frame_contract.py`` holds both this value and that
-#: distinction.
+#: sweep for the prefix without the space also matches that variable, in files the
+#: allow-list has no reason to name. The count of those files is deliberately not
+#: given: it moves whenever anything new reads the variable, and a stale figure here
+#: is worse than none. ``tests/test_worker_frame_contract.py`` holds this value and
+#: asserts the two identifiers cannot be confused.
 FRAME_PREFIX = "KINDLY_DIAG "
 
 #: Ceiling on one *unterminated* line the parent's stderr reader will buffer.

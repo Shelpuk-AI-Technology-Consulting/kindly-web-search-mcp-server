@@ -311,7 +311,10 @@ def test_the_marker_has_one_definition_and_a_named_exception_list() -> None:
     against string and bytes *literals* in the syntax tree. Both halves of that
     are load-bearing. Without the space, `KINDLY_DIAGNOSTICS` — the environment
     variable that turns diagnostics on, a different identifier in the same
-    vocabulary — matches in four further files. Without the literals-only rule,
+    vocabulary — is swept in too, from files this allow-list has no reason to
+    name. How many is not stated anywhere: it moves whenever something new reads
+    that variable, and the property is held by an assertion rather than by a
+    figure. Without the literals-only rule,
     the several modules that discuss this format in prose match too.
     """
     found = {}

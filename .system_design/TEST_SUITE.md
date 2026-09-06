@@ -953,7 +953,14 @@ source file's *syntax tree* for the marker as a string or bytes literal and hold
 an exact per-file count, so a third copy fails and a vanished exemption fails
 too. The vocabulary is the marker **including its trailing space**: without it,
 `KINDLY_DIAGNOSTICS` — the environment variable that enables diagnostics, a
-different identifier sharing the stem — matches in four further files.
+different identifier sharing the stem — matches wherever that variable is spelled
+in code, in files the allow-list has no reason to name. **The number of those files
+is deliberately not stated here.** It was written as four, review measured five, and
+it moves whenever anything new reads that variable. What holds the property is an
+assertion — `not "KINDLY_DIAGNOSTICS".startswith(FRAME_PREFIX)` — not a figure in a
+paragraph. This is the third hand-maintained count in this section to be wrong, and
+the first two were corrected rather than removed; removing this one is the change
+that stops the pattern.
 
 **Two of the seven stream claims below were false when the step began, and both
 were fixed here.** Both were measured before being trusted, and the other five
@@ -2055,7 +2062,10 @@ job.
 
 ### 7.1 Diagnostics must be sanitized at the boundary
 
-`Diagnostics.emit` and `emit_diagnostic` (`utils/diagnostics.py:333,315`) apply
+`Diagnostics.emit` and `emit_diagnostic` (both in `utils/diagnostics.py`, named
+rather than cited by line: those numbers went stale twice, the second time inside
+the very change that had just corrected them, when a docstring above them grew)
+apply
 **no redaction** — only JSON serialization and a line-length cap. Callers pass
 raw data: `server.py` emits `{"url": url}` and `{"detail": full_detail}` where
 the detail is unfiltered exception text. So
@@ -2073,7 +2083,7 @@ leaving the raw value in the MCP response — the worse of the two paths. One
 sanitizing step at the top of `emit`, covering both consumers, is the
 requirement.
 
-**`encode_frame` (`utils/diagnostics.py:228`) is not that place, and since E6-2
+**`encode_frame` (in `utils/diagnostics.py`) is not that place, and since E6-2
 it is the tempting one.** It is now the single serializer both writers share, so
 it looks like the natural chokepoint — and putting redaction there would produce
 exactly the inversion the paragraph above names, because `Diagnostics.emit`
