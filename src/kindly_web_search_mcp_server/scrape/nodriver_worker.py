@@ -6,7 +6,6 @@ import contextlib
 import importlib
 import importlib.util
 import io
-import json
 import os
 import platform
 import re

@@ -15,9 +15,18 @@ behave on this host before a real worker is blamed for their not doing so.
 **Why this is a module and not a section of another file.** Section 10.4 of
 ``.system_design/TEST_SUITE.md`` classifies every production file as
 hermetically testable or not, and coverage.py's ``omit`` works at file
-granularity. The code here has no hermetic seam: proving that a process tree
-died, or that a frame split across two pipe reads is reassembled, needs a real
-child. The Markdown-suffix probe path it used to share a file with has fifteen
+granularity. The code here has no hermetic **spawn** seam: proving that a process
+tree died, or that an exit status arrived, needs a real child.
+
+**A frame split across two pipe reads was the second example this sentence gave,
+and it was wrong.** The stream readers take their stream as a parameter, so a
+stand-in with one ``read`` method drives them with exact chunks — and for a claim
+about *where a boundary falls* a real child is not merely more expensive, it
+cannot decide the question at all, because pipe timing rather than the child
+chooses where the boundary lands. ``tests/test_worker_frame_contract.py`` drives
+this module's stderr reader that way. What stays true, and is the reason this
+module exists, is that nothing here lets a test replace the **spawn**.
+The Markdown-suffix probe path it used to share a file with has fifteen
 hermetic tests and must stay inside the gating scope. One file could be
 classified only one way, and both answers were wrong. Splitting them makes the
 classification a property of the module boundary rather than a side-table
@@ -100,7 +109,6 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
-import json
 import os
 import shutil
 import signal

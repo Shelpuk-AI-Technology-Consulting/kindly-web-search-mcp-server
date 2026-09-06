@@ -919,7 +919,7 @@ because `entries` is returned to the MCP caller as well as written to stderr, an
 redacting in the writer alone would clean stderr while leaving the raw value in
 the response.
 
-**The format had four copies before this step**, three of which wrote it: the
+**The format had four copies before this step**, two of which wrote it: the
 parent's `emit_diagnostic`, the worker's `_emit_diag` — with its own ceiling
 constant carrying the comment *"Keep in sync with utils.diagnostics.MAX_LINE_CHARS"*
 — and the dead parser, plus the live router. They had already diverged in
@@ -928,10 +928,13 @@ would not serialize at all, so the worker emitted **nothing** in that case, whic
 is indistinguishable from the stage never having been reached. The worker gained
 that fallback by adopting the shared one.
 
-The **two** copies that remain are deliberate and counted, not overlooked:
-`_split_worker_diagnostics` until its removal, and
+The copies that remain are deliberate and counted, not overlooked — **four
+sites across three files**, plus the definition itself. Two are
+`_split_worker_diagnostics`, until its removal. One is
 `tests/child_processes/worker_child.py`, a test instrument that must not import
-the package it calibrates. `tests/test_worker_frame_contract.py` sweeps every
+the package it calibrates, and one is that instrument's own calibration
+`tests/test_worker_child_fixture.py`, which reads the frames the script writes as
+raw bytes and so cannot import production either. `tests/test_worker_frame_contract.py` sweeps every
 source file's *syntax tree* for the marker as a string or bytes literal and holds
 an exact per-file count, so a third copy fails and a vanished exemption fails
 too. The vocabulary is the marker **including its trailing space**: without it,
@@ -947,7 +950,7 @@ were measured too rather than assumed:
   two invalid fragments and `errors="replace"` rendered each byte as `U+FFFD`.
   Measured: a frame carrying `✓` came back carrying `���`, and because the
   corruption sits inside a JSON string the frame still parsed — silently wrong,
-  which is worse than failing. **`_read_stdout_stream` twelve lines above already
+  which is worse than failing. **`_read_stdout_stream`, just above, already
   stated the rule** — *"a multi-byte character split across two reads would
   otherwise be corrupted at the seam"* — and avoids it by accumulating undecoded
   bytes and decoding once at the end. Stderr cannot copy that: it must yield lines
@@ -2038,7 +2041,7 @@ job.
 
 ### 7.1 Diagnostics must be sanitized at the boundary
 
-`Diagnostics.emit` and `emit_diagnostic` (`utils/diagnostics.py:305,287`) apply
+`Diagnostics.emit` and `emit_diagnostic` (`utils/diagnostics.py:333,315`) apply
 **no redaction** — only JSON serialization and a line-length cap. Callers pass
 raw data: `server.py` emits `{"url": url}` and `{"detail": full_detail}` where
 the detail is unfiltered exception text. So
@@ -2056,7 +2059,7 @@ leaving the raw value in the MCP response — the worse of the two paths. One
 sanitizing step at the top of `emit`, covering both consumers, is the
 requirement.
 
-**`encode_frame` (`utils/diagnostics.py:200`) is not that place, and since E6-2
+**`encode_frame` (`utils/diagnostics.py:228`) is not that place, and since E6-2
 it is the tempting one.** It is now the single serializer both writers share, so
 it looks like the natural chokepoint — and putting redaction there would produce
 exactly the inversion the paragraph above names, because `Diagnostics.emit`
@@ -3321,11 +3324,13 @@ the move if that set grows.
 > *other* way, out of the runner and into `utils/diagnostics.py`, which is inside
 > the gate; the exempt surface therefore shrank in substance while its count rose
 > by one. Taking the third-module move is a sequencing call for the owner, and a
-> step that did it while also shipping two production fixes would have been three
-> changes in one pull request. Recorded here, with the trigger named, so the next
-> reader does not have to rediscover that it fired. Recorded because the classification is *file*-granular by design, and
+> step that did it while also shipping three production fixes would have been
+> four changes in one pull request. Recorded here, with the trigger named, so the
+> next reader does not have to rediscover that it fired.
+
+Recorded because the classification is *file*-granular by design, and
 a reader who takes "omitted" to mean "untestable" would draw the wrong
-conclusion about these five. They are testable, and E5-6 owns testing one of
+conclusion about these six. They are testable, and E5-6 owns testing one of
 them — an L1 test on an omitted module, which is already this suite's practice
 (E5-3 targets `chromium_pool.py`, E5-4 `nodriver_worker.py`; both are omitted).
 

@@ -800,12 +800,29 @@ def test_the_chunked_stream_stand_in_matches_a_real_stream_reader() -> None:
     same result from the same bytes, so this drives both and compares them.
     Without it the module would rest on an uncalibrated double — the failure mode
     a fixture is supposed to prevent, not introduce.
+
+    **The payload deliberately exceeds `STREAM_READ_CHUNK`.** That is where the
+    two instruments actually differ: `_ChunkedStream.read` ignores the requested
+    limit and hands back whatever a case gave it, while a real reader returns at
+    most `STREAM_READ_CHUNK` bytes and is called again. A calibration built from
+    a payload that fits in one read compares two single-read behaviours and could
+    not observe the divergence it exists to rule out — which is what the first
+    version of this case did.
     """
+    bulk = b"\n".join(
+        _frame(stage="bulk", n=index) for index in range(worker_runner.STREAM_READ_CHUNK // 30)
+    )
     payload = (
         _frame(stage="a")
         + b"\nchrome: noise\n"
+        + bulk
+        + b"\n"
         + _frame(stage="b")
         + b"\n\xff\x80 undecodable\n"
+    )
+    assert len(payload) > worker_runner.STREAM_READ_CHUNK, (
+        "the calibration must span more than one real read or it compares "
+        "two single-read behaviours"
     )
 
     async def through_a_real_reader() -> worker_runner._StderrAccumulator:
@@ -826,7 +843,11 @@ def test_the_chunked_stream_stand_in_matches_a_real_stream_reader() -> None:
     assert stub.worker_entries == real.worker_entries
     assert stub.tail == real.tail
     assert stub.parse_errors == real.parse_errors
-    assert real.worker_entries == [{"stage": "a"}, {"stage": "b"}]
+    # Non-vacuity: the two agreeing on *nothing* would satisfy the three
+    # comparisons above.
+    assert real.worker_entries[0] == {"stage": "a"}
+    assert real.worker_entries[-1] == {"stage": "b"}
+    assert real.tail.endswith("�� undecodable\n")
 
 
 # ---------------------------------------------------------------------------
@@ -922,7 +943,7 @@ def test_a_multi_byte_character_split_across_chunks_survives(split_at: int) -> N
     fragments, and `errors="replace"` renders each byte as U+FFFD — so the frame
     still parses and is silently wrong, which is worse than failing.
 
-    `_read_stdout_stream` twelve lines above already stated the rule — "a
+    `_read_stdout_stream`, just above, already stated the rule — "a
     multi-byte character split across two reads would otherwise be corrupted at
     the seam" — and accumulates undecoded bytes for exactly this reason. Stderr
     cannot copy that approach, because it must yield lines before the child
@@ -1103,12 +1124,19 @@ def test_a_chunk_of_many_complete_lines_is_not_truncated_as_one() -> None:
 
 @pytest.mark.parametrize("length", [MAX_STDERR_LINE_CHARS, MAX_STDERR_LINE_CHARS + 1])
 def test_a_terminated_line_at_the_bound_is_routed_whole(length: int) -> None:
-    """Pin the comparison at the boundary, in both directions
+    """Document the bound's edge, which no mutation can reach
 
-    A `>` flipped to `>=` changes behaviour only for a line of exactly the cap's
-    length, and every other case in this module is far from that edge. Both
-    lengths are newline-terminated, so both must be routed whole regardless of
-    the bound — the bound applies to a buffer with no newline in it.
+    **This case pins nothing about the comparison, and saying so is the point.**
+    Under a sliding window `buffer[-N:]` is the identity when the buffer is
+    exactly `N`, so flipping `>` to `>=` cannot change execution — it is an
+    equivalent mutant, proven rather than assumed, and no test can kill it. It
+    was killable under the head-truncate-and-discard design this step rejected,
+    which is why a boundary case was asked for.
+
+    What it does hold is the surrounding behaviour at the edge: both lengths are
+    newline-terminated, so both are routed whole regardless of the bound, which
+    is what stops a future author "fixing" the comparison and cutting a
+    terminated line.
     """
     line = "G" * length
 

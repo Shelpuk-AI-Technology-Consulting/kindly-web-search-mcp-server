@@ -1237,7 +1237,7 @@ duplicating tests or touching the same files.
   **Landed.** The codec is in `utils/diagnostics.py` — `FRAME_PREFIX`,
   `encode_frame`, `frame_payload`, `decode_frame_payload` — and both writers and
   the live reader route through it; the suite is
-  `tests/test_worker_frame_contract.py`, 41 cases, hermetic. §4.3 carries the
+  `tests/test_worker_frame_contract.py`, 42 cases, hermetic. §4.3 carries the
   reasoning. `_split_worker_diagnostics` is untouched and still flagged (§14).
 
   **It shipped three production fixes, which is two more than a test step should
@@ -1263,12 +1263,12 @@ duplicating tests or touching the same files.
   > **Deferred:** the `--min-selected` floor in `.github/workflows/tests-broad.yml`. That
   > file's own comment requires the number to be updated "in the same pull
   > request that deliberately adds tests to this selection", and this step adds
-  > 41. It was **not** updated here: the floor reads 787 while `main` already
+  > 42. It was **not** updated here: the floor reads 787 while `main` already
   > collects 827, so the 40-test drift predates this step, and **KMCP-109 owns
   > repairing it** and was in flight in another worktree when this landed.
   > Editing the same line from two branches would have produced a conflict on a
   > number both sides would then have had to re-measure anyway. The floor is a
-  > floor, so 41 further tests cannot breach it. Recorded rather than silently
+  > floor, so 42 further tests cannot breach it. Recorded rather than silently
   > skipped, because the workflow comment reads as an unconditional obligation
   > and the next author will otherwise think this step ignored it.
 
