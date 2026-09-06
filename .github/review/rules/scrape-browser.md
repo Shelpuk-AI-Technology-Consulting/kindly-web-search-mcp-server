@@ -152,8 +152,9 @@ not a test improvement.
 
 **That does not extend to the stream readers, and the distinction is the whole
 of the rule.** `_read_stderr_stream` takes its stream as a parameter, so feeding
-it exact chunks replaces no process and moves no boundary. E6-2 does exactly
-that in `tests/test_worker_frame_contract.py`, unmarked and in the fast lane,
+it exact chunks replaces no process and moves no boundary. The frame-format
+contract suite does exactly that in `tests/test_worker_frame_contract.py`,
+unmarked and in the fast lane,
 because four of the frame-format claims are about *where a chunk boundary falls*
 — and where a boundary falls is decided by pipe timing, not by the child, so a
 real process cannot be asked to put one in a chosen place. For those claims a
