@@ -54,6 +54,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,13 @@ PROBE_PLUGIN = "tests._baseline_probe"
 WORKFLOW_SUFFIXES = ("*.yml", "*.yaml")
 
 CHILD_TIMEOUT_SECONDS = 300
+
+#: The prefix of the variables pytest itself reads to alter a run. Assembled
+#: rather than spelled out wherever one is named below, because
+#: :mod:`tests.test_baseline_failure_ledger` reads every upper-case underscored
+#: string literal under ``tests/`` as a *project* variable its own child must
+#: clear, and these are pytest's.
+PYTEST_ENVIRONMENT_PREFIX = "PYTEST_"
 
 STEPS_KEY = re.compile(r"^(?P<indent> *)steps: *$")
 STEP_ITEM = re.compile(r"^(?P<indent> *)- ")
@@ -450,6 +458,32 @@ def _rendered_child_command(argv: list[str], probe_path: Path) -> str:
     )
 
 
+def _child_environment(source: Mapping[str, str]) -> dict[str, str]:
+    """Build the child's environment, without pytest's own steering variables.
+
+    🔴 ``PYTEST_ADDOPTS`` is prepended to a child's command line and its
+    ``--ignore`` and ``--deselect`` entries *append* rather than replace, so a
+    value exported in a developer's shell makes the child collect fewer tests
+    than the job does. That skews the count in the shrink direction -- which is
+    exactly the direction where this guard's message is the only source of the
+    number, because pytest's own floor check aborts the CI job before the guard
+    runs. The rest of the environment is passed through: the child still needs
+    ``PATH`` and the rest to start an interpreter at all.
+
+    Args:
+        source: The environment to filter, normally :data:`os.environ`.
+
+    Returns:
+        A copy without the pytest-steering variables.
+    """
+
+    return {
+        name: value
+        for name, value in source.items()
+        if not name.startswith(PYTEST_ENVIRONMENT_PREFIX)
+    }
+
+
 def _probe_count(probe_path: Path, output: str) -> int:
     """Read the collected count the probe plugin recorded.
 
@@ -498,7 +532,7 @@ def _collect(argv: list[str], probe_path: Path) -> tuple[int, str]:
             encoding="utf-8",
             errors="replace",
             cwd=REPO_ROOT,
-            env=os.environ.copy(),
+            env=_child_environment(os.environ),
             timeout=CHILD_TIMEOUT_SECONDS,
             check=False,
         )
@@ -507,6 +541,19 @@ def _collect(argv: list[str], probe_path: Path) -> tuple[int, str]:
             f"Collecting the selection did not finish within "
             f"{CHILD_TIMEOUT_SECONDS}s; it normally takes about two. Partial "
             f"output:\n{expired.stdout or ''}\n{expired.stderr or ''}"
+        )
+    # 🔴 The exit status is read, not discarded. Measured: a module that fails to
+    # import makes the child exit 2 while the probe file is *still written*, with
+    # the broken module's tests simply absent -- so a silent read of that file
+    # returns a smaller count, the equality fails, and the message instructs
+    # lowering the floor by exactly the tests the break removed. A wrong-cause
+    # diagnosis that shrinks the merge gate is worse than no diagnosis.
+    if child.returncode != 0:
+        pytest.fail(
+            f"Collecting the selection exited {child.returncode}, so its count "
+            f"describes a broken run rather than this tree. Do NOT write the "
+            f"number below into a workflow; fix the collection first.\n"
+            f"{child.stdout}\n{child.stderr}"
         )
     return _probe_count(probe_path, f"{child.stdout}\n{child.stderr}"), child.stdout
 
@@ -1000,6 +1047,51 @@ def test_the_mismatch_message_names_both_numbers_and_the_line_to_write() -> None
     assert "787" in message and "871" in message
     assert f"{OPTION} 871" in message
     assert "not live" in message, "the message must name which selection disagreed"
+
+
+def test_the_child_does_not_inherit_pytests_own_option_variables() -> None:
+    """A variable in the runner's shell must not steer the count it reports.
+
+    ``PYTEST_ADDOPTS`` prepends options to the child, and its ``--ignore``
+    entries append rather than replace, so an exported value shrinks the child's
+    collection below the job's. The name is assembled from the prefix rather
+    than written out: the baseline ledger reads every upper-case underscored
+    literal under ``tests/`` as a project variable its own child must clear.
+    """
+
+    steering = PYTEST_ENVIRONMENT_PREFIX + "ADDOPTS"
+
+    kept = _child_environment({steering: "--ignore=tests/harness", "PATH": "/usr/bin"})
+
+    assert steering not in kept
+    assert kept == {"PATH": "/usr/bin"}
+
+
+def test_a_collection_error_is_named_rather_than_counted(tmp_path: Path) -> None:
+    """🔴 The failure that would have shrunk the merge gate.
+
+    Measured: an unimportable module makes the child exit 2, and the probe file
+    is written anyway with that module's tests absent. Read silently, the count
+    is smaller, the equality fails, and the message says to write the smaller
+    number into the workflow -- removing from the gate exactly the tests the
+    broken import removed. The status is therefore checked before the count is
+    believed.
+
+    Args:
+        tmp_path: Holds a package with one unimportable module.
+    """
+
+    (tmp_path / "test_broken.py").write_text(
+        "import a_module_that_does_not_exist\n\n\ndef test_a():\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_sound.py").write_text(
+        "def test_b():\n    pass\n", encoding="utf-8"
+    )
+    argv = [*PYTEST_INVOCATION, str(tmp_path)]
+
+    with pytest.raises(pytest.fail.Exception, match="exited 2"):
+        _collect(argv, tmp_path / "probe.json")
 
 
 def test_a_child_that_wrote_no_probe_output_is_a_failure(tmp_path: Path) -> None:

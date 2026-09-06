@@ -892,7 +892,7 @@ including one held in a design document. `tests/test_ci_collection_floors.py`
 holds each declared floor to the count its own selection collects, so a stale
 number is red rather than merely wrong; a job whose selector silently stops
 matching is otherwise green while running nothing. **A job added to this list
-must be one that guard can collect** — it refuses a floor whose selection it
+must be one that the guard can collect** — it refuses a floor whose selection it
 cannot reproduce, and recording the job in `FLOOR_BEARING_WORKFLOWS` is where
 that is decided. Each job's acceptance includes: a deliberately typo'd selector
 fails the job.
