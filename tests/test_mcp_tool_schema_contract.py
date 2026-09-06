@@ -324,9 +324,9 @@ def _enforced_ceiling(monkeypatch: pytest.MonkeyPatch) -> int:
     """Return the concurrency ceiling the running code actually enforces.
 
     Probes the resolver rather than restating the constant. A literal in this file
-    would be a third copy of the number, and comparing two documents against a
-    copy catches drift but never deletion -- remove the clamp and the copy still
-    agrees with both documents.
+    would be one more copy of the number, and comparing the surfaces in
+    :data:`CEILING_SURFACES` against a copy catches drift between them but never
+    deletion -- remove the clamp and the copy still agrees with every one of them.
 
     Args:
         monkeypatch: Fixture used to set the environment variable for the probe.

@@ -1101,13 +1101,20 @@ duplicating tests or touching the same files.
   > section discharged with two-thirds of it unowned. They need a step; raising one
   > is a sequencing call for the owner, not this step's to make.
   >
-  > **Also deferred:** the prose copies of the **default** `3` that `README.md` and
-  > `.env.example` carry in the same sentences as the ceiling are deliberately left
-  > unguarded by this step. Each spells it differently — prose in one, a bare
-  > `KINDLY_WEB_SEARCH_MAX_CONCURRENCY=3` assignment in the other — so pinning them
-  > needs its own per-surface anchor rather than the `1..N` regex this step's
-  > ceiling guard uses. Raised twice in review; recorded here so a third round does
-  > not rediscover it as new.
+  > **Also deferred:** the **default** `3` is stated in prose in **three** places,
+  > all currently correct and none guarded — `README.md:856` ("Default: `3` (when
+  > unset or invalid)"), `.env.example:58` ("default concurrency is 3") and the
+  > served `web_search` description at `server.py:419` ("default 3 when unset").
+  > The review rule names the fallback without a number and so states nothing to
+  > pin.
+  >
+  > What that costs is a **pattern**, not an anchor: all three sentences already sit
+  > inside windows this step's ceiling guard anchors, and the description is one of
+  > its four surfaces already. Three spellings of one value is the work — and unlike
+  > the ceiling, the default is stated by three of the four surfaces rather than
+  > all, so the pattern needs a per-surface opt-in that the ceiling did not.
+  > Raised in three review rounds; recorded here with the copies enumerated so
+  > whoever takes it designs for three, not two.
 - **E6-2.** **Production change (small).** Sequenced after E2-3 because both touch
   the parent-side diagnostics path and would otherwise conflict. One
   encoder/decoder pair used by both sides.
