@@ -48,7 +48,7 @@
 
 ## The guard tests — treat these as load-bearing
 
-Fifteen tests exist to hold an invariant that nothing else enforces. A pull request
+Sixteen tests exist to hold an invariant that nothing else enforces. A pull request
 that changes what they guard, without changing them, is a finding; a pull request
 that *weakens* one to make a change pass is a critical finding.
 

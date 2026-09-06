@@ -64,7 +64,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     # 🔴 Measured, not guessed, and strictly below the runner's ceiling. The
     # selection takes 8m39s on a developer's Linux machine (785 passed, 2
-    # skipped, 787 selected); this cap is roughly seven times that, because it
+    # skipped, 787 selected). ⚠️ That is the run this cap was DERIVED from and it
+    # is deliberately not restated as the selection grows -- the live figure is
+    # the floor below, 948 at the time of writing. Re-deriving the cap needs a
+    # fresh timing on comparable hardware, which nobody has taken; this cap is
+    # roughly seven times that measured duration, because it
     # must also cover Windows -- where a suite that spawns child processes and
     # shells out to mypy commonly runs two to three times slower -- plus a cold
     # dependency install. Both labels above are ordinary GitHub-hosted runners
@@ -126,7 +130,7 @@ jobs:
         # the run, never from a number written down earlier. Note the shape that
         # is NOT an addition to the selection: the first test carrying a
         # `chromium`, `live` or `package` marker is deselected here, so it lowers
-        # this count. Today those three markers select zero of the 787, so this
+        # this count. Today those three markers select zero of the 948, so this
         # floor is the whole suite; the step that adds the first browser test
         # owns lowering it, and the failure message it would otherwise get names
         # the wrong cause.
@@ -134,4 +138,4 @@ jobs:
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 787
+          --min-selected 948

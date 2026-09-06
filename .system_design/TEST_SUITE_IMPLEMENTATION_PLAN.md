@@ -1058,9 +1058,13 @@ duplicating tests or touching the same files.
   mutant into a killed one. Stated as three numbers because E12-1 consults this
   record and "no survivors" alone cannot be reconciled with the equivalents named
   below: the equivalent is the `meta.<x>.com` branch, which is *not* counted
-  among the nine, and three further mutations survive **by construction** —
+  among the nine, and three further mutations survived **by construction** —
   widening the non-StackExchange host guards into unclaimed space, which this
-  property cannot see and E5-2 now owns. Three findings came from hunting
+  property cannot see. **That number is now zero, and not because this property
+  changed:** E5-2 landed a row per host in
+  `tests/test_url_parser_identifiers.py`, so the mutations are killed there.
+  Corrected here rather than only in E5-2's bullet, because a stale survivor
+  count is what E12-1 would consult. Three findings came from hunting
   survivors rather than from this bullet: the dot (`notstackoverflow.com` became
   a community and every test passed), the generator crossing path prefixes
   instead of identifier vocabularies (which left the arXiv and Wikipedia guards
@@ -1077,11 +1081,16 @@ duplicating tests or touching the same files.
   is observable by definition; it is a recorded defect, filed in §3.1 under the
   widenings left unfixed. An earlier draft called them two, contradicting this
   bullet's own singular count three sentences above.
-- **E5-2.** For each of the five parsers: a generated URL built from known
-  identifiers returns exactly those identifiers; a rejected URL raises that
-  parser's own error type; rejection is stable across trailing slashes, scheme
-  case and query order. *Verify:* each property fails if its parser's group
-  extraction is off by one, and if the parser raises bare `Exception`.
+- **E5-2.** For each of the five parsers: a URL built from known identifiers
+  returns exactly those identifiers; a rejected URL raises that parser's own
+  error type; rejection is stable across trailing slashes, scheme case and query
+  order. *Verify:* each property fails if its parser's group extraction is off by
+  one, and if the parser raises bare `Exception`.
+
+  **"Built", not "generated" — the word changed when the step landed rather than
+  the module being bent to fit it.** E5-1 owns the generated space. These are
+  per-parser facts over small enumerable inputs, and a parametrised table names
+  each case in the failure report where a shrunk counterexample would not.
 
   **Also owns, handed over by E5-1: suffix-is-not-subdomain rejection for the
   four non-StackExchange parsers.** *Verify additionally:* each parser rejects a
@@ -1102,6 +1111,36 @@ duplicating tests or touching the same files.
   belonging here: `_QUESTION_RE`/`_ANSWER_RE` survive `search`→`match`, and
   `_QUESTION_RE` survives losing its `q` alternative, which real short links
   such as `https://es.stackoverflow.com/q/12345` depend on.
+
+  **Landed.** `tests/test_url_parser_identifiers.py` — 88 table-driven cases.
+  It ships **one** production edit, the arXiv host guard, which the bullet above
+  hands here by name: `endswith("arxiv.org")` became
+  `host != "arxiv.org" and not host.endswith(".arxiv.org")`, so a host that
+  merely ends with the string now falls through to the universal HTML loader.
+  Both directions are pinned — narrowing the guard to an equality fails the
+  `export.arxiv.org` row.
+
+  **Thirty-nine mutations tried: thirty-seven killed here, one killed only by
+  `test_url_parser_exclusivity.py`, one equivalent**, and thirteen of the
+  thirty-seven are shared with a module that already existed rather than owned
+  here. The per-group table, the survivor and its owner, and the equivalent are
+  in §3.1 of `TEST_SUITE.md`, written once from one measured run; E12-1 reads it
+  there.
+
+  **Three claims were narrowed against what was measured, and the narrowing is
+  the finding.** The bullet above says a rejected URL raises the parser's own
+  type. A twenty-seven-character malformed URL falsifies that in **all five**
+  parsers — `urlsplit` raises inside `parsed.hostname`, the first statement of
+  every parse function — and an over-long StackExchange id falsifies it in one.
+  So the shipped claim is scoped to the branches each parser's own guards reach,
+  all twenty-one of them, and the two escapes are pinned as characterisation and
+  filed in §14. Likewise "rejection is stable across trailing slashes" is exactly
+  right and acceptance is not: a trailing slash changes the Wikipedia title, so
+  the acceptance rows exclude that one pair by name. Repairing either was
+  declined by the product owner on E5-8's precedent — a test step ships one
+  production edit — and, for the id, because the ceiling is a process-global
+  interpreter setting rather than anything the parser enforces.
+
 - **E5-3.** Owns `server.py`'s `_resolve_transport`, `_resolve_host_port`,
   `_resolve_tool_total_timeout_seconds`, `_resolve_web_search_max_concurrency`,
   `_resolve_transport_security`, `_cors_origin_regex`, `_get_int_env`,

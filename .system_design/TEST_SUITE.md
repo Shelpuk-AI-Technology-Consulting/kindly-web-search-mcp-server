@@ -461,12 +461,19 @@ examples do not.
 There is **no inverse serializer**, so "round-trip" is not a property this suite
 can state. The per-parser properties are instead:
 
-- *Identifier preservation* — for a generated URL built from known identifiers
-  (site, question id, owner/repo/number, article title, arXiv id), the parser
-  returns exactly those identifiers.
-- *Stable rejection* — a rejected URL raises that parser's own error type, never
-  a bare `Exception`, and rejection does not depend on trailing slashes, case in
-  the scheme, or query-string order.
+- *Identifier preservation* — for a URL built from known identifiers (site,
+  question id, owner/repo/number, article title, arXiv id), the parser returns
+  exactly those identifiers. **Built from a table, not generated.** The word
+  changed when E5-2 landed, rather than the module being bent to fit the older
+  one: E5-1 owns the generated space, and these are per-parser facts over small
+  enumerable inputs, which a parametrised table names in the failure report
+  where a shrunk counterexample would not.
+- *Stable rejection* — a rejected URL raises that parser's own error type, and
+  rejection does not depend on trailing slashes, case in the scheme, or
+  query-string order. **Scoped to the branches each parser's own guards reach**,
+  which is narrower than "never a bare `Exception`" and is narrower for a
+  measured reason: two inputs escape every parser *before* any guard runs, and
+  §14 records them.
 
 **E5-1 shipped a production fix, following E5-8's precedent above.** A test
 step changing production code is the exception, not the rule, and the reason is
@@ -623,10 +630,14 @@ bring them together. **So apart from that one structurally-separated pair, the
 host predicates are what keeps every pair apart**, and that is what the property
 guards — *in one direction only*, which is the part worth stating precisely.
 Deleting a host guard, or widening it into space another parser
-claims, is killed. Widening one into **unclaimed** space is invisible: measured,
-`notarxiv.org`, `notwikipedia.org` and `notgithub.com` all pass the entire fast
-suite, because nothing then accepts a URL twice and a mutual-exclusivity
-property has nothing to see.
+claims, is killed. Widening one into **unclaimed** space is invisible to *this*
+property: measured while E5-1 was written, `notarxiv.org`, `notwikipedia.org`
+and `notgithub.com` all passed the entire fast suite, because nothing then
+accepts a URL twice and a mutual-exclusivity property has nothing to see. **They
+no longer pass** — E5-2 landed a row per host in
+`tests/test_url_parser_identifiers.py`, which is where that claim lives now. The
+blindness of the property itself is unchanged; what changed is that something
+else covers it.
 
 *An earlier draft closed the sentence above with "the other seven pairs".
 Seven reconciles with none of the three models — they leave eight, ten and six
@@ -660,31 +671,39 @@ Kept because deleting a pre-existing branch is a behaviour change E5-1 was not
 asked for; recorded because the mutation step will otherwise surface it as a
 survivor with nothing to consult.
 
-**Adjacent widenings are recorded, not fixed.** `parse_arxiv_url` matches
-`endswith("arxiv.org")` with **no leading dot**, so `notarxiv.org` is accepted —
-the same defect class as the one E5-1 fixed in StackExchange, but it produces no
-overlap today and so is outside a step whose claim is exclusivity. And the
-`*.stackexchange.com` branch takes only the first label, so
+**Adjacent widenings were recorded here, and E5-2 has since closed the host
+ones.** The paragraph keeps the tense it was written in with the outcome added,
+because the reasoning is what a future reader needs and deleting it would leave
+only the answer. `parse_arxiv_url` matched `endswith("arxiv.org")` with **no
+leading dot**, so `notarxiv.org` was accepted — the same defect class as the one
+E5-1 fixed in StackExchange, but it produced no overlap and so sat outside a step
+whose claim is exclusivity. **Repaired in E5-2**; see its landing note below.
+And the `*.stackexchange.com` branch takes only the first label, so
 `math.meta.stackexchange.com` derives `math` where the API's
 `api_site_parameter` is `math.meta`; a characterisation test pins today's wrong
-answer so a future correction is visible rather than silent. And all four non-StackExchange parsers admit unclaimed host space without any
-test noticing, in two distinct conditions that an earlier draft collapsed into
-one count:
+answer so a future correction is visible rather than silent. **That one is still
+open** — it is a slug-derivation defect, not a host one, and E5-2 closed only the
+hosts. All four non-StackExchange parsers admitted unclaimed host space without
+any test noticing, in two distinct conditions that an earlier draft collapsed
+into one count:
 
-- **arXiv needs no mutation at all.** `endswith("arxiv.org")` is *already* a
-  bare suffix test, so `notarxiv.org` is accepted on `main` today. A live
-  defect, not a survivable mutation.
-- **Three admit a widening mutation** that no test kills: `wikipedia.py`'s
+- **arXiv needed no mutation at all.** `endswith("arxiv.org")` was *already* a
+  bare suffix test, so `notarxiv.org` was accepted on `main`. A live defect, not
+  a survivable mutation — and the one production edit E5-2 shipped.
+- **Three admitted a widening mutation** that no test killed: `wikipedia.py`'s
   `endswith(".wikipedia.org")` weakened to a bare suffix, and both GitHub
   parsers' `host not in {"github.com", "www.github.com"}` weakened to a suffix
-  test.
+  test. Each was re-measured against the full gate selection immediately before
+  E5-2 was written — 858 passed, 2 skipped, on every one — and each now fails a
+  named row.
 
 That is the arithmetic behind "three widenings" and "four parsers" — the two
 numbers count different things and the sentence used to give one of them without
 saying which. All four are the defect class E5-1 fixed on the StackExchange side
-and pinned with the `notstackoverflow.com` rows; all four belong to E5-2's
-stable-rejection claim. All are named here so the next reader
-does not re-derive them, and so a mutation report has an answer to point at.
+and pinned with the `notstackoverflow.com` rows; all four were E5-2's
+stable-rejection claim and all four are now closed. All are named here so the
+next reader does not re-derive them, and so a mutation report has an answer to
+point at.
 
 **`_QUESTION_RE` and `_ANSWER_RE` stay unanchored, and the honest reason is
 narrower than the one first written here.** An earlier version of this paragraph
@@ -694,10 +713,87 @@ closest candidate, the Teams `/c/<team>/questions/<id>/…` form, lives on
 `stackoverflowteams.com`, which this allowlist rejects, so it argues against the
 claim rather than for it. The real reason is simply that after the host fix,
 anchoring buys nothing, and narrowing acceptance is a behaviour change E5-1 was
-not asked to make. Nothing currently guards it: `search`→`match` on either
-pattern passes the whole suite, as does dropping the `q` alternative that real
-short links like `https://es.stackoverflow.com/q/12345` depend on. Those cases
-are handed to E5-2.
+not asked to make. Nothing guarded it when this was written: `search`→`match` on
+either pattern passed the whole suite, as did dropping the `q` alternative that
+real short links like `https://es.stackoverflow.com/q/12345` depend on. All three
+were re-measured before E5-2 and all three still survived; **E5-2 owns them
+now.** The two `search` rows are pinned as *characterisation, not endorsement*,
+and say so in their docstring — the anchoring option this section keeps open is
+expected to **delete** them rather than work around them. The `q` row is an
+ordinary claim: that alternative is what the share dialog produces.
+
+**Done, in E5-2 (2026-09-06).** `tests/test_url_parser_identifiers.py` — 88
+cases over the five parsers, table-driven, no Hypothesis. It owns identifier
+preservation, typed rejection over every guard-reached branch, the
+suffix-is-not-subdomain rejection handed here by E5-1, and stability of both
+answers under four surface variations.
+
+**One production edit: the arXiv host guard.** `endswith("arxiv.org")` became
+`host != "arxiv.org" and not host.endswith(".arxiv.org")`. *What changed in
+behaviour*, stated on E5-1's model rather than left to the diff: a host that
+merely ends with the string — `notarxiv.org`, `xarxiv.org`, anything registrable
+— is no longer claimed by the arXiv integration and now falls through to the
+universal HTML loader that owns unclaimed hosts. `arxiv.org` itself and every
+subdomain of it, `export.arxiv.org` included, are unaffected, and a row pins each
+direction: narrowing the guard to an equality fails the subdomain row, widening
+it back fails the `notarxiv.org` row.
+
+**The mutation record, from one measured run each, not from arithmetic.**
+Thirty-nine mutations applied one at a time from a pristine copy held outside the
+working tree; **thirty-seven killed by this module, one killed only by another
+module, one equivalent**:
+
+| Group | Tried | Killed here | Also killed by a per-parser module | Also killed by the exclusivity module |
+|---|---|---|---|---|
+| Every `raise` site in the five parse functions | 21 | 21 | 5 | 1 |
+| Host guards — arXiv reverted and narrowed, the three widenings | 5 | 5 | 0 | 0 |
+| Capture-group and slug derivation | 8 | 7 | 6 | 2 |
+| StackExchange path patterns — `q`, both `search`→`match` | 3 | 3 | 0 | 0 |
+| Path normalisation in `arxiv.py` — `unquote`, `rstrip` | 2 | 1 | 0 | 0 |
+
+The last two columns are why the third is not a coverage claim on its own.
+**Thirteen** of the kills are shared with something that already existed —
+eleven with the five per-parser modules, which all assert identifier
+preservation for their own parser and between them reach five of the twenty-one
+rejection branches, and two more with `test_url_parser_exclusivity.py`; one
+mutation is killed by both, so the distinct total is thirteen rather than
+fourteen. **Twenty-four kills are this module's alone**: fifteen raise sites,
+all five host guards, all three pattern mutations and the `unquote` line. E12-1
+reads this table, and "thirty-seven killed" without the split would credit this
+module with work `tests/test_github_issues.py` was already doing.
+
+**One mutation survives this module, and it is recorded rather than closed.**
+Narrowing `_derive_site_parameter`'s `*.stackexchange.com` branch — dropping the
+`.split(".")[0]` so the whole prefix becomes the slug — leaves all 88 cases
+green. The only allowlisted host with a two-label prefix there is
+`math.meta.stackexchange.com`, whose slug is the **characterised defect** three
+paragraphs above: `test_second_level_meta_community_derives_the_wrong_slug_today`
+in `tests/test_url_parser_exclusivity.py` pins `math`, and that is what kills the
+mutation. A row here would be a second owner of another module's characterisation
+and would break the day the defect is fixed, so E5-2 declined it. What E5-2's own
+StackExchange row *does* pin is the neighbouring **apex `.com` fall-through** —
+`es.stackoverflow.com` reaches that branch, not the `*.stackexchange.com` one,
+which is the opposite of the obvious reading and is why it is written down.
+
+**One equivalent mutant, recorded rather than removed.** `arxiv.py`'s
+`.rstrip("/")`: the next line filters empty segments out of the split, so
+`"/abs/2401.12345/"` yields the same parts with or without it. Measured. Its
+neighbour on the same line, `unquote`, is *not* equivalent and was surviving
+everything until a percent-encoded legacy identifier
+(`hep-th%2F9901001`) was added as a row — found by mutation, not by reading.
+
+**One dimension is unkillable by construction, and says so.** No parser reads
+`parsed.scheme`, and `urlsplit` lowercases `hostname` regardless, so the
+upper-case-scheme variation has no mutation that can fail it. Five rows of
+regression armour. Named here so a mutation report is not read as coverage.
+
+**Two defects are characterised rather than repaired, and both are in §14.**
+A malformed URL escapes all five parsers as `ValueError` before any guard runs;
+and a trailing slash joins the Wikipedia title. The first is the reason the
+typed-rejection claim above is scoped to guard-reached branches rather than
+stated as a universal — a 27-character input falsifies the universal, so the
+universal was never written.
+
 
 **Environment resolvers.** The `_resolve_*` families in `server.py`,
 `chromium_pool.py` and `nodriver_worker.py`, plus `_parse_port_range`,
@@ -4129,6 +4225,47 @@ is nothing to test.
   acceptance scenarios are reverse-engineered from tool docstrings rather than
   derived from stated acceptance criteria. Which convention should apply is a
   separate question from this document; the gap is the same either way.
+- **Every URL parser can raise a class the resolver does not catch, and two
+  inputs reach it.** `resolve_page_content_markdown` falls through to the next
+  stage only on each parser's *own* error type, so anything else escapes the
+  function; `get_content` then renders the exception's text into the Markdown it
+  returns to the calling model, and the URL never reaches the remaining stages or
+  the HTML loader. Two mechanisms, both measured on `main` at `7fb3e59`:
+  **(a)** a malformed URL — `https://[oops/abs/2401.12345`, twenty-seven
+  characters, an unmatched bracket read as an IPv6 literal — makes `urlsplit`
+  raise `ValueError` inside `parsed.hostname`, which is the *first* statement of
+  all five parse functions, so all five escape; **(b)** an id over CPython's
+  integer-string conversion ceiling makes `parse_stackexchange_url`'s bare
+  `int()` raise `ValueError`. Both GitHub parsers already wrap their conversion;
+  StackExchange does not.
+  **And the obvious repair for (b) is not a bound.** That ceiling is a
+  process-global interpreter setting — `PYTHONINTMAXSTRDIGITS`,
+  `-X int_max_str_digits`, `sys.set_int_max_str_digits()`. Measured with the
+  limit removed, the parser *accepts* a five-thousand-digit id and would forward
+  it to the Stack Exchange API, so a `try`/`except` around the conversion guards
+  a symptom on default-configured interpreters and nothing elsewhere.
+  **Characterised by E5-2, not repaired**, on the product owner's decision and on
+  the precedent this section already records for E5-8's SerpBase leak: that step
+  was scoped to a single production edit, pinned the behaviour and filed the gap.
+  `test_a_malformed_url_escapes_every_parser_as_a_foreign_class_today`,
+  `test_an_oversized_stackexchange_id_escapes_as_a_foreign_class_today` and
+  `test_the_parser_has_no_bound_of_its_own_on_the_id_length` in
+  `tests/test_url_parser_identifiers.py` pin all three facts, so the day someone
+  repairs it those tests fail and point at this entry. Deciding *where* the guard
+  belongs — five parsers, or one place in the resolver, which would also swallow
+  genuine parser defects — is the open question and has no owner yet.
+- **A trailing slash changes the Wikipedia article title.** `_WIKI_PATH_RE` is
+  `^/wiki/(.+)$` and captures greedily, so
+  `https://es.wikipedia.org/wiki/Manzana/` yields the title `Manzana/` and a
+  canonical URL carrying the slash. The MediaWiki request that follows asks for
+  an article that does not exist. The other four parsers are stable under the
+  same variation. **Characterised by E5-2, not repaired** —
+  `test_a_trailing_slash_changes_the_wikipedia_title_today` pins today's answer,
+  and the pair `("wikipedia", "trailing_slash")` is excluded by name from that
+  module's acceptance-stability rows so the exclusion is visible rather than
+  silent. §3.1 scopes E5-2's stability claim to *rejection*; normalising the
+  captured title changes which request the integration issues, which is a
+  production decision with no owner yet.
 - **`nodriver` and Chromium version drift** is untested at any layer. The worker
   carries compatibility shims (`_patch_nodriver_network_encoding`,
   `_is_snap_browser`), which implies breakage has happened and will recur.
