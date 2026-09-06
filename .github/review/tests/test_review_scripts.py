@@ -12690,10 +12690,11 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
         ),
         # 🔴 A third claim class: the runtime freeze file. It was deleted -- no
         # install path read it, it had silently stopped listing a runtime
-        # dependency, and it was the origin of every open Dependabot alert. Three
-        # files under this root asserted its purpose in the present tense -- two,
-        # counted, not three: the deleted file's own header said it too, but it
-        # sat at the repository root, which `_root()` below does not walk.
+        # dependency, and it was the origin of every open Dependabot alert. Two
+        # files under this root asserted its purpose in the present tense: the
+        # review guide and this packaging rule. The deleted file's own header said
+        # it too, but that sat at the repository root, which `_root()` below does
+        # not walk -- so it is guarded here as a phrasing, not as a reachable file.
         #
         # 🔴 **The first two patterns here missed one of the two sentences they
         # were written for, and the control did not say so.** Both required the

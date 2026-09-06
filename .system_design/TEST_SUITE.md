@@ -2860,9 +2860,16 @@ which converts every upstream minor into a forced pull request on a path that
 re-resolves at each user launch — and the ceilings still block the catastrophic
 case, a surprise major, at no cost. It matches the `ruff>=0.6,<1` precedent above.
 **What actually protects these four is the suite**, not the bound: eight test
-modules import `kindly_web_search_mcp_server.server` — seven of them inside the
-required selection, the eighth carrying the `live` marker — so a release that
-breaks an import fails CI before it can be adopted. Tighten a bound the moment one of them
+modules import `kindly_web_search_mcp_server.server`, and **all eight are inside
+the required selection**. The eighth, `tests/test_live_fetch_urls.py`, carries no
+marker — it self-skips on `KINDLY_RUN_LIVE_TESTS` — but its module-level import
+runs at collection, so it protects the import just as the other seven do. So a
+release that breaks an import fails CI before it can be adopted.
+
+⚠️ **Do not "tidy" that file by giving it the `live` marker.** No test in the tree
+carries `live`, `chromium` or `package` today, and no live job exists anywhere, so
+marking it would deselect it from the only gate there is — removing exactly the
+protection this paragraph relies on, while looking like housekeeping. Tighten a bound the moment one of them
 breaks a minor in practice; the `httpx` row instead needs watching for the
 `httpx2` rename, which is a code change, not a bound change.
 

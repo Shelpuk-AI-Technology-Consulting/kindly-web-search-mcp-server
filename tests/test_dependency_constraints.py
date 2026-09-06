@@ -134,12 +134,12 @@ EXPECTED_RUNTIME_BOUNDS: dict[str, str] = {
 }
 
 # The versions these bounds are checked against are NOT restated here. They are
-# read from ``requirements-ratchet.txt``, which pins all ten - it is the committed
-# environment section 10.4's coverage lane installs and runs the whole hermetic
-# suite in, so a version pinned there is one CI demonstrably works against. A
-# hand-copied table of "verified" numbers beside it would be a second copy with no
-# committed counterpart, and comparing this module's constants with this module's
-# constants proves only that it is self-consistent.
+# read from ``requirements-ratchet.txt``, which pins all ten - the committed
+# environment section 10.4's coverage lane is designed to run the hermetic suite
+# in, though that lane is not wired yet. A hand-copied table of "verified" numbers
+# beside it would be a second copy with no committed counterpart at all, since
+# ``.requirements/`` is gitignored, and comparing this module's constants with this
+# module's constants proves only that it is self-consistent.
 #
 # The pairing also closes a gap in the other direction. The project is installed
 # with ``--no-deps`` in that lane, so pip never checks these bounds against the
@@ -491,10 +491,13 @@ def _declared_floor(requirement: Requirement, name: str) -> Version:
 def _verified_runtime_version(name: str) -> Version:
     """Read the version ``requirements-ratchet.txt`` pins for one runtime package
 
-    That lockfile is the committed environment section 10.4's coverage lane
-    installs and runs the whole hermetic suite in, so a version pinned there is one
-    CI demonstrably works against - a stronger claim than a resolve performed once
-    on a developer's machine, and one that lives in a tracked file.
+    That lockfile is the committed environment section 10.4's coverage lane is
+    designed to install and run the whole hermetic suite in. ⚠️ **That lane is not
+    wired yet** - no workflow installs this file today, and `ci.yml`'s preamble
+    says so - so the pins' demonstrated basis is the recorded regeneration, not a
+    CI run. What this check needs is not that claim anyway: it is a *committed*
+    counterpart to compare against, governed by a regeneration procedure, rather
+    than a second hand-written table living beside the first.
 
     Args:
         name: The distribution name section 10.2 records.
@@ -531,7 +534,7 @@ def _verified_runtime_version(name: str) -> Version:
 def test_runtime_dependency_rejects_every_later_major(
     name: str, specifier: str
 ) -> None:
-    """Exclude every major release above the pinned one, not just the next"""
+    """Exclude every major release above the declared floor's, not just the next"""
     declared = _declared_runtime_requirement(name, specifier)
     next_major = _declared_floor(declared, name).major + 1
 
