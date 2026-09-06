@@ -408,9 +408,10 @@ def _stated_ceilings(text: str, anchor: str) -> list[int]:
     whole-file scan would not give: ``README.md`` documents many knobs.
 
     Only the ``1..N`` spelling is recognised. ``1-5``, ``1 to 5`` and the en-dash
-    ``1--5`` -- which the same docstring uses for ``num_results`` -- all read as
-    "states no ceiling" and fail. That is the intended direction: a surface must
-    state the bound in the recognised form or say so loudly.
+    ``1–5`` (U+2013, which the ``web_search`` docstring really does write for
+    ``num_results``) all read as "states no ceiling" and fail. That is the intended
+    direction: a surface must state the bound in the recognised form or say so
+    loudly.
 
     Args:
         text: Document to scan.

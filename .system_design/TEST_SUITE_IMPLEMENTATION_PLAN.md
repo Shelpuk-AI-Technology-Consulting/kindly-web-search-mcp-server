@@ -1100,6 +1100,14 @@ duplicating tests or touching the same files.
   > only step attached to §4.2, so merging it would otherwise let E13-1 mark that
   > section discharged with two-thirds of it unowned. They need a step; raising one
   > is a sequencing call for the owner, not this step's to make.
+  >
+  > **Also deferred:** the prose copies of the **default** `3` that `README.md` and
+  > `.env.example` carry in the same sentences as the ceiling are deliberately left
+  > unguarded by this step. Each spells it differently — prose in one, a bare
+  > `KINDLY_WEB_SEARCH_MAX_CONCURRENCY=3` assignment in the other — so pinning them
+  > needs its own per-surface anchor rather than the `1..N` regex this step's
+  > ceiling guard uses. Raised twice in review; recorded here so a third round does
+  > not rediscover it as new.
 - **E6-2.** **Production change (small).** Sequenced after E2-3 because both touch
   the parent-side diagnostics path and would otherwise conflict. One
   encoder/decoder pair used by both sides.
