@@ -4196,12 +4196,15 @@ is nothing to test.
   credential.
 
   Held by `tests/test_provider_credential_disclosure.py` at two layers: the
-  conversion as a unit, and the text a client actually receives through
-  `mcp.call_tool`. Ten mutations, no survivor. The six-provider sweep is kept
-  non-vacuous by a control asserting each row's credential was genuinely in
-  flight — in the URL for the two providers that carry it there, in a header for
-  the four that do not — because an absence assertion over a provider that never
-  sends a credential proves nothing. Fourteen mutations, no survivor.
+  conversion as a unit, and the payload a client is actually served — driven
+  through the **low-level `CallToolRequest` handler**, not `mcp.call_tool`, because
+  `call_tool` raises FastMCP's `ToolError` and the served text and `isError` are
+  composed one layer below it. The six-provider sweep is kept
+  non-vacuous by a **sibling case** asserting, once per provider, that the
+  credential was genuinely in flight — in the URL for the two providers that carry
+  it there, in a header for the four that do not — because an absence assertion
+  over a provider that never sends a credential proves nothing. The sweep rows
+  themselves assert absence only. Fifteen mutations, no survivor.
 
   **The log path is the exception path's sibling, and was repaired with it.**
   Three `searxng.py` log sites wrote the base URL, userinfo included: the `INFO`
@@ -4222,9 +4225,14 @@ is nothing to test.
   measured.** The catch covers `httpx.HTTPError`, and the justification first
   written — "every httpx error carries `.request.url`" — is false. On httpx
   0.28.1 `InvalidURL`, `CookieConflict` and `StreamError` are **not** `HTTPError`
-  subclasses, and `InvalidURL` has no `.request` at all. They are unreachable
-  from the five providers that build their URL from a constant; a provider added
-  later that derives its URL from configuration would inherit an uncaught family.
+  subclasses, and `InvalidURL` has no `.request` at all. Five providers build
+  their URL from a constant and cannot reach them. **SearXNG can, and does** — it
+  derives its URL from configuration, and a `SEARXNG_BASE_URL` of
+  `https://user:pw@host:notaport` raises `InvalidURL("Invalid port: 'notaport'")`,
+  measured. It is saved not by the router but by its own blanket
+  `except Exception`, which turns it into a `SearxngError` quoting only the port.
+  So the uncaught family is already reachable today; what keeps it harmless is a
+  broad catch inside one provider, not the conversion.
 
   **A provider-authored message can still be httpx-formatted**, which qualifies
   the pass-through rule. `search_searxng`'s aggregate interpolates
@@ -4241,9 +4249,30 @@ is nothing to test.
   `_is_snap_browser` entry below — that one also landed as a change of its own and
   is recorded here rather than as a step. E9-1 still owns the diagnostics emit
   boundary and §7.1's credential-bearing-query-parameter rule for diagnostics
-  payloads; **this entry does not discharge it.** This change does not touch
+  payloads; **this entry does not discharge it, and one measured hole in that
+  path is named in the next entry.** This change does not touch
   `redact_url_credentials`, so E9-1's scope and E5-7's "existing behaviour only"
   scope are both intact.
+- **`mask_env_values` discloses a schemeless `SEARXNG_BASE_URL` to the
+  diagnostics stream.** Found while closing the entry above and **not repaired
+  here**, because the emit boundary is E9-1's and the helper's present behaviour
+  is E5-7's; widening either from this change would put it in front of both.
+  `web_search` snapshots every provider variable into its `web_search.start`
+  diagnostic through `mask_env_values`. That masks by *name* hint — `KEY`,
+  `TOKEN`, `SECRET`, `PASSWORD`, `BEARER` — and `SEARXNG_BASE_URL` matches none of
+  them, so it falls through to `redact_url_credentials`, which the entry above
+  has just recorded as useless on a value with no scheme. Measured with
+  `KINDLY_DIAGNOSTICS=1` and
+  `SEARXNG_BASE_URL="operator:<secret>@searx.example.org"`: the password appears
+  verbatim in the emitted `env` payload on stderr. A base URL *with* a scheme is
+  redacted correctly, so this is the mistyped case — the same input the "no valid
+  URLs" repair exists for. `tests/test_diagnostics_masking.py` covers only the
+  with-scheme form. Two candidate repairs, and the choice is E9-1's: mask this
+  variable by name like a credential, or give the emit boundary a rule that does
+  not depend on a value parsing as a URL. **The second is the one that
+  generalises** — every lesson in the entry above is that a pattern over a value
+  fails open on the shape nobody listed.
+
 - **SearXNG requests carry no deadline in the shipped default.**
   `_get_request_timeout_seconds` returns `None` when `SEARXNG_TIMEOUT_SECONDS` is
   unset, and that `None` is passed explicitly as `client.get(timeout=None)`. In

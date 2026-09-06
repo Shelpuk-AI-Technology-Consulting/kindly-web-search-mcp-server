@@ -67,8 +67,10 @@ Every provider module must:
    reaches the "no valid URLs" branch. Prefer dropping the value over filtering
    it. `tests/test_provider_credential_disclosure.py` holds this.
 
-`serpbase.py` is the shared SERP base class. A change there applies to every
-provider built on it; check the others still hold their contract afterwards.
+`serpbase.py` is **not** a base class, despite the name — nothing imports from
+it but the registry, and each provider module stands alone. This paragraph used
+to say a change there applied to every provider built on it; it does not, and a
+reviewer acting on that would look for consequences that cannot exist.
 
 ## Response normalisation
 

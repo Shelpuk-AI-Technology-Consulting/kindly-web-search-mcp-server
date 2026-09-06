@@ -30,6 +30,25 @@ DEFAULT_SEARXNG_USER_AGENT = (
 
 
 def _get_searxng_base_urls() -> list[str]:
+    """Resolve the configured SearXNG instances, in the order they will be tried
+
+    ``SEARXNG_BASE_URL`` holds one URL or a comma-separated list. Entries that do
+    not parse to both a scheme and a host are skipped rather than failing the
+    whole list, so one bad entry does not disable a working instance beside it.
+
+    Neither the rejected entry nor the error names a value, because this variable
+    carries its credential in the URL's userinfo and a mistyped scheme is the
+    ordinary way to reach both paths. See ``.system_design/TEST_SUITE.md``
+    section 14.
+
+    Returns:
+        The configured base URLs with any trailing slash removed, in
+        configuration order.
+
+    Raises:
+        SearxngConfigError: If the variable is unset or blank, or if no entry
+            parses to both a scheme and a host.
+    """
     raw = os.environ.get("SEARXNG_BASE_URL", "").strip()
     if not raw:
         raise SearxngConfigError(
@@ -43,12 +62,7 @@ def _get_searxng_base_urls() -> list[str]:
             continue
         parsed = urlparse(part)
         if not parsed.scheme or not parsed.netloc:
-            # The entry itself is deliberately not logged. It carries its
-            # credential in the userinfo, and `redact_url_credentials` cannot
-            # remove it here: that helper matches `://user:pass@`, and an entry
-            # reaching this branch is one with no usable scheme -- which is
-            # exactly why it was rejected. Measured. The position is enough to
-            # find it in a comma-separated list.
+            # Position, not value: the entry has no scheme, so the redaction helper cannot strip its userinfo.
             LOGGER.warning(
                 "Ignoring entry %d of SEARXNG_BASE_URL: no scheme or host.", index
             )
@@ -56,11 +70,7 @@ def _get_searxng_base_urls() -> list[str]:
         urls.append(part.rstrip("/"))
 
     if not urls:
-        # The raw value is deliberately not quoted back. A base URL carries its
-        # credential in the userinfo, and the commonest way to reach this branch
-        # is mistyping the scheme -- which would hand that password to whoever
-        # reads the error, the MCP client included. The required shape is the
-        # more useful thing to say anyway.
+        # The rejected value is not quoted back: it carries a credential in its userinfo.
         raise SearxngConfigError(
             "No valid URLs found in SEARXNG_BASE_URL. Each entry must include a "
             "scheme and a host, for example https://searx.example.org."
@@ -178,9 +188,7 @@ async def search_searxng(
     data = None
 
     for base_url in base_urls:
-        # Redacted rather than dropped: unlike the rejected entry above, a URL
-        # that got this far has a scheme, so the helper strips its userinfo and
-        # leaves the host readable -- which is the whole point of logging it.
+        # Redacted, not dropped: a URL that got this far has a scheme, so the host stays readable.
         LOGGER.info(
             "Attempting SearXNG query on instance: %s", redact_url_credentials(base_url)
         )
@@ -192,8 +200,11 @@ async def search_searxng(
                 data = await _do_request_for_url(http_client, base_url)
             break
         except Exception as exc:
+            # Both operands are redacted: the message is a derived value too.
             LOGGER.warning(
-                "SearXNG query failed on %s: %s", redact_url_credentials(base_url), exc
+                "SearXNG query failed on %s: %s",
+                redact_url_credentials(base_url),
+                redact_url_credentials(str(exc)),
             )
             last_error = exc
             continue

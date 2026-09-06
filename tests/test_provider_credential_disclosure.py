@@ -31,12 +31,13 @@ it. Dropping the URL has no such gap, and needs no pattern to be kept current.
 **What makes the six-provider sweep non-vacuous.** Only SerpBase disclosed on the
 unrepaired tree; the other five already passed, so on their own they are
 regression cover and not evidence. Pointed at a header-authenticating provider,
-a "the secret is absent" assertion passes while proving nothing. Every row
-therefore also asserts that the credential was genuinely *in flight* -- in the
-request URL for the two providers that carry it there, in a request header for
-the four that do not. A row whose provider stopped being configured, or was
-swapped for one that never disclosed, fails that control instead of passing
-quietly.
+a "the secret is absent" assertion passes while proving nothing. So a **sibling
+case** asserts, once per provider, that the credential was genuinely *in flight*
+-- in the request URL for the two providers that carry it there, in a request
+header for the four that do not. A provider that stopped being configured, or
+was swapped for one that never disclosed, fails that control instead of passing
+quietly. The sweep rows themselves assert absence only; the control is what makes
+their absence mean something.
 
 ``build_environment`` is imported from ``test_search_provider_error_paths``
 rather than copied. Its docstring records the measured reason an environment has
@@ -56,15 +57,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from mcp.types import CallToolRequest, CallToolRequestParams
+
 from kindly_web_search_mcp_server.search import (
     SearchProviderTransportError,
     WebSearchProviderError,
     search_web,
 )
-from kindly_web_search_mcp_server.search.searxng import SearxngConfigError
+from kindly_web_search_mcp_server.search.searxng import SearxngConfigError, SearxngError
 from kindly_web_search_mcp_server.search.serpbase import SerpbaseError
-from mcp.types import CallToolRequest, CallToolRequestParams
-
 from tests.test_search_provider_error_paths import build_environment, status_code_of
 
 #: Captured before any case rebinds :class:`httpx.AsyncClient`. Binding the
@@ -202,11 +203,13 @@ async def call_the_tool(
     status: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[str, list[httpx.Request]]:
-    """Drive ``web_search`` through FastMCP and return what the client receives.
+    """Drive ``web_search`` and return the payload an MCP client is served.
 
-    Goes through :meth:`mcp.server.fastmcp.FastMCP.call_tool` rather than calling
-    the tool function, because the client-visible text is FastMCP's rendering of
-    the exception and not the exception's own message.
+    Reaches the low-level ``CallToolRequest`` handler rather than
+    :meth:`~mcp.server.fastmcp.FastMCP.call_tool`. ``call_tool`` raises FastMCP's
+    ``ToolError``; the served text and ``isError`` are composed one layer below
+    it, so asserting on the ``ToolError`` would leave a change at that lower
+    layer invisible to every case here.
 
     Args:
         case: The provider to configure and drive.
@@ -225,13 +228,7 @@ async def call_the_tool(
     build_environment(case.env, monkeypatch)
     monkeypatch.setattr(httpx, "AsyncClient", recording_client_class(status, sent))
 
-    # The low-level request handler, not `mcp.call_tool`. `call_tool` raises
-    # FastMCP's `ToolError`, and the text a client receives is built one layer
-    # below that, where the server turns the exception into a `CallToolResult`.
-    # Asserting on the `ToolError` would leave a change at the lower layer --
-    # rendering `__cause__`, say -- invisible to every case here. Reaching
-    # through `_mcp_server` is the only way to observe the served payload; it is
-    # the same object the transport is bound to.
+    # `_mcp_server` is the only way to observe the served payload; see the docstring.
     request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(
@@ -240,9 +237,7 @@ async def call_the_tool(
     )
     served = await mcp._mcp_server.request_handlers[CallToolRequest](request)
 
-    # A tool that returns normally is still a disclosure risk: the secret could
-    # reach the client in a payload as easily as in an error, so both shapes are
-    # reduced to one string and searched.
+    # Both shapes are searched: a secret reaches a client in a payload as easily as in an error.
     result = served.root
     text = " ".join(getattr(block, "text", "") for block in result.content)
     return f"isError={result.isError} {text}", sent
@@ -358,9 +353,7 @@ async def test_the_message_carries_neither_the_credential_nor_the_url(
         SERPBASE, lambda request: httpx.Response(status, json={"error": "denied"})
     )
 
-    # The absence is only evidence if the secret was there to be dropped. Without
-    # this line the case passes when pointed at a header-authenticating provider,
-    # whose URL never held a credential in the first place.
+    # The absence is evidence only if the secret was there to be dropped.
     assert SERPBASE.secret in str(sent[0].url)
     assert SERPBASE.secret not in str(raised)
     assert "api.serpbase.dev" not in str(raised)
@@ -633,10 +626,48 @@ async def test_a_rejected_base_url_entry_is_not_logged(
         {"SEARXNG_BASE_URL": f"operator:{SENTINEL}@searx.example.org"}, monkeypatch
     )
 
-    with caplog.at_level(logging.INFO):
-        with pytest.raises(SearxngConfigError):
-            await search_web("q", num_results=1)
+    with caplog.at_level(logging.INFO), pytest.raises(SearxngConfigError):
+        await search_web("q", num_results=1)
 
     assert caplog.records, "nothing was logged, so the assertion below is vacuous"
     assert not [r for r in caplog.records if SENTINEL in r.getMessage()]
     assert any("SEARXNG_BASE_URL" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_logged_exception_message_is_redacted_too(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The failure's own message is redacted, not just the instance URL.
+
+    ``search_searxng`` logs two operands, and only one of them is the base URL.
+    The other is whatever the client raised, which is a value derived from the
+    request -- and the rule this repository now states is that anything derived
+    from a request URL is credential-bearing until shown otherwise. No reachable
+    ``httpx`` message quotes a URL today, so there is no live disclosure; this
+    case exists so that the redaction cannot be removed as apparently redundant.
+
+    Unlike the rejected-entry site, the helper *does* work here: a message that
+    quoted a URL would be quoting one that carried a scheme.
+
+    Args:
+        monkeypatch: pytest's environment patcher.
+        caplog: pytest's log capture.
+    """
+    import logging
+
+    case = next(c for c in DISCLOSURE_CASES if c.name == "searxng")
+    build_environment(case.env, monkeypatch)
+
+    def fail_loudly(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"failed connecting to {request.url}", request=request)
+
+    with caplog.at_level(logging.INFO):
+        raised, _sent = await drive_router(case, fail_loudly)
+
+    # `drive_router` returns the exception rather than raising it, so the class
+    # is asserted directly.
+    assert type(raised) is SearxngError
+
+    quoted = [r for r in caplog.records if "failed connecting to" in r.getMessage()]
+    assert quoted, "the exception was never logged, so the assertion below is vacuous"
+    assert not [r for r in quoted if SENTINEL in r.getMessage()]
