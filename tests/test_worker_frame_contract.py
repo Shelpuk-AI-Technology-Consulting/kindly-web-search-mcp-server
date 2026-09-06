@@ -408,27 +408,22 @@ def test_frame_payload_separates_a_frame_from_ordinary_output() -> None:
 
     A blank line reaches neither channel: the router discards it before asking
     this function anything, under both the real code and the mutation below.
+    Measured, routing each shape through ``_consume_stderr_line``:
 
-    Two corrections live in this paragraph, and the second is the more useful.
-    An earlier draft said a blank line "must reach the tail", which the router
-    does not do; that sentence had to be corrected in the codec's docstring and
-    again here, a round apart, which is the argument for grepping a falsified
-    claim rather than editing the file you remember it from. The correction then
-    said a blank line is what the mutation produces — also wrong, and wrong by
-    the very conflation this docstring teaches against. Measured:
-
-    ==================  ====================  =========================
-    line                real code             `frame_payload` → ``None``
-    ==================  ====================  =========================
+    ==================  ====================  ==========================
+    line                real code             ``frame_payload`` → ``None``
+    ==================  ====================  ==========================
     ``""``              discarded             discarded
     ``"KINDLY_DIAG "``  sampled               **reaches the tail**
-    ==================  ====================  =========================
+    ==================  ====================  ==========================
 
     So the mutation misroutes the *bare-marker* line — a frame whose payload is
-    empty — and never a blank one. Writing "blank line" for "line with a blank
-    payload" is exactly the elision the ``None``-versus-``""`` split exists to
-    keep out of the code, and it survived three review rounds sitting in the
-    prose beside it.
+    empty — and never a blank one. **Writing "blank line" for "line with a blank
+    payload" is the elision this split exists to keep out of the code**, and
+    successive drafts of this very paragraph made it: first claiming a blank line
+    reaches the tail, then claiming a blank line is what the mutation produces.
+    Both were replaced by the table above, which cannot drift because it records
+    an observation rather than a recollection.
     """
     assert frame_payload(FRAME_PREFIX + '{"stage":"a"}') == '{"stage":"a"}'
     assert frame_payload("chrome: ordinary noise on stderr") is None
