@@ -11,11 +11,11 @@ Do not review the diff in isolation.
 
 **Always, in full:**
 
-- `README.md` — **this is the specification**, and the always-read one.
-  document in this repository. The README carries the tool contract, the
-  client-by-client setup for seven MCP clients, the transport and allowlist
-  behaviour, the proxy configuration, and the troubleshooting that tells a user
-  what a `403` or `421` means. It is ~38 KB; read it whole.
+- `README.md` — **this is the specification**, and the always-read one. It
+  carries the tool contract, the client-by-client setup for seven MCP clients,
+  the transport and allowlist behaviour, the proxy configuration, and the
+  troubleshooting that tells a user what a `403` or `421` means. It is ~38 KB;
+  read it whole.
 
 > This is a deliberate departure from the upstream repository this review system
 > was adopted from, which reads three `.system_design/` documents and navigates a
