@@ -23,9 +23,11 @@ it collide in git and a person resolves the conflict. A bounded slack would let
 the same race through for any two branches that fit inside the bound.
 
 ⚠️ **Run-time semantics are unchanged.** ``pytest_collection_finish`` in
-``tests/conftest.py`` still fails only when fewer tests are selected than
-declared. ``--min-selected`` remains a floor when pytest reads it; only the
-*declared* value is held to equality, and only here.
+``tests/conftest.py`` still fires only when fewer tests are selected than
+declared *and the run has not already failed* -- that stand-down is why an
+import break keeps its own diagnosis instead of being blamed on the selector.
+``--min-selected`` remains a floor when pytest reads it; only the *declared*
+value is held to equality, and only here.
 
 ⚠️ **The count is read from the probe plugin, never from pytest's summary line.**
 Measured on 2026-09-06: with nothing deselected pytest printed ``860 tests

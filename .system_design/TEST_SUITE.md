@@ -3280,9 +3280,11 @@ decisions rather than details:
   tests silently disappearing take the expectation down with them and both sides
   agree on nothing. The committed number keeps the tripwire; the guard supplies
   the maintenance the tripwire needed.
-- **Run-time semantics are unchanged.** `pytest_collection_finish` still fails
-  only when `len(session.items) < minimum`, and the option's help text — "Fail
-  if fewer than N tests are selected" — stays accurate as written.
+- **Run-time semantics are unchanged.** `pytest_collection_finish` still fires
+  only when `minimum and not session.testsfailed and len(session.items) <
+  minimum` — the stand-down on an already-failed run included, unchanged, for
+  the reason measured above. The option's help text — "Fail if fewer than N
+  tests are selected" — stays accurate as written.
   `--min-selected` is a floor when pytest reads it. Only the *declared* value is
   an equality, and only a test enforces that.
 - **The count is read from `tests/_baseline_probe.py`, never from pytest's
