@@ -1154,6 +1154,8 @@ def test_the_child_does_not_inherit_pytests_own_option_variables() -> None:
     assert kept == {"PATH": "/usr/bin"}
 
 
+@pytest.mark.subsystem
+@pytest.mark.slow
 def test_the_filtered_environment_reaches_the_real_child(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1186,6 +1188,8 @@ def test_the_filtered_environment_reaches_the_real_child(
     )
 
 
+@pytest.mark.subsystem
+@pytest.mark.slow
 def test_a_collection_error_is_named_rather_than_counted(tmp_path: Path) -> None:
     """🔴 The failure that would have shrunk the merge gate.
 
