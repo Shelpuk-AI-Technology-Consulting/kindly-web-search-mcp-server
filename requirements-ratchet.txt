@@ -23,9 +23,11 @@
 # The grep is required. `pip install .[ratchet]` installs the project itself, and
 # a plain freeze then records it as a local `file://` path no other machine can
 # resolve; --exclude-editable does not drop it, because it is not an editable
-# install. CI installs this file first and the project second, with
-# `pip install --no-deps -e .`, which is why the runtime dependencies are pinned
-# here too - the --no-deps step has nothing else to resolve them from.
+# install. The coverage lane is designed to install this file first and the project
+# second, with `pip install --no-deps -e .`, which is why the runtime dependencies
+# are pinned here too - the --no-deps step has nothing else to resolve them from.
+# (Design tense on purpose: as the header above records, no workflow installs this
+# file yet. This sentence said "CI installs" until that was checked.)
 #
 # The platform matters: a lockfile taken on Windows or on another Python version
 # silently moves the coverage baseline the ratchet compares against.

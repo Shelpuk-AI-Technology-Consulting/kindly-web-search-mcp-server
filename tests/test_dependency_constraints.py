@@ -591,7 +591,7 @@ def test_runtime_dependency_rejects_every_later_major(
 def test_runtime_dependency_admits_the_pinned_version(
     name: str, specifier: str
 ) -> None:
-    """Keep the version the coverage lane actually runs the suite against installable"""
+    """Keep the version ``requirements-ratchet.txt`` pins installable"""
     declared = _declared_runtime_requirement(name, specifier)
     verified = _verified_runtime_version(name)
 
@@ -603,8 +603,8 @@ def test_runtime_dependency_admits_the_pinned_version(
     # pyproject.toml forbids - silently, because the lane would still go green.
     assert declared.specifier.contains(verified), (
         f"pyproject.toml declares '{declared}', which excludes {verified} - the "
-        f"version requirements-ratchet.txt pins and section 10.4's coverage lane "
-        f"therefore runs the whole suite against. Raising a runtime floor means "
+        f"version requirements-ratchet.txt pins, and which section 10.4's coverage "
+        f"lane is designed to run the suite against. Raising a runtime floor means "
         f"regenerating that lockfile in the same pull request."
     )
 

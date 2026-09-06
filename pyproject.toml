@@ -121,7 +121,8 @@ dev = [
 mutation = ["mutmut>=3,<4"]
 # The pinned environment §10.4's coverage baseline is measured in.
 # `requirements-ratchet.txt` is the frozen transitive closure of this extra and is
-# what CI installs; this list is the input that regenerates it.
+# what that lane is designed to install — no workflow installs it yet, and `ci.yml`
+# says so; this list is the input that regenerates it.
 #
 # `coverage` is pinned exactly rather than range-bounded because a patch release
 # that moved a two-decimal total would fail the ratchet for reasons unrelated to

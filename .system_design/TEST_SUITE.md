@@ -2816,12 +2816,14 @@ purpose `mcp>=1.25` already records. **`mcp` is the exception to the floor rule
 and keeps the older number:** its floor is the oldest release verified against
 this server, not the pinned version's minor series, and applying the nine-package
 rule to it would raise it to `>=1.29` and fail
-`test_mcp_requirement_still_allows_supported_version`. "Verified" means a clean resolve into a
-fresh CPython 3.13 environment on 2026-09-06, after which the server module,
-`CORSMiddleware` and `FastMCP` all imported. **Bounds are chosen against a real
-resolve, not by inspection**, because `mcp` constrains several of these itself —
-it asks for `pydantic>=2.11,<3`, `httpx>=0.27.1,<1` and, notably, `starlette>=0.27`
-with **no ceiling at all**, which is the actual mechanism by which the starlette
+`test_mcp_requirement_still_allows_supported_version`.
+
+"Verified" means a clean resolve into a fresh CPython 3.13 environment on
+2026-09-06, after which the server module, `CORSMiddleware` and `FastMCP` all
+imported. **Bounds are chosen against a real resolve, not by inspection**,
+because `mcp` constrains several of these itself — it asks for
+`pydantic>=2.11,<3`, `httpx>=0.27.1,<1` and, notably, `starlette>=0.27` with
+**no ceiling at all**, which is the actual mechanism by which the starlette
 major slipped through. The bounded set resolves to the same versions the
 unbounded one did, so no user's installation changes.
 
@@ -2869,9 +2871,11 @@ release that breaks an import fails CI before it can be adopted.
 ⚠️ **Do not "tidy" that file by giving it the `live` marker.** No test in the tree
 carries `live`, `chromium` or `package` today, and no live job exists anywhere, so
 marking it would deselect it from the only gate there is — removing exactly the
-protection this paragraph relies on, while looking like housekeeping. Tighten a bound the moment one of them
-breaks a minor in practice; the `httpx` row instead needs watching for the
-`httpx2` rename, which is a code change, not a bound change.
+protection this paragraph relies on, while looking like housekeeping.
+
+Tighten a bound the moment one of **these four** breaks a minor in practice; the
+`httpx` row instead needs watching for the `httpx2` rename, which is a code
+change, not a bound change.
 
 **Both tables in this section are machine-checked, and by the same code.**
 `tests/test_dependency_constraints.py` parses every row under this heading, so
