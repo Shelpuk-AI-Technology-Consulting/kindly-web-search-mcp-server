@@ -30,8 +30,73 @@ class StackExchangeError(RuntimeError):
     pass
 
 
+#: The domains the Stack Exchange network publishes, per Stack Exchange's own
+#: community-wiki list (meta.stackexchange.com question 81379, "Can we have a
+#: list of all the Stack Exchange domains somewhere, for firewall purposes?").
+#: Subdomains of each are network hosts too, which covers the `meta.` and
+#: language communities (`meta.superuser.com`, `pt.stackoverflow.com`) as well as
+#: `*.stackexchange.com` and `*.*.stackexchange.com`.
+#:
+#: `mathoverflow.net` is listed because it is genuinely a network domain and a
+#: constant named for the network must not lie about its membership. It does not
+#: change behaviour: every derivation branch below requires `.com`, so
+#: MathOverflow resolves to `None` here exactly as it did before this gate
+#: existed. Restoring it is a separate change.
+_STACKEXCHANGE_NETWORK_DOMAINS = frozenset(
+    {
+        "askubuntu.com",
+        "mathoverflow.net",
+        "serverfault.com",
+        "stackapps.com",
+        "stackexchange.com",
+        "stackoverflow.com",
+        "superuser.com",
+    }
+)
+
+
+def _is_stackexchange_network_host(host: str) -> bool:
+    """Report whether a hostname belongs to the Stack Exchange network.
+
+    A host qualifies when it is one of :data:`_STACKEXCHANGE_NETWORK_DOMAINS` or
+    a subdomain of one.
+
+    Args:
+        host: A lowercased hostname, without port or userinfo.
+
+    Returns:
+        ``True`` when ``host`` is a Stack Exchange network host.
+    """
+    return any(
+        host == domain or host.endswith(f".{domain}")
+        for domain in _STACKEXCHANGE_NETWORK_DOMAINS
+    )
+
+
 def _derive_site_parameter(host: str) -> str | None:
+    """Derive the Stack Exchange API ``site`` slug for a hostname.
+
+    Args:
+        host: The hostname from the URL being parsed.
+
+    Returns:
+        The ``site`` slug to send to the Stack Exchange API, or ``None`` when no
+        slug can be derived for the host. ``None`` does **not** mean "not on the
+        network": `mathoverflow.net` is a network domain and is listed in
+        :data:`_STACKEXCHANGE_NETWORK_DOMAINS`, yet every branch below requires
+        ``.com`` and so it derives ``None`` too. The two conditions are
+        deliberately distinct — :func:`_is_stackexchange_network_host` answers
+        membership, this function answers derivability.
+    """
     host = host.lower()
+
+    # Gate first: the branches below derive a slug from the hostname itself, so
+    # without this every `.com` host produced one -- `github.com` became site
+    # `github`, and because the resolver tries this parser first, GitHub issue
+    # URLs whose owner is spelled `a`, `q` or `questions` were silently routed
+    # here instead of to the GitHub handler.
+    if not _is_stackexchange_network_host(host):
+        return None
 
     # Meta exception: meta.stackexchange.com -> site=meta (per provided docs)
     if host == "meta.stackexchange.com":
@@ -45,7 +110,9 @@ def _derive_site_parameter(host: str) -> str | None:
     if host.endswith(".stackexchange.com"):
         return host[: -len(".stackexchange.com")].split(".")[0]
 
-    # Common communities: stackoverflow.com, superuser.com, serverfault.com, askubuntu.com, etc.
+    # Common communities on their own apex domain, and their subdomains:
+    # stackoverflow.com, superuser.com, serverfault.com, askubuntu.com,
+    # stackapps.com. The gate above has already established network membership.
     if host.endswith(".com"):
         return host.removesuffix(".com")
 

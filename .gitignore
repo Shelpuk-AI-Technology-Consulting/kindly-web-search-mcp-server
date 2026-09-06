@@ -39,3 +39,10 @@ __pycache__/
 /coverage.json
 /coverage.xml
 /htmlcov/
+
+# Hypothesis's example database. The property test in
+# `tests/test_url_parser_exclusivity.py` is the repository's first Hypothesis
+# user, so this directory starts appearing with it. It is a local cache of
+# failing examples to replay -- valuable on the machine that found them,
+# meaningless anywhere else, and it must never be what makes a suite green.
+/.hypothesis/
