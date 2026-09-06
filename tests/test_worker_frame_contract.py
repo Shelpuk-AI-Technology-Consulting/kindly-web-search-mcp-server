@@ -400,10 +400,19 @@ def test_the_encoder_writes_the_exact_bytes_the_wire_format_names() -> None:
 def test_frame_payload_separates_a_frame_from_ordinary_output() -> None:
     """Return a payload for a frame line and nothing for any other line
 
-    ``None`` rather than ``""`` for a non-frame line: a frame whose payload is
-    genuinely empty is malformed and must be *sampled*, while an ordinary blank
-    line must reach the tail. Collapsing the two onto one falsy value loses that
-    distinction at the only place it can be made.
+    ``None`` rather than ``""`` for a non-frame line: a line that is only the
+    marker is a frame whose payload is empty, which is malformed and must be
+    *sampled*, while ``None`` means the line is not a frame at all and is
+    ordinary output. Both are falsy, so one falsy return value cannot carry both
+    meanings — which is the distinction, and the only place it can be made.
+
+    A blank line reaches neither channel: the router discards it before asking
+    this function anything. An earlier draft of this paragraph said a blank line
+    "must reach the tail", which is not what the router does — and worse, is what
+    the mutation this split guards against actually does. That sentence was
+    corrected in the codec's own docstring one round before it was corrected
+    here, which is the whole argument for grepping a falsified claim rather than
+    editing the file you remember it from.
     """
     assert frame_payload(FRAME_PREFIX + '{"stage":"a"}') == '{"stage":"a"}'
     assert frame_payload("chrome: ordinary noise on stderr") is None
