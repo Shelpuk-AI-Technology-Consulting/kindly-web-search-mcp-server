@@ -1694,11 +1694,21 @@ re-derive is a figure they have to take on trust. It re-derives as
 process-group case — skips on Windows. Count the *collected ids*, not the test
 functions: the runner module carries **38 ids from 33 functions**, ten of them
 `async def` and two parametrized into seven ids, so every cheaper way of counting
-lands short. A review round put those three modules at 82 by counting
-functions, and the commit that answered it repeated the mistake in miniature by
-recording 28 — the count of `^def test_` lines alone, which misses the `async`
-ones. Both numbers are corrected here; the commit message is left standing with
-its error, because history is not the place to pretend a figure was right.
+lands short.
+
+Two wrong numbers were produced here and the second one is the instructive one.
+A review round put the three modules at 82. The commit answering it recorded the
+runner as 28 functions and said that 28 was "the count of `^def test_` lines" —
+and **it was not**: that count is 23, at every commit of this branch and on
+`main`, and no counting method in the tree yields 28 at all. 28 came from
+subtracting the round's own figures, `82 − 36 − 18`, and was then given a
+method that would plausibly have produced it, without measuring. Inventing a
+provenance for your own wrong number is worse than the number: the number is one
+error, the provenance is an error dressed as evidence, and a later reader
+re-deriving from the stated method finds 23 and cannot tell which part to
+distrust. Both figures are corrected here; the commit messages are left standing
+with their errors, because history is not the place to pretend a figure was
+right.
 
 The one-test difference from Linux's 825/2 is
 `test_the_descendant_joins_the_childs_group_unless_asked_for_its_own`, which
