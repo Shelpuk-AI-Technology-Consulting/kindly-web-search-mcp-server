@@ -882,7 +882,8 @@ def test_a_payload_past_the_pipe_capacity_neither_blocks_nor_is_truncated() -> N
     # Byte for byte, not merely the right length. A pump that returned the right
     # number of wrong bytes is the mutation a length check cannot see -- measured:
     # `sink.append(bytes(len(stream.read())))` left passing every one of the
-    # eighty-one cases these modules and the runner's held at the time.
+    # eighty-one cases this module, the fixture child's and the worker runner's
+    # held at the time.
     # Re-derived from the script's own generator, so the expectation has one
     # source.
     script = _fixture_child_module()

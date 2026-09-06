@@ -1125,12 +1125,13 @@ when a review names a count or a rule, `grep` the **claim** across
 `.system_design/` and `tests/` before calling it fixed. Editing the file the
 reviewer pointed at is not the same as editing the claim.
 
-And grep the claim, not one **phrasing** of it. The sweep that closed the
-importer count searched for `forbids` and missed two sites saying `warns`; the
-sweep that closed the case count searched for `one case loads` and missed one
-saying `the one case that needs a value from it`. A claim that appears in three
-wordings takes three greps, or one that matches on the *subject* — the section
-number, the identifier, the figure — rather than on the sentence around it.
+And grep the claim, not one **phrasing** of it. The sweep that retargeted the
+startup-budget *citation* searched for `forbids` and missed two sites saying
+`warns`; the sweep that closed the *importer count* searched for `one case loads`
+and missed one saying `the one case that needs a value from it`. A claim that
+appears in three wordings takes three greps, or one that matches on the
+*subject* — the section number, the identifier, the figure — rather than on the
+sentence around it.
 
 The `--pid-file` and `--grandchild-new-session` flags arrived with the
 browser-orphan fix. `--grandchild-new-session`
