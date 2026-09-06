@@ -1,9 +1,16 @@
 # Rule: CI and the review system (`.github/**`)
 
-This directory contains one workflow — `claude-code-review.yml` — and the review
-system it drives. **The reviewer is reviewing itself here**, so the bar is
-higher, not lower: a defect in this tree degrades or disables review across the
-repository without anything going red.
+This directory contains `claude-code-review.yml`, the `ci.yml` that calls the
+test jobs and aggregates them into `ci-required`, and the reusable
+`tests-broad.yml` those jobs live in — plus the review system
+`claude-code-review.yml` drives. (⚠️ The count that used to open this sentence is
+deliberately gone. It said "three" and would have been wrong the moment the next
+job landed, silently, in prose nothing checked — the same rot the test-count
+guard was written for. The files are **named** instead, and a guard holds this
+list to the recorded set.) **The reviewer is reviewing itself here**, so the bar is higher, not
+lower: a defect in this tree degrades or disables review across the repository
+without anything going red. The same is now true of the merge gate: an aggregate
+that stops failing is green, not red.
 
 This review system was adopted from an internal repository where it is in
 production. The structure is kept deliberately close to that one's so fixes can
@@ -131,8 +138,10 @@ that overrides the child's endpoint and credentials.
 
 ## Runner and caps
 
-- `runs-on: ubuntu-latest` for the review job, `ubuntu-slim` for the two `ci.yml`
-  jobs — GitHub-hosted, **not** the self-hosted fleet the upstream repository
+- `runs-on: ubuntu-latest` for the review job and for `ci-required`,
+  `ubuntu-slim` for the two review-system jobs in `ci.yml`, and a
+  `${{ matrix.os }}` over `ubuntu-latest` and `windows-latest` for the broad test
+  job — all GitHub-hosted, **not** the self-hosted fleet the upstream repository
   uses. This repository is public, and a runner group's "Allow public
   repositories" setting is off by default, so it reaches no self-hosted group at
   all. A change that moves either back to `[self-hosted, ...]` needs to say what

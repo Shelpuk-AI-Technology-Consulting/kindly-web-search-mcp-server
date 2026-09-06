@@ -12,11 +12,14 @@ name: Claude Code Review
 #
 # ⚠️ **THAT LAST CATEGORY IS THE ONE TO READ CAREFULLY.** The reference repository
 # pairs this workflow with four `lint`-job guard scripts and a set of design
-# documents. **This repository has neither** -- `claude-code-review.yml` is its
-# only workflow. Where a comment below used to cite a guard as enforcement, it now
-# says plainly that the invariant is a convention instead. A convention that reads
-# like an enforced invariant is worse than an acknowledged one, because the next
-# person trusts it.
+# documents. **This repository has neither of those**, and the sentence that used
+# to follow -- that this was its only workflow -- is no longer true either: there
+# is a `ci.yml` running the review system's own tests and the repository's broad
+# test selection. What has not changed is the point the sentence was making.
+# Where a comment below used to cite an upstream guard as enforcement, it now
+# says plainly that the invariant is a convention instead. A convention that
+# reads like an enforced invariant is worse than an acknowledged one, because the
+# next person trusts it.
 #
 # ⚠️ **Every measurement quoted below was taken on the reference repository, not
 # on this one.** They are kept because they are what sized these numbers, and each
@@ -297,8 +300,16 @@ jobs:
     # the cap below becomes enforceable for the first time and the distribution should
     # shorten as well. `ci.yml` deliberately KEEPS `ubuntu-slim`: two jobs whose slowest
     # observed run is 207s are exactly the lightweight workload that label is for. The
-    # two workflows therefore no longer share one label, which is a real cost -- see
-    # `ci.yml`, where it is recorded on both jobs.
+    # review workflow and the two `ci.yml` review jobs therefore no longer share one
+    # label, which is a real cost -- see `ci.yml`, where it is recorded on both jobs.
+    # ⚠️ This used to count the workflows in the tree rather than name the jobs it
+    # is about, and went wrong the moment the test jobs landed. The cost it records
+    # is unchanged -- it was always about these two jobs and this one -- so it now
+    # names them and counts nothing. 🔴 **A count in prose is a claim nothing
+    # checks**, which is why `rules/ci.md` had its own removed in the same branch;
+    # this comment then reintroduced one two commits later, in the one file no
+    # guard reads. Name what a sentence is about; leave the arithmetic to the
+    # `EXPECTED_WORKFLOW_FILES` set, which is pinned against the tree.
     #
     # ⚠️ The pairing of this label with the cap below is now checked by
     # `DeclaredJobCapIsEnforceableTests`, so neither line can move without the other.
@@ -1794,9 +1805,16 @@ jobs:
             # nothing, and it needs none of the deferred work: making the notice
             # and the job summary able to say "not timed" needs `Resolve outcome`
             # to emit a `measured` output, which those two render from and cannot
-            # see. That residual is unfixed and deliberate; this comment is its
-            # only record, because this repository has no design document to
-            # carry it.
+            # see. That residual is unfixed and deliberate, and this comment is
+            # its record. ⚠️ It used to add a clause denying that this repository
+            # has any design document to carry such a note -- described rather
+            # than quoted, for the reason the paragraph below gives. That clause
+            # is false: `.system_design/` exists and holds the test-suite design
+            # and its implementation plan
+            # -- and the honest position is narrower: those documents are about
+            # the test suite, this residual is about the review workflow, and
+            # nobody has yet decided where review-workflow decisions belong. The
+            # comment stays the record until they do.
             #
             # ⚠️ The retired drafts are PARAPHRASED above, never quoted: the
             # wiring test reads this whole step including its comments, on

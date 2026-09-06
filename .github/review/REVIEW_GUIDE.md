@@ -11,19 +11,30 @@ Do not review the diff in isolation.
 
 **Always, in full:**
 
-- `README.md` — **this is the specification.** There is no separate design
-  document in this repository. The README carries the tool contract, the
-  client-by-client setup for seven MCP clients, the transport and allowlist
-  behaviour, the proxy configuration, and the troubleshooting that tells a user
-  what a `403` or `421` means. It is ~38 KB; read it whole.
+- `README.md` — **this is the specification**, and the always-read one. It
+  carries the tool contract, the client-by-client setup for seven MCP clients,
+  the transport and allowlist behaviour, the proxy configuration, and the
+  troubleshooting that tells a user what a `403` or `421` means. It is ~38 KB;
+  read it whole.
 
 > This is a deliberate departure from the upstream repository this review system
 > was adopted from, which reads three `.system_design/` documents and navigates a
-> fourth by section. **This repository has no `.system_design/` directory.** The
-> README is what stands in its place, and it is small enough to read in full. Do
-> not treat its absence as a gap you should work around by inferring a design —
-> and do not report "there is no design document" as a finding on every pull
-> request. It is recorded here.
+> fourth by section. **The always-read document here is the README**, which is
+> small enough to read in full and carries the tool contract, the client setup
+> and the transport behaviour.
+>
+> ⚠️ **This paragraph used to deny that this repository keeps design documents
+> of its own. It keeps them**, under `.system_design/`. (Described rather than
+> reproduced: the sweep guard reads every file here. And deliberately not
+> counted -- a count in prose is a claim nothing checks, and the directory is
+> where a reader should look for what is in it.) What survives is the narrower rule: those documents are large and each
+> change touches a section of one, so they are not read whole on every pull
+> request — read the part the change actually touches, and do not report a
+> missing design document as a finding. <!-- The phrasing this sentence used to
+> quote is described rather than reproduced: the sweep guard in
+> `tests/test_review_scripts.py` reads every file here, so quoting a retired
+> claim reintroduces it as far as that guard can tell. Same convention as the
+> runner-claim guard. -->
 
 **Additionally, based on what the pull request touches:**
 
@@ -182,13 +193,17 @@ Explain the failure mode in one or two sentences and give a concrete fix.
   is not only allowed but expected; verify a count rather than assuming one.
 
   ⚠️ Note the difference from the upstream repository this contract came from:
-  **there, the justification was "the repository's own checks run them". This
-  repository has no CI test job at all** — `claude-code-review.yml` is its only
-  workflow. So the reason here is narrower and worth stating plainly: you have a
+  there, the justification was "the repository's own checks run them". This
+  repository **once ran none of its own tests in CI**, and now runs them —
+  `ci.yml` calls the hermetic and subsystem selection on both platforms. The reason here is
+  still narrower than upstream's and is worth stating plainly: you have a
   writable checkout, a network path and no isolation, and running a test suite or
-  a dependency install from a review job is a side effect nobody asked for. It is
-  **not** because something else has already run them. If a change looks untested,
-  say it is untested; do not assume a green suite exists somewhere.
+  a dependency install from a review job is a side effect nobody asked for.
+
+  ⚠️ **Do not read a green check as broad coverage.** The gate runs one
+  selection; the browser, packaging, type-check, coverage and live jobs are not
+  in it yet. If a change looks untested, say it is untested rather than assuming
+  a green suite covered it somewhere.
 - **Do not claim that tests, linters, or type checks pass or fail.** You have not
   run them and will not.
 - **Do not relitigate settled decisions.** These are deliberate and documented in

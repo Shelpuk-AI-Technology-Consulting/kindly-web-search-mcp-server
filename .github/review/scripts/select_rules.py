@@ -171,8 +171,11 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
     # tells a user what a `403` means. A change to behaviour that does not move it
     # is drift. `SECURITY.md` is the same for the threat model.
     #
-    # `.system_design/` is matched although this repository has none today. The
-    # pattern costs nothing and covers the directory the day it appears; the
+    # `.system_design/` is matched because the directory exists and holds the
+    # test-suite design and its implementation plan. (⚠️ This comment used to say
+    # the repository had no such directory -- true when written, false since, and
+    # the third file found carrying that belief.) The pattern also covers any
+    # document added to it later; the
     # alternative is a design document landing with no rule file selected, which
     # is exactly the shape upstream recorded as a defect (`contracts/` matched
     # nothing for months while 397 files accumulated).

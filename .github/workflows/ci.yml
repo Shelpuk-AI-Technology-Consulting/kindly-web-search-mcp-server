@@ -8,19 +8,36 @@ name: CI
 # So the review system's own tests run here, in a job the review workflow cannot
 # influence.
 #
-# ⚠️ **This file is deliberately NOT this repository's test suite.** It does not
-# run `pytest`, `ruff`, or anything under `tests/`. That is a real gap and it is
-# named here rather than left to be discovered: this repository has no CI for its
-# own code, and adding it is a separate piece of work with its own decisions
-# (which Python versions, what to do about the tests that need a browser, how to
-# gate the live-network tests). Nothing below should be read as covering it.
+# ⚠️ **This file also carries the repository's own test gate, and it is a CALLER
+# rather than the place the jobs are written.** It holds `uses:` lines and one
+# `needs:` list; each test job lives in its own reusable workflow beside this
+# one. The test-suite design commits to that shape because several later steps
+# add jobs in parallel, and two pull requests editing one workflow conflict --
+# with the worse outcome being a rebase that silently drops the other's edit.
+# The `needs:` list below is the one contended region, and the order in which
+# steps may mutate it is declared in
+# `.system_design/TEST_SUITE_IMPLEMENTATION_PLAN.md`.
 #
-# ⚠️ **The upstream repository gates both jobs on a `changes` job** that computes
+# 🔴 **This file used to say the repository ran none of its own tests here. That
+# is no longer true, and the sentence has been rewritten rather than deleted so
+# the reasoning survives.** What is true now is narrower: the gate here runs ONE
+# broad selection -- the hermetic and subsystem tests, on Linux and Windows, at
+# Python 3.13. It does not yet run the browser tests, the packaging tests, the
+# type-check job, the coverage controls or the live canaries. Each of those is a
+# separate job with its own decisions, and each joins `ci-required.needs` as it
+# lands. Read a green `ci-required` as "the broad selection passed on both
+# platforms", not as "everything this project can check has been checked".
+#
+# ⚠️ **The upstream repository gates its jobs on a `changes` job** that computes
 # path filters, and carries a guard proving every job is either gated or
-# explicitly exempt. There is no `changes` job here: this repository is small
-# enough that both jobs run in seconds, and a path filter is a second place for
-# the file list to drift out of step with `select_rules.py`. If a third job ever
-# lands here, revisit that.
+# explicitly exempt. There is still no `changes` job here, and the arrival of the
+# test jobs is the moment that decision was said to need revisiting -- so it was.
+# It stands, for a changed reason. The two review jobs run in seconds and gating
+# them would only add a second place for the file list to drift out of step with
+# `select_rules.py`. The test job is the opposite case: a path filter that
+# skipped it would make `ci-required` green having run nothing, since a skipped
+# dependency is a *pass* to `needs` and only the explicit `success` comparison
+# below catches it. A gate is worth more than the minutes a filter would save.
 #
 # 🔴 **Both jobs run on GitHub-hosted `ubuntu-slim`, not on the self-hosted fleet the
 # upstream repository uses.** A runner group carries an "Allow public repositories"
@@ -39,17 +56,55 @@ name: CI
 # the same label and was killed mid-run five times on a merge-gating check before
 # anyone paired the two lines. `DeclaredJobCapIsEnforceableTests` pairs them now.
 
+# 🔴 **The trigger list must be COMPLETE, because naming `types:` REPLACES the
+# default set rather than extending it.** The defaults are `opened`,
+# `reopened` and `synchronize`; a list naming only the label events would stop
+# this workflow running when a pull request is opened at all. That is worst on a
+# fork pull request, whose head branch produces no upstream `push` run, so
+# nothing else would cover it.
+#
+# ⚠️ **`labeled` and `unlabeled` are in the list because §10.3 specifies them,
+# and the cost is worth stating since nothing keys off a label yet.** A label
+# toggle re-runs the whole two-platform gate and, with the `concurrency` block
+# below, cancels any run already in flight for the ref. Today no job has a
+# label-dependent `if:`, so that spend buys nothing; they are kept anyway because
+# the design puts them here for the jobs that will (a `live` opt-in is the
+# expected first), and because dropping an event from a `types:` list is the
+# category of edit this whole comment exists to warn about -- silent, and worst
+# on the pull requests nobody is watching. Revisit when the first label-gated
+# job lands, not before.
+#
+# ⚠️ `branches: [main]` is KEPT rather than dropped. The design's snippet shows
+# only `types:`, and the filter is orthogonal to the point it makes: a fork pull
+# request targeting `main` still triggers this workflow, which is the failure
+# mode that snippet exists to prevent. Dropping it would newly run a nine-minute
+# two-platform suite on pull requests targeting any branch, which is a spend
+# decision this file was not asked to make.
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
+    types: [opened, reopened, synchronize, labeled, unlabeled]
   workflow_dispatch:
+
+# 🔴 Added with the test jobs, not before them. The two review jobs finish in
+# seconds, so superseding them saved nothing; the broad selection is roughly nine
+# minutes per leg on Linux and more on Windows, and without this a series of
+# rapid pushes starts a full two-platform run per push with the earlier ones
+# still going. Scoped per ref so `main` and each pull request are independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   review-scripts:
-    # The Claude review system's own tests -- 513 of them, covering the rule
+    # The Claude review system's own tests -- 551 of them, covering the rule
     # selector, the result classifier, the failure notices, the prompt redactor,
-    # the findings schema and the workflow's own wiring.
+    # the findings schema, the workflow's own wiring, the workflow parser behind
+    # the runner-ceiling guard, and the `ci-required` aggregation.
     #
     # Pure Python and subprocesses, no service container, no pip install at all --
     # the suite runs in about a second.
@@ -72,6 +127,14 @@ jobs:
     # its own instead of the platform killing the job at the same instant -- and still
     # ~2.9x the measured maximum above.
     timeout-minutes: 10
+    # 🔴 Declared, not inherited -- the same reasoning as `review_replies` below,
+    # which has carried its own block since it was written. This job checks out
+    # the repository and runs a test file; it needs `contents: read` and nothing
+    # more. ⚠️ The gap here predates the test jobs and was surfaced by the code
+    # scanner when they landed; it is closed while the file is open rather than
+    # left as the one job in it that inherits.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -146,3 +209,94 @@ jobs:
           "$pythonLocation/bin/python" .github/review/scripts/check_review_replies.py \
             --repo "${{ github.repository }}" \
             --pr "${{ github.event.pull_request.number }}"
+
+  broad:
+    # The repository's own suite, on Linux and Windows. A caller job: it declares
+    # `uses:` and nothing else, which is what makes it exempt from the
+    # runner-ceiling checks -- a reusable-workflow call legally declares neither
+    # `runs-on:` nor `timeout-minutes:`, and GitHub's supported-keyword list for
+    # such a job names neither. The cap that matters lives beside the matrix, in
+    # the called workflow, where the runner it must clear is written.
+    #
+    # ⚠️ `permissions:` IS legal on a caller job -- it is in GitHub's supported
+    # keyword list for one, unlike `runs-on:` and `timeout-minutes:`, so
+    # declaring it does not forfeit the exemption those two checks grant. It
+    # bounds what the called workflow can be granted, which is why it is here as
+    # well as there.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tests-broad.yml
+
+  ci-required:
+    # 🔴 **The one check branch protection requires.** Requiring every
+    # matrix-generated check by name is brittle: adding a Python or `mcp` axis
+    # renames the checks and silently drops the old names from the protection
+    # rule, leaving a gate that protects nothing while still reporting green.
+    # This job runs no tests, depends on every other job, and fails unless each
+    # one succeeded -- so the matrix can change without touching repository
+    # settings.
+    #
+    # 🔴 **`always()` is what makes the check real, and omitting it is silent.**
+    # When a dependency fails, GitHub SKIPS its dependents rather than failing
+    # them, and a skipped required check does not report failure. Without this
+    # line the aggregate would be skipped -- not red -- on exactly the runs it
+    # exists to block.
+    #
+    # ⚠️ A cancelled run also reaches here and resolves red, deliberately: a
+    # merge gate that cannot say the suite passed must not say it did. With
+    # `cancel-in-progress` above, a superseded run is cancelled and reports red,
+    # and the run that superseded it is the one branch protection reads.
+    if: ${{ always() }}
+    needs: [review-scripts, review_replies, broad]
+    runs-on: ubuntu-latest
+    # An ordinary GitHub-hosted label, whose platform ceiling is 6 hours. This
+    # job starts a shell and exits, so the cap is a backstop and nothing else --
+    # but it is declared, and strictly below the ceiling, because a job with no
+    # cap is checked against nothing.
+    timeout-minutes: 10
+    # 🔴 Empty, deliberately, and it is the honest value rather than a cautious
+    # one. This job checks out nothing, calls no API and runs one shell builtin;
+    # every permission it inherited would be one it never used. An empty block
+    # grants none of them.
+    permissions: {}
+    steps:
+      - name: Fail unless every dependency succeeded
+        # 🔴 **`success` is required explicitly, once per dependency, rather
+        # than the looser one-liner that asks whether any result contains
+        # 'failure'.** That form treats `skipped` as acceptable, which is
+        # exactly how a required job that quietly stopped running goes
+        # unnoticed. (The forbidden spelling is described rather than written
+        # out: a guard in `.github/review/tests/test_review_scripts.py` greps
+        # this block for it, and quoting it here would trip that guard on its
+        # own explanation -- the same convention the runner-claim guard uses.)
+        #
+        # ⚠️ **`review_replies` is the one dependency compared conditionally, and
+        # the condition mirrors that job's own `if:` rather than relaxing this
+        # one.** That job runs on `pull_request` only -- there is no pull request
+        # to ask about on a push or a manual run -- so it is *skipped* on those
+        # events by design. Requiring `success` unconditionally would paint
+        # `main` red on every push; accepting `skipped` unconditionally would
+        # hide a job that genuinely stopped running. Requiring success exactly on
+        # the event where the job is scheduled is neither.
+        # `test_the_ci_job_runs_only_on_pull_requests` pins that job's condition,
+        # so the two cannot drift apart unnoticed.
+        #
+        # 🔴 **No expression substitution inside `run:`.** The comparison happens
+        # in the Actions `if:` expression and the shell step is a bare `exit 1`.
+        # Interpolating `${{ toJSON(needs) }}` into a script substitutes it as
+        # text before the shell parses the line, and `needs` carries job OUTPUTS
+        # as well as results -- so a crafted output can break the quoting or
+        # inject commands. Listing the dependencies costs a line each and keeps
+        # untrusted data out of the shell entirely.
+        # 🔴 **`needs['review-scripts']`, not `needs.review-scripts`.** A job id
+        # containing a hyphen is not reachable by property access in an Actions
+        # expression -- the parser reads the hyphen as an operator -- so the dot
+        # spelling does not fail loudly, it evaluates to something else. The
+        # index form is required for exactly the ids that carry a hyphen, and
+        # the guard holds this block to it.
+        if: >-
+          needs['review-scripts'].result != 'success' ||
+          (github.event_name == 'pull_request' &&
+           needs.review_replies.result != 'success') ||
+          needs.broad.result != 'success'
+        run: exit 1
