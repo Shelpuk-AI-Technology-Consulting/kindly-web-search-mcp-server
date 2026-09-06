@@ -66,13 +66,23 @@ cannot tell the two kinds apart from a sentence that covers both.
 The parsers are pure functions of a string, so nothing here reads the clock, the
 network or the environment — with one deliberate exception, the interpreter's
 integer-string conversion ceiling, which **two** fixtures manage and restore.
-**Four** cases depend on it, in **both** directions, and each takes the fixture
-for its direction: three need the documented default restored, and would fail
-under ``PYTHONINTMAXSTRDIGITS=0``; one needs the ceiling *removed*, and would
-fail under the default ambient CI actually runs. Counting only the first three —
-as an earlier draft did — describes the design correctly in one ambient and
-misdescribes it in the other. A case that merely read the setting would pass or
-fail on an environment variable nobody in the pull request chose.
+**Twelve rows** depend on it, in **both** directions, and each takes the fixture
+for its direction. Measured by stripping the fixtures and running both ambients:
+
+* **Eleven** need the documented default restored, and fail under
+  ``PYTHONINTMAXSTRDIGITS=0`` — the two unconvertible-id rows of the branch
+  table, the **eight** surface rows that vary those two branches, and the
+  oversized-identifier escape case.
+* **One** needs the ceiling *removed*, and fails under the default ambient CI
+  actually runs.
+
+Counted in rows, because every other figure in this module is — "149 cases",
+"the other eighty-four rejection rows". Two earlier drafts said "three", which
+counts *test functions* and silently drops the eight surface rows; both the
+default-ambient direction and the row granularity had to be measured rather than
+reasoned about, and each was wrong the first time. A case that merely read the
+setting would pass or fail on an environment variable nobody in the pull request
+chose.
 """
 
 from __future__ import annotations
@@ -710,7 +720,10 @@ def test_rejection_does_not_depend_on_the_surface_of_the_url(
 
     Args:
         default_int_digits: Fixture pinning the interpreter's integer-string
-            conversion ceiling, for the same two rows the table above needs it.
+            conversion ceiling. **Eight** of this grid's rows need it — the two
+            unconvertible-id branches crossed against all four variations — not
+            the two the branch table needs, which is what an earlier draft of
+            this line said.
         label: The rejection branch's parametrisation id.
         parse: The parser callable.
         error: The class the resolver catches for this parser.
