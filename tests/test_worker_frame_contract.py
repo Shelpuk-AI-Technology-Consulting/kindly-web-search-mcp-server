@@ -407,12 +407,28 @@ def test_frame_payload_separates_a_frame_from_ordinary_output() -> None:
     meanings — which is the distinction, and the only place it can be made.
 
     A blank line reaches neither channel: the router discards it before asking
-    this function anything. An earlier draft of this paragraph said a blank line
-    "must reach the tail", which is not what the router does — and worse, is what
-    the mutation this split guards against actually does. That sentence was
-    corrected in the codec's own docstring one round before it was corrected
-    here, which is the whole argument for grepping a falsified claim rather than
-    editing the file you remember it from.
+    this function anything, under both the real code and the mutation below.
+
+    Two corrections live in this paragraph, and the second is the more useful.
+    An earlier draft said a blank line "must reach the tail", which the router
+    does not do; that sentence had to be corrected in the codec's docstring and
+    again here, a round apart, which is the argument for grepping a falsified
+    claim rather than editing the file you remember it from. The correction then
+    said a blank line is what the mutation produces — also wrong, and wrong by
+    the very conflation this docstring teaches against. Measured:
+
+    ==================  ====================  =========================
+    line                real code             `frame_payload` → ``None``
+    ==================  ====================  =========================
+    ``""``              discarded             discarded
+    ``"KINDLY_DIAG "``  sampled               **reaches the tail**
+    ==================  ====================  =========================
+
+    So the mutation misroutes the *bare-marker* line — a frame whose payload is
+    empty — and never a blank one. Writing "blank line" for "line with a blank
+    payload" is exactly the elision the ``None``-versus-``""`` split exists to
+    keep out of the code, and it survived three review rounds sitting in the
+    prose beside it.
     """
     assert frame_payload(FRAME_PREFIX + '{"stage":"a"}') == '{"stage":"a"}'
     assert frame_payload("chrome: ordinary noise on stderr") is None
