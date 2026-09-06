@@ -160,4 +160,4 @@ jobs:
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 886
+          --min-selected 887

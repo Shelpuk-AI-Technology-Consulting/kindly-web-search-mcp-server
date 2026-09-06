@@ -151,23 +151,27 @@ def _run_commands(text: str) -> list[str]:
             steps_indent, step_key_indent = len(steps.group("indent")), None
             index += 1
             continue
-        # A comment is a structural no-op wherever it sits, so it must not end
-        # the region: one at column 0 between two steps would otherwise hide
-        # every floor below it, silently, which is the failure this module exists
-        # to refuse rather than commit.
+        # Two shapes are structural no-ops and must not end the region. A
+        # comment, wherever it sits: one at column 0 between two steps would hide
+        # every floor below it. And a step item at the `steps:` key's own indent,
+        # because YAML allows an indentless sequence -- verified against a real
+        # parser, which reads two steps from a block this scan used to read as
+        # none. Silent truncation is the failure this module exists to refuse
+        # rather than commit, so the item is matched before the region is closed.
+        item = STEP_ITEM.match(line)
         if (
             steps_indent is not None
             and line.strip()
             and not line.lstrip().startswith("#")
+            and (item is None or len(item.group("indent")) < steps_indent)
             and _indent_of(line) <= steps_indent
         ):
             steps_indent = step_key_indent = None
 
-        item = STEP_ITEM.match(line)
         if (
             steps_indent is not None
             and item is not None
-            and len(item.group("indent")) > steps_indent
+            and len(item.group("indent")) >= steps_indent
         ):
             step_key_indent = len(item.group("indent")) + 2
 
@@ -599,6 +603,13 @@ jobs:
   a:
     steps:
       - run: python -m pytest -m "not live" --min-selected 12
+""",
+    "an indentless sequence, the item at the steps key's own indent": """\
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+    - run: python -m pytest -m "not live" --min-selected 12
 """,
     "a deeply indented job": """\
 on: [push]
