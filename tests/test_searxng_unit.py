@@ -414,8 +414,10 @@ class TestSearxngParsing(unittest.TestCase):
         timeout and so proves propagation; only this one can see arming.
 
         Asserted against ``request.extensions["timeout"]``, which is an httpx
-        transport-extension shape rather than a product surface, and
-        ``pyproject.toml`` declares ``httpx[socks]`` with **no version bound**.
+        transport-extension shape rather than a product surface. ``pyproject.toml``
+        declares ``httpx[socks]>=0.28,<1`` — it read "with **no version bound**"
+        until the runtime entries were bounded, and the bound does not make this
+        shape stable, only the range of releases it is asserted over narrower.
         Measured on httpx 0.28.1. If a later release renames or restructures that
         extension this case reddens with no product change -- read the failure as
         a dependency note, not as a regression, and re-measure.

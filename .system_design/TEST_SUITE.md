@@ -2797,7 +2797,7 @@ starting.
 | `starlette` | `>=1.6,<2` | ASGI framework; `server.py` imports `CORSMiddleware` from it directly |
 | `uvicorn` | `>=0.52,<1` | ASGI server; `server.py` imports it directly to serve the app |
 | `pydantic` | `>=2.13,<3` | The `web_search` and `get_content` response models in `models.py` |
-| `httpx` | `>=0.28,<1` | HTTP client for every API-backed handler, with the `[socks]` extra that supplies `socksio` — the README documents SOCKS proxying through it |
+| `httpx` | `>=0.28,<1` | HTTP client for every API-backed handler. Declared as `httpx[socks]`: that extra supplies `socksio`, which the README documents SOCKS proxying through, and it is asserted separately because the Constraint cell here cannot carry it |
 | `beautifulsoup4` | `>=4.15,<5` | With `markdownify`, the fallback extraction path in `scrape/extract.py` when `trafilatura` yields nothing |
 | `markdownify` | `>=1.2,<2` | HTML to Markdown, in that same fallback and in the StackExchange loader |
 | `trafilatura` | `>=2.2,<3` | Primary main-content extraction |
@@ -2877,16 +2877,21 @@ Tighten a bound the moment one of **these four** breaks a minor in practice; the
 `httpx` row instead needs watching for the `httpx2` rename, which is a code
 change, not a bound change.
 
-**Both tables in this section are machine-checked, and by the same code.**
-`tests/test_dependency_constraints.py` parses every row under this heading, so
-the runtime rows and the tooling rows are compared with `pyproject.toml` the same
-way and a docs-only edit to either turns CI red. The runtime rows carry three
-checks the tooling rows do not: that the declared bound **excludes every major
+**The runtime rows carry four checks the tooling rows do not** — the shared
+machine-checking is stated once, at the top of this section: that the declared bound **excludes every major
 above the declared floor's** — proved structurally, by requiring a `<`/`<=` clause
 at or below the next major, *and* by probing that major, because neither half
 alone is the claim; that the bound still **admits** the version
 `requirements-ratchet.txt` pins; and that `[project].dependencies` holds exactly
-this set, each entry once.
+this set, each entry once; and that each entry requests exactly the
+**extras** recorded here.
+
+That last one is not pedantry. An extra lives outside the specifier, so
+`httpx[socks]>=0.28,<1` and `httpx>=0.28,<1` are indistinguishable to every other
+check — and rewriting the entry as the bare form is exactly what a maintainer
+aligning `pyproject.toml` to the Constraint cell above would type. It passed all
+ninety-two cases while removing `socksio` from every user install, and the failure
+would have surfaced at request time on a SOCKS proxy rather than at install time.
 
 The first two are what a table-versus-table comparison cannot see — a ceiling
 widened in both places at once agrees with itself perfectly. The ceiling check is

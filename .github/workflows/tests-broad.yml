@@ -64,11 +64,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     # 🔴 Measured, not guessed, and strictly below the runner's ceiling. The
     # selection took 8m39s on a developer's Linux machine when this cap was set
-    # (785 passed, 2 skipped, 787 selected). The suite has grown since -- 903
-    # selected today -- but that later count was measured on different hardware
-    # and is NOT comparable, so this cap stays sized against the slower run above
-    # rather than against a number reconstructed from two. This cap is roughly
-    # seven times that run, because it
+    # (785 passed, 2 skipped, 787 selected). The suite has grown since, and the
+    # count below is current -- a collected-test count does not vary with hardware,
+    # which is exactly why the marker note further down may reuse it. What is NOT
+    # comparable is the *duration*: the later run was timed on a different machine,
+    # so this cap stays sized against the slower run above rather than against a
+    # figure reconstructed from two. This cap is roughly seven times that run,
+    # because it
     # must also cover Windows -- where a suite that spawns child processes and
     # shells out to mypy commonly runs two to three times slower -- plus a cold
     # dependency install. Both labels above are ordinary GitHub-hosted runners
@@ -130,7 +132,7 @@ jobs:
         # the run, never from a number written down earlier. Note the shape that
         # is NOT an addition to the selection: the first test carrying a
         # `chromium`, `live` or `package` marker is deselected here, so it lowers
-        # this count. Today those three markers select zero of the 903, so this
+        # this count. Today those three markers select zero of the 913, so this
         # floor is the whole suite; the step that adds the first browser test
         # owns lowering it, and the failure message it would otherwise get names
         # the wrong cause.
@@ -138,4 +140,4 @@ jobs:
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 903
+          --min-selected 913

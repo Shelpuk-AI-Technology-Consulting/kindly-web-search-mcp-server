@@ -117,7 +117,7 @@ EXTRA_BOUND_CASES = [
 # removes API in 1.x minors, and ``httpx`` is unlikely ever to ship 1.0 because its
 # maintained successor is a differently named distribution, ``httpx2``. The
 # rejected-major cases still pass for all four - they ask whether the *declared*
-# ceiling excludes the majors above the pinned one, which is a different question
+# ceiling excludes the majors above the declared floor's, which is a different question
 # from whether that upstream signals breakage by bumping its major at all. Section
 # 10.2 records why they are kept and what protects them instead.
 EXPECTED_RUNTIME_BOUNDS: dict[str, str] = {
@@ -151,6 +151,23 @@ EXPECTED_RUNTIME_BOUNDS: dict[str, str] = {
 # excludes exactly one release while admitting the ones after it satisfies a check
 # that only tried that release, and reintroduces the outage anyway.
 REJECTED_MAJOR_OFFSETS = ((1, 0), (1, 1), (2, 0))
+
+# The extras each runtime entry must request, keyed the same way. Empty for nine of
+# the ten, which is the point: this catches an extra being *added* silently as well
+# as dropped.
+#
+# 🔴 ``httpx[socks]`` is the one that matters, and nothing saw it until a review
+# asked. Every other check here compares canonical names and specifier sets, and
+# ``Requirement("httpx[socks]>=0.28,<1").specifier`` is just ``>=0.28,<1`` - so
+# rewriting the entry as a bare ``httpx>=0.28,<1``, which is exactly what a
+# maintainer aligning pyproject.toml to section 10.2's Constraint cell would type,
+# passed all ninety-two cases while removing ``socksio`` from every user install.
+# The README documents SOCKS proxying for every API-backed handler, and the failure
+# would arrive at request time rather than at install time.
+EXPECTED_RUNTIME_EXTRAS: dict[str, frozenset[str]] = {
+    name: frozenset({"socks"}) if name == "httpx" else frozenset()
+    for name in EXPECTED_RUNTIME_BOUNDS
+}
 
 # One case per runtime package, so a single loosened bound fails exactly one test
 # and the failure names the package that lost it.
@@ -606,6 +623,29 @@ def test_runtime_dependency_admits_the_pinned_version(
         f"version requirements-ratchet.txt pins, and which section 10.4's coverage "
         f"lane is designed to run the suite against. Raising a runtime floor means "
         f"regenerating that lockfile in the same pull request."
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "specifier"),
+    RUNTIME_BOUND_CASES,
+    ids=[name for name, _ in RUNTIME_BOUND_CASES],
+)
+def test_runtime_dependency_declares_expected_extras(name: str, specifier: str) -> None:
+    """Request exactly the extras section 10.2 records, for every runtime entry"""
+    declared = _declared_runtime_requirement(name, specifier)
+    expected = EXPECTED_RUNTIME_EXTRAS[name]
+
+    # The specifier comparison next door cannot see this: an extra lives outside
+    # the specifier, so `httpx[socks]>=0.28,<1` and `httpx>=0.28,<1` are identical
+    # to every other case in this module.
+    assert declared.extras == expected, (
+        f"pyproject.toml declares '{declared}', requesting extras "
+        f"{sorted(declared.extras)}, but section 10.2 records "
+        f"{sorted(expected) or 'none'} for '{name}'. Dropping 'socks' from httpx "
+        "removes 'socksio', and a SOCKS proxy configuration then fails at request "
+        "time rather than at install time - the README documents SOCKS support for "
+        "every API-backed handler."
     )
 
 
