@@ -99,8 +99,14 @@ PYTEST_ENVIRONMENT_PREFIX = "PYTEST_"
 
 STEPS_KEY = re.compile(r"^(?P<indent> *)steps: *$")
 STEP_ITEM = re.compile(r"^(?P<indent> *)- ")
-RUN_KEY = re.compile(
-    r"^(?P<indent> *)(?P<dash>- )?run: *(?P<style>[|>][-+]?)? *(?P<inline>.*)$"
+#: Any key at a step's own column, with or without a leading list dash, capturing
+#: the block-scalar style when one is given. Deliberately NOT `run:`-only: the
+#: body of *every* block scalar under a step must be consumed, or its content is
+#: read as structure -- a `steps:` line inside an `env:` template opens a phantom
+#: region, and the step's real `run:` is then skipped with its floor unreported.
+STEP_KEY = re.compile(
+    r"^(?P<indent> *)(?P<dash>- )?(?P<key>[A-Za-z_][\w.-]*): *"
+    r"(?P<style>[|>][-+]?)? *(?P<inline>.*)$"
 )
 
 
@@ -154,9 +160,13 @@ def _run_commands(text: str) -> list[str]:
     while index < len(lines):
         line = lines[index]
 
-        # Entering, and leaving, the block whose children are steps.
+        # Entering, and leaving, the block whose children are steps. A `steps:`
+        # at or below a step's own key column sits *inside* that step -- a
+        # `with:` input, say -- and is content rather than a new region.
         steps = STEPS_KEY.match(line)
-        if steps is not None:
+        if steps is not None and (
+            step_key_indent is None or len(steps.group("indent")) < step_key_indent
+        ):
             steps_indent = len(steps.group("indent"))
             step_item_indent = step_key_indent = None
             index += 1
@@ -190,20 +200,24 @@ def _run_commands(text: str) -> list[str]:
             if depth == step_item_indent:
                 step_key_indent = depth + 2
 
-        run = RUN_KEY.match(line)
-        if run is None or step_key_indent is None:
+        key = STEP_KEY.match(line)
+        if key is None or step_key_indent is None:
             index += 1
             continue
         # A dashed key sits two columns left of the block it introduces.
         if (
-            len(run.group("indent")) + (2 if run.group("dash") else 0)
+            len(key.group("indent")) + (2 if key.group("dash") else 0)
             != step_key_indent
         ):
             index += 1
             continue
 
-        style, inline = run.group("style"), run.group("inline").strip()
+        style, inline = key.group("style"), key.group("inline").strip()
+        is_run = key.group("key") == "run"
         if not style:
+            if not is_run:
+                index += 1
+                continue
             if not inline:
                 raise ValueError(
                     f"line {index + 1}: a `run:` step gives neither a block style "
@@ -215,6 +229,7 @@ def _run_commands(text: str) -> list[str]:
             index += 1
             continue
 
+        # The body is consumed whatever the key is; only `run:` yields commands.
         body: list[str] = []
         index += 1
         while index < len(lines):
@@ -222,6 +237,8 @@ def _run_commands(text: str) -> list[str]:
                 break
             body.append(lines[index].strip())
             index += 1
+        if not is_run:
+            continue
         kept = [part for part in body if part]
         if style.startswith(">"):
             commands.append(" ".join(kept))
@@ -658,6 +675,16 @@ jobs:
     steps:
       - run: python -m pytest -m "not live" --min-selected 12
 """,
+    "a block scalar under a NON-run step key, quoting a floor": """\
+jobs:
+  a:
+    steps:
+      - name: Select
+        if: >
+          python -m pytest -m "quoted, not run" --min-selected 99
+        run: >-
+          python -m pytest -m "not live" --min-selected 12
+""",
     "a step whose env block scalar contains dashed lines": """\
 jobs:
   a:
@@ -696,6 +723,22 @@ jobs:
   b:
     steps:
     - run: python -m pytest -m "subsystem" --min-selected 34
+"""
+
+A_STEPS_LINE_INSIDE_A_BLOCK_SCALAR = """\
+jobs:
+  a:
+    steps:
+      - name: Render a workflow into a file
+        env:
+          TEMPLATE: |
+            jobs:
+              inner:
+                steps:
+                  - run: python -m pytest -m "inner" --min-selected 99
+        run: >-
+          python -m pytest -m "not live" --min-selected 12
+      - run: python -m pytest -m "subsystem" --min-selected 34
 """
 
 NOT_A_PYTEST_INVOCATION = """\
@@ -774,10 +817,15 @@ def test_a_folded_command_is_recovered_whole() -> None:
 def test_every_run_shape_a_workflow_may_use_is_read(shape: str) -> None:
     """One case per shape, because the parser is indent arithmetic.
 
-    Each specimen declares the same floor by a different spelling. Before this
-    table existed the parser read a ``run:`` at exactly two indentations and in
-    two styles; a literal block lost its backslash continuations, and a block
-    whose first line was an install refused the whole step.
+    Each specimen declares the same floor by a different spelling, and each
+    asserts the floor list is exactly ``[12]`` -- so a specimen that quotes 99
+    inside a block scalar under a *non-*``run:`` key fails if that body is ever
+    emitted as a command rather than consumed and discarded.
+
+    Before this table existed the parser read a ``run:`` at exactly two
+    indentations and in two styles; a literal block lost its backslash
+    continuations, and a block whose first line was an install refused the whole
+    step.
 
     Args:
         shape: The key naming the specimen under test.
@@ -799,6 +847,31 @@ def test_two_floors_in_one_file_are_both_recovered() -> None:
     """
 
     assert [floor for _, floor in _declared_floors(TWO_FLOORS)] == [12, 34]
+
+
+def test_a_steps_line_inside_a_block_scalar_is_content_not_a_region() -> None:
+    """🔴 The fifth sibling of the truncation class, closed generally.
+
+    A workflow carried in an ``env:`` template contains the word ``steps:`` at
+    its own indent. Read as structure it opened a phantom region whose key column
+    sat inside the template, and the step's real ``run:`` -- at a smaller indent
+    -- then tripped the region exit. Measured: **both** floors in this document
+    were lost, not merely the hijacked one.
+
+    The fix is not a fourth point patch. The body of *every* block scalar under a
+    step key is now consumed, whatever the key, so its content cannot be read as
+    structure at all; a ``steps:`` at or below a step's own key column is content
+    for the same reason.
+
+    The template declares a floor of its own, deliberately. Without it the
+    specimen cannot tell a body that is *discarded* from one that is *collected*:
+    both leave the two real floors intact, and the mutation that emits template
+    content as commands survives. 99 is the number that must never appear.
+    """
+
+    floors = _declared_floors(A_STEPS_LINE_INSIDE_A_BLOCK_SCALAR)
+
+    assert [floor for _, floor in floors] == [12, 34]
 
 
 def test_each_steps_region_establishes_its_own_item_column() -> None:
@@ -1065,6 +1138,38 @@ def test_the_child_does_not_inherit_pytests_own_option_variables() -> None:
 
     assert steering not in kept
     assert kept == {"PATH": "/usr/bin"}
+
+
+def test_the_filtered_environment_reaches_the_real_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The helper is only worth its name where it is called.
+
+    🔴 A case that exercises :func:`_child_environment` alone leaves its single
+    call site free: reverting that line to a plain copy of the environment --
+    what a tidy-up or a conflict resolution restores -- brings the steering
+    defect back with every other case green. Measured: it did, 31 passed. This
+    drives the real child instead, so the wiring is what is asserted.
+
+    Args:
+        monkeypatch: Exports the steering variable for this test only.
+        tmp_path: Holds two sound modules, one of which the variable would hide.
+    """
+
+    (tmp_path / "test_one.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    (tmp_path / "test_two.py").write_text("def test_b():\n    pass\n", encoding="utf-8")
+    # Assembled from the prefix: see PYTEST_ENVIRONMENT_PREFIX for why the name
+    # is not written out in this file.
+    monkeypatch.setenv(
+        PYTEST_ENVIRONMENT_PREFIX + "ADDOPTS", f"--ignore={tmp_path / 'test_two.py'}"
+    )
+
+    count, _ = _collect([*PYTEST_INVOCATION, str(tmp_path)], tmp_path / "probe.json")
+
+    assert count == 2, (
+        "the child honoured a steering variable from the ambient environment and "
+        "collected fewer tests than the job would"
+    )
 
 
 def test_a_collection_error_is_named_rather_than_counted(tmp_path: Path) -> None:
