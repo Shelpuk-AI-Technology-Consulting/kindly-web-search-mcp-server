@@ -23,7 +23,7 @@ reach, and the scope is load-bearing rather than cautious.** Two inputs escape
 that scope today, both measured, both characterised below rather than repaired:
 a malformed URL raises out of ``urlsplit`` before any guard runs, in **all
 five** parsers, and an over-long StackExchange id raises out of ``int``. §14 of
-``TEST_SUITE.md`` records the class and its follow-up. Stating the domain is
+``TEST_SUITE.md`` §14 records the class, and is its only owner. Stating the domain is
 what keeps the twenty-one rows below from reading as a universal that a
 28-character input falsifies.
 
@@ -750,8 +750,8 @@ def test_a_trailing_slash_turns_the_empty_wikipedia_title_into_a_slash() -> None
     Same root cause as
     :func:`test_a_trailing_slash_changes_the_wikipedia_title_today` — a greedy
     ``_WIKI_PATH_RE`` capture normalised too late — and the same treatment:
-    characterised, not repaired, and recorded in ``TEST_SUITE.md`` §14 with the
-    ticket that owns the decision. This one is the worse half of the pair,
+    characterised, not repaired, and recorded in ``TEST_SUITE.md`` §14, which is
+    where the decision lives. This one is the worse half of the pair,
     because it changes *whether* the parser accepts rather than only *what* it
     returns, and it is the only one of eighty-one (branch, variation) pairs that
     does not hold.
@@ -873,8 +873,10 @@ def test_a_malformed_url_escapes_every_parser_as_a_foreign_class_today(
     per parser, five modules, and this step ships one production edit — the same
     scoping the search-provider error-path step recorded when it found a
     credential leak it was not scoped to fix. ``TEST_SUITE.md`` §14 carries the
-    gap and its follow-up. When the repair lands, this test fails and points at
-    the decision instead of letting the change go unnoticed.
+    gap, and carries it alone — the tracker issue raised alongside it was
+    withdrawn as sub-threshold, so §14 is the record, not a pointer to one. When
+    the repair lands, this test fails and points at the decision instead of
+    letting the change go unnoticed.
 
     Args:
         parse: One of the five parser callables.
@@ -970,7 +972,7 @@ def test_the_parser_has_no_bound_of_its_own_on_the_id_length(
     a ``try``/``except`` around the conversion would guard the *symptom* on
     default-configured interpreters and nothing at all elsewhere.
 
-    Recorded in ``TEST_SUITE.md`` §14 with the follow-up that owns the decision.
+    Recorded in ``TEST_SUITE.md`` §14, which owns the decision.
 
     Args:
         unbounded_int_digits: Fixture removing the conversion ceiling.
