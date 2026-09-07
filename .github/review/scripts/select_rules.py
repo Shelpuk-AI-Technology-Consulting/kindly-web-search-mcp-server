@@ -149,6 +149,11 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         name="packaging",
         patterns=(
             "pyproject.toml",
+            # `requirements.txt` was deleted -- nothing installed from it and the
+            # stale freeze was manufacturing Dependabot alerts. The pattern stays
+            # so that a pull request re-introducing one is routed here and has to
+            # argue for it, rather than landing unreviewed. A pattern that matches
+            # nothing today costs nothing; the absent review would have.
             "requirements.txt",
             "Dockerfile",
             ".dockerignore",

@@ -4,10 +4,33 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kindly-web-search-mcp-server"
-version = "0.1.8"
+version = "0.1.9"
 description = "MCP server: Serper web search + robust content retrieval."
 readme = "README.md"
 requires-python = ">=3.13"
+# Every bound below comes from §10.2 of `.system_design/TEST_SUITE.md` and is
+# asserted against it, in both directions, by `tests/test_dependency_constraints.py`.
+#
+# These are the bounds that reach users. The documented install path
+# (`uvx --from git+https://...`) re-resolves every one of them from PyPI on each
+# start and ignores any lock file, so a breaking major arrives with no commit here,
+# no CI run and no alert — the first signal is a user whose server stops starting.
+# Nine of these ten were bare names while the identical rule was already enforced
+# for the tooling extras below: the dependencies developers install were guarded
+# and the dependencies users install were not.
+#
+# Each ceiling is the next major of the version the entry was verified against, and
+# each floor is that version's minor series — for nine of the ten. `mcp`'s floor is
+# the older `>=1.25`, the oldest release verified against this server, which the
+# guard pins separately; applying the nine-package rule to it would raise it to
+# `>=1.29` and fail `test_mcp_requirement_still_allows_supported_version`. Same
+# purpose, different number, and the difference is deliberate.
+# "Verified" means a clean resolve into a fresh CPython 3.13 environment on
+# 2026-09-06, after which the server module, `CORSMiddleware` and `FastMCP` were all
+# imported successfully — on CPython 3.13 **and** 3.14, both of which this project
+# supports and neither of which any wired CI leg resolves on. Same ten versions on
+# both, compiled wheels included. Raising a bound is a deliberate PR that runs the full suite
+# against the new version; Dependabot may propose, never auto-merge.
 dependencies = [
     # `<2`: the MCP SDK dropped `mcp.server.fastmcp` in 2.0.0, and `server.py` imports
     # `FastMCP` from it. The documented install path (`uvx --from git+https://...`)
@@ -20,15 +43,53 @@ dependencies = [
     # `server.py` imports both directly to wrap the ASGI app in CORS middleware and
     # serve it. They arrive transitively via `mcp` today, which is exactly the kind of
     # undeclared dependency `tests/test_dependency_constraints.py` exists to catch.
-    "starlette",
-    "uvicorn",
-    "pydantic",
-    "httpx[socks]",
-    "beautifulsoup4",
-    "markdownify",
-    "trafilatura",
-    "nodriver",
-    "PyMuPDF",
+    #
+    # `starlette<2` and not `<1`: 1.0 shipped 22 March 2026 and is the current line —
+    # a clean resolve selects 1.6.0, and this project crossed that major without
+    # noticing while the entry was unbounded. The 1.0 break was the removal of
+    # `on_startup`/`on_shutdown` in favour of `lifespan`, and this server uses
+    # neither: it only wraps the ASGI app `FastMCP` builds. 1.0 did also change
+    # `CORSMiddleware` itself — it now returns an explicit origin when credentials
+    # are allowed, rather than a wildcard — which is the one 1.0 change that touches
+    # the single starlette symbol `server.py` imports. The suite is green on 1.6.0,
+    # so it is compatible in practice; it is named here because a justification that
+    # only mentioned the change NOT affecting us would be the weaker half of the
+    # truth. Bounding below 1.0 would roll users back off the release they already
+    # run, to avoid a break that does not apply to this code.
+    "starlette>=1.6,<2",
+    # 🔴 `uvicorn`, `nodriver`, `httpx` and `PyMuPDF` have ceilings that are NOMINAL:
+    # the first two are pre-1.0 where a minor may break, `PyMuPDF` removes API in 1.x
+    # minors, and `httpx` is unlikely ever to ship 1.0 — its maintained successor is a
+    # differently named distribution, `httpx2`. Do not read `<1` or `<2` on these four
+    # as protection. Kept anyway because they still block a surprise major at no cost,
+    # and because pinning each to one minor would force a PR per upstream minor on a
+    # path that re-resolves at every user launch. §10.2 records the full reasoning and
+    # what protects them instead.
+    "uvicorn>=0.52,<1",
+    # `mcp` requires `pydantic>=2.11,<3`; this floor is the verified release, which is
+    # inside that range, so the two constraints resolve together rather than fighting.
+    "pydantic>=2.13,<3",
+    # The `[socks]` extra is load-bearing: it installs `socksio`, without which a
+    # SOCKS proxy configuration fails at request time rather than at install time.
+    "httpx[socks]>=0.28,<1",
+    # `beautifulsoup4` and `markdownify` are the fallback extraction path in
+    # `scrape/extract.py`, used when `trafilatura` returns nothing; `markdownify`
+    # also serves the StackExchange loader. Both are imported behind try/except,
+    # so a breaking major degrades content quality silently rather than failing at
+    # import -- which is why a ceiling matters more here, not less.
+    "beautifulsoup4>=4.15,<5",
+    "markdownify>=1.2,<2",
+    # Primary main-content extraction: a breaking major here is the difference
+    # between a page and an empty string, and `scrape/extract.py` imports it behind
+    # try/except, so the failure would arrive as blank content, not a crash.
+    "trafilatura>=2.2,<3",
+    # The headless Chromium worker behind the universal HTML loader. Pre-1.0 and
+    # fast-moving; `<1` is the nominal ceiling described in the block above, and
+    # `scrape/nodriver_worker.py` is the only consumer.
+    "nodriver>=0.50,<1",
+    # PDF to text for the arXiv loader. `<2` is nominal -- PyMuPDF has been 1.x
+    # throughout and removes API in minors -- see the block above and §10.2.
+    "PyMuPDF>=1.28,<2",
 ]
 
 [project.optional-dependencies]
@@ -62,7 +123,8 @@ dev = [
 mutation = ["mutmut>=3,<4"]
 # The pinned environment §10.4's coverage baseline is measured in.
 # `requirements-ratchet.txt` is the frozen transitive closure of this extra and is
-# what CI installs; this list is the input that regenerates it.
+# what that lane is designed to install — no workflow installs it yet, and `ci.yml`
+# says so; this list is the input that regenerates it.
 #
 # `coverage` is pinned exactly rather than range-bounded because a patch release
 # that moved a two-decimal total would fail the ratchet for reasons unrelated to
