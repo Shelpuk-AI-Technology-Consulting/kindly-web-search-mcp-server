@@ -1,8 +1,9 @@
 # Rule: packaging and configuration
 
-`pyproject.toml`, `requirements.txt`, `Dockerfile`, `.dockerignore`,
-`.env.example`. This rule fans out to `mcp-server`, because the dependency bounds
-here are what keep the server importable at all.
+`pyproject.toml`, `Dockerfile`, `.dockerignore`, `.env.example`, and
+`requirements.txt` — which no longer exists, and is matched so that re-adding it
+is reviewed rather than unnoticed. This rule fans out to `mcp-server`, because the
+dependency bounds here are what keep the server importable at all.
 
 ## The install path makes bounds load-bearing
 
@@ -27,20 +28,59 @@ That is why `pyproject.toml` carries the comments it does, and both are settled:
   catch.
 - `packaging` sits in the `dev` extra for the same reason: the dependency-bound
   guard imports it directly rather than inheriting it from pytest.
+- **Every runtime dependency is bounded, and every bound is machine-checked**
+  against the runtime table in TEST_SUITE.md §10.2, in both directions. Nine of
+  the ten were bare names until that table existed. The guard also asserts that
+  each ceiling **excludes every major above the declared floor's** — a check a
+  table-versus-table comparison cannot make, because a ceiling widened in both
+  places at once agrees with itself. Loosening one is a **critical** finding
+  unless the PR records a fresh resolve.
+
+  ⚠️ **The floor is the anchor, not the verified version**, and the two are easy
+  to confuse because §10.2 uses the verified version to *choose* each ceiling.
+  Choosing and checking are different operations: the check reads the declared
+  floor, deliberately, because §10.4 permits the lockfile pin to move anywhere
+  inside these bounds and anchoring there would let a regenerated lockfile shift
+  the reference major underneath a widened ceiling. They agree today for all ten —
+  `mcp`'s floor `>=1.25` and its pinned 1.29.1 share major 1 — and would diverge
+  the moment a floor sits in a different major from the pin, which §10.2 already
+  permits for `mcp`-style floors.
+- Bounds are chosen **against a real resolve, not by inspection**: `mcp` constrains
+  several of these itself, and asks for `starlette` with no ceiling at all — which
+  is how `starlette` crossed 0.x → 1.x here unnoticed.
 
 **Every new direct import needs a declared dependency.** That is the rule the
 guard enforces; check a new import against `[project.dependencies]`.
 
-## `requirements.txt` is not the source of truth
+## `requirements.txt` was deleted, and re-adding it needs an argument
 
-Its header says so: it is a `pip freeze` of a working environment, kept for
-tooling that expects the file, and **`pyproject.toml` is the source of truth**.
+It used to exist as a `pip freeze` of a working environment, kept for tooling
+that expects the file, while `pyproject.toml` was the source of truth. **No
+install path ever read it** — the `Dockerfile` runs `pip install .` and the
+README documents `uvx --from git+…` — so it drifted, and a stale freeze on a
+public repository is not inert: at deletion it carried 31 open Dependabot alerts,
+14 rated high, and all five open Dependabot pull requests, against a file nothing
+installs from. Fake alarms at that volume train people to ignore the security tab,
+which is worse than having no freeze file. Alerts reachable through
+`requirements-ratchet.txt` or `pyproject.toml` are unaffected and remain real.
 
-- A dependency added to one and not the other is drift. Flag it, and say which
-  file the reviewer should treat as authoritative — the answer is
-  `pyproject.toml`.
-- A change that starts *installing from* `requirements.txt` in a path users take
-  reverses that decision and needs saying so.
+**It had also stopped listing a runtime dependency.** It carried no `trafilatura`
+while `pyproject.toml` declared it and `src/` imported it, so
+`pip install -r requirements.txt` produced a server that could not extract
+content. That is what a freeze nobody installs from decays into, and it is why the
+answer was deletion rather than a refresh — and note that `packaging.md`'s own
+drift rule had been violated for some time with nothing to catch it.
+
+This rule still lists `requirements.txt` in its patterns **deliberately**, for a
+file that is not there: it means a pull request that re-introduces one is routed
+to this rule rather than sliding in unreviewed.
+
+- A PR that adds `requirements.txt` back must say what reads it. "For tooling" is
+  the answer that already failed once; a second freeze nobody installs from
+  recreates the alert noise on a schedule.
+- A change that starts *installing from* such a file in a path users take
+  reverses the decision that `pyproject.toml` is the source of truth, and needs
+  saying so.
 
 ## The optional extras
 

@@ -67,8 +67,9 @@ jobs:
     # skipped, 787 selected). ⚠️ That is the run this cap was DERIVED from and it
     # is deliberately not restated as the selection grows -- the live figure is
     # the floor below, and it is deliberately NOT copied here: this sentence used
-    # to restate it, the two went out of step the first time the floor moved, and
-    # a pointer does not need the value to point. Re-deriving the cap needs a
+    # to restate it and the two went out of step every time the floor moved --
+    # twice inside one week, the second time in the very merge that removed the
+    # copy. A pointer does not need the value to point. Re-deriving the cap needs a
     # fresh timing on comparable hardware, which nobody has taken; this cap is
     # roughly seven times that measured duration, because it
     # must also cover Windows -- where a suite that spawns child processes and
@@ -132,19 +133,20 @@ jobs:
         # the run, never from a number written down earlier. Note the shape that
         # is NOT an addition to the selection: the first test carrying a
         # `chromium`, `live` or `package` marker is deselected here, so it lowers
-        # this count. Today those three markers select zero of the 1123, so this
+        # this count. Today those three markers select zero of the 1187, so this
         # floor is the whole suite; the step that adds the first browser test
         # owns lowering it, and the failure message it would otherwise get names
         # the wrong cause.
         #
-        # 1009 -> 1123 here: 69 cases from the provider-credential-disclosure
-        # module and its two siblings, plus 45 that arrived on the base branch
-        # between this branch being cut and merged. Read from a run of the exact
-        # command line below on the merged tree, not by adding 69 to the number
-        # that was written here -- the two numbers were produced by different
-        # trees, and arithmetic across them invents a count nobody observed.
+        # 1117 -> 1187 here. Read from a run of the exact command line below on
+        # the merged tree, and re-read on every merge with the base branch: this
+        # branch has now measured it three times -- 1123, then 1187 -- because
+        # the base moved underneath it twice. Never carry a count across a merge
+        # by adding this branch's additions to whatever the base last wrote. The
+        # two figures come from different trees, and arithmetic across them
+        # invents a number nobody observed.
         run: >-
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 1123
+          --min-selected 1187

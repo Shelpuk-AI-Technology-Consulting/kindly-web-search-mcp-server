@@ -732,8 +732,10 @@ def test_the_httpx_error_family_has_the_shape_the_conversion_assumes(
 
     Written because that limit was recorded as prose in a docstring and in
     ``.system_design/TEST_SUITE.md`` section 14, scoped to a version, against a
-    dependency this project does not pin to an exact release -- so an ``httpx``
-    upgrade could have made the documentation quietly false with nothing to
+    dependency declared as a **range** -- ``httpx[socks]>=0.28,<1`` in
+    ``pyproject.toml``. ``requirements-ratchet.txt`` pins ``0.28.1``, but that
+    governs one job rather than what an ordinary install resolves, so an ``httpx``
+    upgrade could still have made the documentation quietly false with nothing to
     notice. It is a claim about a third party, which is exactly the kind that
     decays without a case holding it.
 
