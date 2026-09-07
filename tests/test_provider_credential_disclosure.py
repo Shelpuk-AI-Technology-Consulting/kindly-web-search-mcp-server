@@ -15,11 +15,9 @@ HTTP status, with the request URL dropped. The contract layer drives the
 low-level ``CallToolRequest`` handler rather than ``mcp.call_tool``, because
 ``call_tool`` raises FastMCP's ``ToolError`` and the served text and ``isError``
 are composed one layer below it -- so no unit test of the conversion, and no
-assertion on the ``ToolError``, can prove what the client actually sees. Measured on ``mcp`` 1.29.1
-and ``httpx`` 0.28.1: the served ``CallToolResult`` carries ``str(exc)`` alone and
-exposes neither ``__cause__`` nor a traceback. Those cases drive the low-level
-``CallToolRequest`` handler rather than ``mcp.call_tool``, because ``call_tool``
-raises FastMCP's ``ToolError`` and the served text is composed below it -- so a
+assertion on the ``ToolError``, can prove what the client actually sees. Measured
+on ``mcp`` 1.29.1 and ``httpx`` 0.28.1: the served ``CallToolResult`` carries
+``str(exc)`` alone and exposes neither ``__cause__`` nor a traceback -- so a
 future release that began rendering ``__cause__`` at *either* layer turns these
 cases red, which is the outcome that should follow.
 
