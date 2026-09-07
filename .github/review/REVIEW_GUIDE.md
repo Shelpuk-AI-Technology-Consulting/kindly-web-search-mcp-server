@@ -41,7 +41,7 @@ Do not review the diff in isolation.
 | If the PR changes | Also read |
 |---|---|
 | anything with a per-task requirements document | `.requirements/<datetime>_<feature>/REQUIREMENTS.md` — the **As Is / To Be / Requirements / Acceptance Criteria** are the traceability target |
-| `pyproject.toml`, `requirements.txt`, `Dockerfile` | `.env.example`, and the dependency comments in `pyproject.toml` itself — several bounds are load-bearing and say why |
+| `pyproject.toml`, `Dockerfile` | `.env.example`, and the dependency comments in `pyproject.toml` itself — every bound is load-bearing and says why |
 | the tools, transports, or allowlists | the matching README sections, and `SECURITY.md` (see the caveat below) |
 | anything under `.github/` | the rule file `ci.md`, which carries this workflow's own invariants |
 | a design document, if one has since been added | that document, plus any module `.system_design/` |
@@ -229,8 +229,12 @@ Explain the failure mode in one or two sentences and give a concrete fix.
   - The `nodriver` encoding monkey-patch is a load-bearing workaround for a
     non-UTF-8 file in an installed third-party package, not accidental
     complexity.
-  - `requirements.txt` is a `pip freeze` kept for tooling; `pyproject.toml` is
-    the source of truth.
+  - Every runtime dependency is bounded, and the ceilings are chosen against a
+    real resolve rather than by inspection — `mcp` constrains several of them
+    itself and asks for `starlette` with no ceiling at all.
+  - `requirements.txt` was deleted: nothing installed from it and the stale
+    freeze was manufacturing Dependabot alerts. `pyproject.toml` is the source of
+    truth.
   - Everything under `.github/review/scripts/` except `select_rules.py` is
     carried verbatim from the upstream repository so fixes stay portable.
 - **Do not comment on formatting or style** a linter or formatter would catch.

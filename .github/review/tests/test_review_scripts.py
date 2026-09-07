@@ -698,6 +698,12 @@ class TestSelectRules(unittest.TestCase):
         `.env.example` is the only complete list of what the server reads, and
         the `Dockerfile` is what serves the HTTP transports, so both inherit the
         allowlist rules with it.
+
+        `requirements.txt` is included although the file **no longer exists**: it
+        was deleted because nothing installed from it while the stale freeze was
+        manufacturing Dependabot alerts. Routing it is what makes re-adding one a
+        reviewed act instead of an unnoticed one, so this case asserts a pattern
+        that matches nothing in the tree today, on purpose.
         """
 
         for path in (
@@ -838,6 +844,15 @@ class TestSelectRules(unittest.TestCase):
             # decide that it selects no rules.
             "CLAUDE.md",
             "AGENTS.md",
+            # `requirements.txt` was DELETED, not anticipated -- nothing installed
+            # from it and the stale freeze was the sole source of 31 Dependabot
+            # alerts. The entry is still forward-looking in the sense this list
+            # means: it anticipates the file's *return*, so a pull request that
+            # re-adds one is routed to `packaging` and has to argue for it. The
+            # companion test below then forces this entry out again on that day,
+            # which is correct -- once the file exists the pattern validates
+            # normally and needs no excuse.
+            "requirements.txt",
         }
     )
 
@@ -12673,6 +12688,55 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             re.compile(r"(?:design document|\.system_design)[^.\n]{0,80}\bnone\b"),  # noqa: ci-claim
             "`.system_design/` exists and holds the test-suite design",
         ),
+        # 🔴 A third claim class: the runtime freeze file. It was deleted -- no
+        # install path read it, it had silently stopped listing a runtime
+        # dependency, and it was the origin of every open Dependabot alert. Two
+        # files under this root asserted its purpose in the present tense: the
+        # review guide and this packaging rule. The deleted file's own header said
+        # it too, but that sat at the repository root, which `_root()` below does
+        # not walk -- so it is guarded here as a phrasing, not as a reachable file.
+        #
+        # 🔴 **The first two patterns here missed one of the two sentences they
+        # were written for, and the control did not say so.** Both required the
+        # literal filename within 60 non-dot characters of the purpose phrase.
+        # That matched the review guide's bullet, which names the file and its
+        # purpose in one sentence -- and missed the packaging rule's, where the
+        # filename was in the H2 heading two lines up and the sentence itself  # noqa: ci-claim
+        # began "Its header says so: it is a `pip freeze` of a working  # noqa: ci-claim
+        # environment". Re-introducing the deleted prose verbatim would have left  # noqa: ci-claim
+        # this guard green.
+        #
+        # 🔴 **The control concealed it, which is the worse half.** Its specimen
+        # was that real sentence with `, see requirements.txt above` grafted on -
+        # and the graft was the only reason it matched. A specimen edited until it
+        # passes tests the edit, not the tree. The specimens below are now the
+        # sentences as they were actually written.
+        #
+        # ⚠️ Anchored on the PURPOSE claim, not on the filename. The filename
+        # still appears in four TRUE sentences here -- the routing pattern that
+        # catches a re-introduction, and the prose explaining it -- so a pattern on
+        # the name alone would fire on the correction itself, which is how a guard
+        # gets its own prose deleted. What is retired is the purpose, not the
+        # mention.
+        #  # noqa: ci-claim
+        # ⚠️ `is a `pip freeze`` is deliberately not anchored to a filename at  # noqa: ci-claim
+        # all, which is what lets it reach a sentence whose subject is a pronoun.  # noqa: ci-claim
+        # The cost to watch: a future true sentence calling
+        # `requirements-ratchet.txt` a pip freeze would fire it. That file lives at
+        # the repository root, outside this sweep, so the case is not reachable
+        # today; add a negative lookbehind on `ratchet` if one is ever written here.
+        (
+            re.compile(r"\bis a `?pip freeze`?"),  # noqa: ci-claim
+            "that file was deleted; `pyproject.toml` is the only dependency source",
+        ),
+        (
+            re.compile(r"requirements\.txt[^.\n]{0,60}(?:pip freeze|for tooling)"),  # noqa: ci-claim
+            "that file was deleted; `pyproject.toml` is the only dependency source",
+        ),
+        (
+            re.compile(r"(?:pip freeze|for tooling)[^.\n]{0,60}requirements\.txt"),  # noqa: ci-claim
+            "that file was deleted; `pyproject.toml` is the only dependency source",
+        ),
     )
 
     #: Suppress a deliberate match with this marker on the line, exactly as the
@@ -12735,6 +12799,15 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "read `README.md` in full: this repository has no separate design document",  # noqa: ci-claim
             "There is no separate design document in this repository.",  # noqa: ci-claim
             "`.system_design/` is matched although this repository has none today.",  # noqa: ci-claim
+            # 🔴 The freeze-file claim, quoted from the two files that carried
+            # it, NOT paraphrased into something that matches. The second is the
+            # one the first pattern round missed: its subject is "it", and the
+            # filename is in a heading the sentence-join never reaches.
+            "- `requirements.txt` is a `pip freeze` kept for tooling; `pyproject.toml` is",  # noqa: ci-claim
+            "Its header says so: it is a `pip freeze` of a working environment, kept for",  # noqa: ci-claim
+            # The deleted file's own header. Its directory is outside this sweep,
+            # so this specimen guards the phrasing rather than a reachable file.
+            "This is primarily for tooling that expects `requirements.txt`.",  # noqa: ci-claim
         )
         for specimen in specimens:
             with self.subTest(specimen=specimen):
@@ -12762,6 +12835,18 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
             "do not report a missing design document as a finding",
             "`.system_design/` exists and holds the test-suite design and its plan",
             "this repository has a `.system_design/` of its own but does not always-read it",
+            # The four true sentences the freeze-file patterns sit beside. Each
+            # names the file on purpose -- the routing entry exists so that
+            # re-adding one is reviewed -- and a pattern on the name alone would
+            # have deleted exactly this reasoning.
+            "`requirements.txt` was deleted: nothing installed from it",
+            "A PR that adds `requirements.txt` back must say what reads it",
+            "This rule still lists `requirements.txt` in its patterns deliberately",
+            # 🔴 The one the `for tooling` widening put at risk. It survives only
+            # because `[^.\n]` stops at the sentence break before "For tooling",
+            # so the barrier is load-bearing rather than incidental.
+            'adds `requirements.txt` back must say what reads it. "For tooling" is',
+            "`requirements.txt` is included although the file no longer exists",
         ):
             with self.subTest(sentence=sentence):
                 firing = [

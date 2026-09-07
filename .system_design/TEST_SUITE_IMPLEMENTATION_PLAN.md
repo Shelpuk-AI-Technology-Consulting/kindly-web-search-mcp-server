@@ -1613,8 +1613,9 @@ duplicating tests or touching the same files.
   locally installed Chromium quietly acquires cases that run everywhere.
   **This step therefore owns lowering the hermetic selection's `--min-selected`
   floor, and its acceptance check must say so.** Read the current floor from the
-  workflow that declares it, not from any number quoted here or in an earlier
-  step's notes — and note that E4-3 will by then have replaced the single broad
+  workflow that declares it -- `tests-broad.yml` today -- and never from a number
+  quoted here or in an earlier step's notes, which record what was observed then
+  rather than what the job declares now — and note that E4-3 will by then have replaced the single broad
   job with the `fast` and `subsystem` pair, so the floor to lower may be two
   floors in two files. The first `chromium`-marked case this step adds is
   deselected by that selection and drops the count below the floor. **That is
