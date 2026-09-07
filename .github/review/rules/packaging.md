@@ -31,10 +31,20 @@ That is why `pyproject.toml` carries the comments it does, and both are settled:
 - **Every runtime dependency is bounded, and every bound is machine-checked**
   against the runtime table in TEST_SUITE.md §10.2, in both directions. Nine of
   the ten were bare names until that table existed. The guard also asserts that
-  each ceiling **excludes the next major** computed from the version the bound was
-  verified against — a check a table-versus-table comparison cannot make, because
-  a ceiling widened in both places at once agrees with itself. Loosening one is a
-  **critical** finding unless the PR records a fresh resolve.
+  each ceiling **excludes every major above the declared floor's** — a check a
+  table-versus-table comparison cannot make, because a ceiling widened in both
+  places at once agrees with itself. Loosening one is a **critical** finding
+  unless the PR records a fresh resolve.
+
+  ⚠️ **The floor is the anchor, not the verified version**, and the two are easy
+  to confuse because §10.2 uses the verified version to *choose* each ceiling.
+  Choosing and checking are different operations: the check reads the declared
+  floor, deliberately, because §10.4 permits the lockfile pin to move anywhere
+  inside these bounds and anchoring there would let a regenerated lockfile shift
+  the reference major underneath a widened ceiling. They agree today for all ten —
+  `mcp`'s floor `>=1.25` and its pinned 1.29.1 share major 1 — and would diverge
+  the moment a floor sits in a different major from the pin, which §10.2 already
+  permits for `mcp`-style floors.
 - Bounds are chosen **against a real resolve, not by inspection**: `mcp` constrains
   several of these itself, and asks for `starlette` with no ceiling at all — which
   is how `starlette` crossed 0.x → 1.x here unnoticed.

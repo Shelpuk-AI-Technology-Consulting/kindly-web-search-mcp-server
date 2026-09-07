@@ -2895,13 +2895,15 @@ half), and the admit-the-pin check has a tooling analogue in
 `test_ratchet_lockfile_versions_satisfy_the_ratchet_extra`. What is genuinely
 runtime-only is the **rejected-major ceiling** check and — vacuously for tooling,
 which declares no extras — the **extras** check. The shared machine-checking is
-stated once, at the top of this section. The runtime rows are held to: that the declared bound **excludes every major
-above the declared floor's** — proved structurally, by requiring a `<`/`<=` clause
-at or below the next major, *and* by probing that major, because neither half
-alone is the claim; that the bound still **admits** the version
-`requirements-ratchet.txt` pins; and that `[project].dependencies` holds exactly
-this set, each entry once; and that each entry requests exactly the
-**extras** recorded here.
+stated once, at the top of this section. The runtime rows are held to four
+things:
+
+- the declared bound **excludes every major above the declared floor's** —
+  proved structurally, by requiring a `<`/`<=` clause at or below the next
+  major, *and* by probing that major, because neither half alone is the claim;
+- the bound still **admits** the version `requirements-ratchet.txt` pins;
+- `[project].dependencies` holds **exactly** this set, each entry once;
+- each entry requests exactly the **extras** recorded here.
 
 That last one is not pedantry. An extra lives outside the specifier, so
 `httpx[socks]>=0.28,<1` and `httpx>=0.28,<1` are indistinguishable to every other

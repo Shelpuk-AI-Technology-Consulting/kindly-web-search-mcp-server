@@ -112,6 +112,13 @@ EXTRA_BOUND_CASES = [
 # from silently selecting an older, untested API - the same reasoning the ``mcp``
 # comment in ``pyproject.toml`` records for ``>=1.25``.
 #
+# ⚠️ That is how these numbers were CHOSEN. It is not what the ceiling case
+# checks: that reads the **declared floor**, because section 10.4 lets the
+# lockfile pin move anywhere inside these bounds. Choosing and checking are
+# different operations, and describing the check with the choosing rule has
+# already gone wrong four times in this branch's own prose - so if you are here
+# to change the check, read ``..._rejects_every_later_major``, not this comment.
+#
 # 🔴 Four of these ceilings are NOMINAL, and the cases below cannot tell you so:
 # ``uvicorn`` and ``nodriver`` are pre-1.0 where a minor may break, ``PyMuPDF``
 # removes API in 1.x minors, and ``httpx`` is unlikely ever to ship 1.0 because its
