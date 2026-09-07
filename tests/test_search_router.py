@@ -94,7 +94,22 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         mock_searxng.assert_not_awaited()
 
     async def test_does_not_fallback_when_serper_errors(self) -> None:
-        from kindly_web_search_mcp_server.search import search_web
+        """A provider failure is surfaced, not retried against the next provider.
+
+        The subject is unchanged: no second provider is tried. What changed is
+        the type carried out of the router. It used to be the provider's raw
+        ``httpx.HTTPStatusError``, whose message quotes the request URL -- which
+        for SerpBase holds the API key, and which FastMCP renders into the error
+        an MCP client receives. The router now converts that family into
+        ``SearchProviderTransportError`` and keeps the original as ``__cause__``,
+        so the assertion is retyped and the cause asserted alongside it rather
+        than the check being dropped. See
+        ``tests/test_provider_credential_disclosure.py``.
+        """
+        from kindly_web_search_mcp_server.search import (
+            SearchProviderTransportError,
+            search_web,
+        )
 
         os.environ["SERPER_API_KEY"] = "serper_test"
         os.environ["TAVILY_API_KEY"] = "tvly_test"
@@ -110,8 +125,16 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
                 request=httpx.Request("POST", "https://google.serper.dev/search"),
                 response=httpx.Response(401),
             )
-            with self.assertRaises(httpx.HTTPStatusError):
+            with self.assertRaises(SearchProviderTransportError) as raised:
                 await search_web("q", num_results=1)
+
+        # The raised type is now built by the router rather than handed up by the
+        # provider, so on its own it no longer proves the provider was reached.
+        # The await and the cause restore that coupling: the status is read from
+        # the chained original, structurally, never out of a message.
+        mock_serper.assert_awaited()
+        self.assertIsInstance(raised.exception.__cause__, httpx.HTTPStatusError)
+        self.assertEqual(raised.exception.__cause__.response.status_code, 401)
 
         mock_tavily.assert_not_awaited()
         mock_searxng.assert_not_awaited()

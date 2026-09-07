@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ..models import WebSearchResult
+from ..utils.diagnostics import redact_url_credentials
 
 
 class SearxngError(RuntimeError):
@@ -29,6 +30,25 @@ DEFAULT_SEARXNG_USER_AGENT = (
 
 
 def _get_searxng_base_urls() -> list[str]:
+    """Resolve the configured SearXNG instances, in the order they will be tried
+
+    ``SEARXNG_BASE_URL`` holds one URL or a comma-separated list. Entries that do
+    not parse to both a scheme and a host are skipped rather than failing the
+    whole list, so one bad entry does not disable a working instance beside it.
+
+    Neither the rejected entry nor the error names a value, because this variable
+    carries its credential in the URL's userinfo and a mistyped scheme is the
+    ordinary way to reach both paths. See ``.system_design/TEST_SUITE.md``
+    section 14.
+
+    Returns:
+        The configured base URLs with any trailing slash removed, in
+        configuration order.
+
+    Raises:
+        SearxngConfigError: If the variable is unset or blank, or if no entry
+            parses to both a scheme and a host.
+    """
     raw = os.environ.get("SEARXNG_BASE_URL", "").strip()
     if not raw:
         raise SearxngConfigError(
@@ -36,18 +56,25 @@ def _get_searxng_base_urls() -> list[str]:
         )
 
     urls: list[str] = []
-    for part in raw.split(","):
+    for index, part in enumerate(raw.split(","), start=1):
         part = part.strip()
         if not part:
             continue
         parsed = urlparse(part)
         if not parsed.scheme or not parsed.netloc:
-            LOGGER.warning("Ignoring invalid SearXNG URL in list: %r", part)
+            # Position, not value: the entry has no scheme, so the redaction helper cannot strip its userinfo.
+            LOGGER.warning(
+                "Ignoring entry %d of SEARXNG_BASE_URL: no scheme or host.", index
+            )
             continue
         urls.append(part.rstrip("/"))
 
     if not urls:
-        raise SearxngConfigError(f"No valid URLs found in SEARXNG_BASE_URL: {raw!r}")
+        # The rejected value is not quoted back: it carries a credential in its userinfo.
+        raise SearxngConfigError(
+            "No valid URLs found in SEARXNG_BASE_URL. Each entry must include a "
+            "scheme and a host, for example https://searx.example.org."
+        )
 
     return urls
 
@@ -99,14 +126,37 @@ async def search_searxng(
     num_results: int,
     http_client: httpx.AsyncClient | None = None,
 ) -> list[WebSearchResult]:
-    """
-    Query a SearXNG instance and return parsed results.
+    """Query the configured SearXNG instances in order and return parsed results
+
+    Instances are tried in configuration order and the first that answers wins.
+    Every per-instance failure is caught and the last one is re-raised inside a
+    single aggregate, chained so the arm that produced it stays inspectable.
 
     SearXNG endpoint:
     - GET {SEARXNG_BASE_URL}/search
     - Params: q=<query>, format=json, plus optional params like language/categories/engines/time_range/safesearch.
 
     SearXNG docs: https://docs.searxng.org/dev/search_api.html
+
+    Args:
+        query: The search query to run. A blank query returns no results
+            without a request.
+        num_results: Maximum number of results to return. Less than one returns
+            no results without a request.
+        http_client: Client to reuse for the request. A short-lived client is
+            created when omitted.
+
+    Returns:
+        The parsed results, at most ``num_results`` of them.
+
+    Raises:
+        SearxngConfigError: If ``SEARXNG_BASE_URL`` is unset or holds no entry
+            with both a scheme and a host, if ``SEARXNG_HEADERS_JSON`` is not a
+            JSON object, or if ``SEARXNG_TIMEOUT_SECONDS`` is not a number.
+        SearxngError: If every configured instance failed, or if the instance
+            that answered returned a body this parser cannot use. Both messages
+            are served to the MCP client, so neither quotes a request URL --
+            ``.system_design/TEST_SUITE.md`` section 14 records why.
     """
     if not query.strip():
         return []
@@ -161,7 +211,10 @@ async def search_searxng(
     data = None
 
     for base_url in base_urls:
-        LOGGER.info("Attempting SearXNG query on instance: %s", base_url)
+        # Redacted, not dropped: a URL that got this far has a scheme, so the host stays readable.
+        LOGGER.info(
+            "Attempting SearXNG query on instance: %s", redact_url_credentials(base_url)
+        )
         try:
             if http_client is None:
                 async with httpx.AsyncClient(timeout=30) as client:
@@ -170,21 +223,22 @@ async def search_searxng(
                 data = await _do_request_for_url(http_client, base_url)
             break
         except Exception as exc:
-            LOGGER.warning("SearXNG query failed on %s: %s", base_url, exc)
+            # Both operands are redacted: the message is a derived value too.
+            LOGGER.warning(
+                "SearXNG query failed on %s: %s",
+                redact_url_credentials(base_url),
+                redact_url_credentials(str(exc)),
+            )
             last_error = exc
             continue
 
     if data is None:
-        # Chained to the last per-instance failure rather than only quoting it.
-        # The `raise` sits outside the `except` block, so without `from` neither
-        # `__cause__` nor `__context__` is set, and the branch that produced the
-        # message -- the 403 arm, whose whole purpose is to tell an operator to
-        # enable the `json` format -- reaches them as a substring with no
-        # traceback behind it. `last_error` is never None here: the loop runs at
-        # least once, since `_get_searxng_base_urls` raises on an empty list, and
-        # `data` stays None only if every iteration failed.
+        # Chained, not merely quoted: without `from` the arm that produced the message reaches a caller as a bare substring.
+        # Redacted like the log copy above: this is the same operand on the more
+        # exposed surface, since FastMCP serves this message to the MCP client.
         raise SearxngError(
-            f"All configured SearXNG instances failed. Last error: {last_error}"
+            "All configured SearXNG instances failed. Last error: "
+            f"{redact_url_credentials(str(last_error))}"
         ) from last_error
 
     raw_results = data.get("results", [])

@@ -163,8 +163,15 @@ jobs:
         # first browser test owns lowering it -- in the SHRINK direction
         # described above, so the message it would otherwise get names the
         # wrong cause.
+        #
+        # 🔴 **Never carry this count across a merge with the base branch.**
+        # Re-read it from a run of the exact command line below, on the merged
+        # tree, every time the base moves. Adding this branch's new tests to
+        # whatever the base last wrote produces a number from two different
+        # trees, which nobody has observed. Both branches in a merge will have
+        # measured honestly and still disagree.
         run: >-
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 1152
+          --min-selected 1222
