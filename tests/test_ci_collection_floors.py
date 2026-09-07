@@ -1200,6 +1200,12 @@ def test_a_collection_error_is_named_rather_than_counted(tmp_path: Path) -> None
     broken import removed. The status is therefore checked before the count is
     believed.
 
+    ⚠️ **Both halves of the message are asserted, not just the trigger.** The
+    instruction *not* to write the number is the load-bearing half: without it
+    the failure reads like any other mismatch, and the maintainer follows the
+    count. Matching only on the exit status left that sentence deletable with
+    every case in this module green -- measured.
+
     Args:
         tmp_path: Holds a package with one unimportable module.
     """
@@ -1213,8 +1219,17 @@ def test_a_collection_error_is_named_rather_than_counted(tmp_path: Path) -> None
     )
     argv = [*PYTEST_INVOCATION, str(tmp_path)]
 
-    with pytest.raises(pytest.fail.Exception, match="exited 2"):
+    with pytest.raises(pytest.fail.Exception) as refusal:
         _collect(argv, tmp_path / "probe.json")
+
+    message = str(refusal.value)
+    assert "exited 2" in message, "the message must name the status that triggered it"
+    assert "Do NOT write the number" in message, (
+        "the refusal's load-bearing half is the instruction not to write the count; "
+        "without it a collection error reads as a stale floor and the wrong-cause "
+        "diagnosis this check exists to stop returns through the message"
+    )
+    assert "fix the collection first" in message
 
 
 def test_a_child_that_wrote_no_probe_output_is_a_failure(tmp_path: Path) -> None:
