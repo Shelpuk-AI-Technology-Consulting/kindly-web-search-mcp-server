@@ -22,9 +22,9 @@ blind to, both handed here by that step:
 reach, and the scope is load-bearing rather than cautious.** Two inputs escape
 that scope today, both measured, both characterised below rather than repaired:
 a malformed URL raises out of ``urlsplit`` before any guard runs, in **all
-five** parsers, and an over-long StackExchange id raises out of ``int``. §14 of
-``TEST_SUITE.md`` §14 records the class, and is its only owner. Stating the domain is
-what keeps the twenty-one rows below from reading as a universal that a
+five** parsers, and an over-long StackExchange id raises out of ``int``.
+``TEST_SUITE.md`` §14 records the class, and is its only owner. Stating the
+domain is what keeps the twenty-one rows below from reading as a universal that a
 28-character input falsifies.
 
 **What this module deliberately does not own.** The five per-parser modules
