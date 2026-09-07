@@ -80,7 +80,12 @@ def parse_arxiv_url(url: str) -> str:
         raise ArxivError("URL has no hostname.")
 
     host = host_raw.lower()
-    if not host.endswith("arxiv.org"):
+    # `arxiv.org` itself, or a subdomain of it. Written as an equality plus a
+    # dot-prefixed suffix rather than as a bare `endswith("arxiv.org")`, which
+    # also matched `notarxiv.org` -- registrable by anyone, and answered by this
+    # integration instead of by the universal HTML loader that owns unclaimed
+    # hosts.
+    if host != "arxiv.org" and not host.endswith(".arxiv.org"):
         raise ArxivError(f"Unsupported arXiv host: {host}")
 
     path = parsed.path or ""

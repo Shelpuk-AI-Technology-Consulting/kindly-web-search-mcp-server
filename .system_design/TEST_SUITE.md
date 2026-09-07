@@ -464,12 +464,31 @@ examples do not.
 There is **no inverse serializer**, so "round-trip" is not a property this suite
 can state. The per-parser properties are instead:
 
-- *Identifier preservation* — for a generated URL built from known identifiers
-  (site, question id, owner/repo/number, article title, arXiv id), the parser
-  returns exactly those identifiers.
-- *Stable rejection* — a rejected URL raises that parser's own error type, never
-  a bare `Exception`, and rejection does not depend on trailing slashes, case in
-  the scheme, or query-string order.
+- *Identifier preservation* — for a URL built from known identifiers (site,
+  question id, owner/repo/number, article title, arXiv id), the parser returns
+  exactly those identifiers. **Built from a table, not generated.** The word
+  changed when E5-2 landed, rather than the module being bent to fit the older
+  one: E5-1 owns the generated space, and these are per-parser facts over small
+  enumerable inputs, which a parametrised table names in the failure report
+  where a shrunk counterexample would not.
+- *Stable rejection* — a rejected URL raises that parser's own error type, and
+  rejection does not depend on trailing slashes, case in the scheme, or
+  query-string order. **Scoped to the branches each parser's own guards reach**,
+  which is narrower than "never a bare `Exception`" and is narrower for a
+  measured reason: two inputs escape the claim, in **different** ways, and §14
+  records both. A malformed URL escapes **all five** parsers *before any guard
+  runs*, because `urlsplit` raises inside `parsed.hostname`. An oversized
+  StackExchange id escapes **one** parser, *after* its guards have run, because
+  only that parser's conversion is unwrapped — both GitHub parsers wrap the same
+  conversion and raise their own class, arXiv never converts an identifier to an
+  integer at all, and Wikipedia treats the digits as an article title. An earlier
+  draft compressed the two into "two inputs escape every parser before any guard
+  runs", which is true of the first and of neither half of the second, and
+  contradicted §14's own record three sections down.
+  **Asserted over all twenty-one of those branches, minus one named pair that
+  does not hold** — see the landing note below; an earlier draft
+  varied one rejected URL per parser while this sentence read as though it
+  covered the branches, which is a gap the shipped rows now close.
 
 **E5-1 shipped a production fix, following E5-8's precedent above.** A test
 step changing production code is the exception, not the rule, and the reason is
@@ -626,10 +645,14 @@ bring them together. **So apart from that one structurally-separated pair, the
 host predicates are what keeps every pair apart**, and that is what the property
 guards — *in one direction only*, which is the part worth stating precisely.
 Deleting a host guard, or widening it into space another parser
-claims, is killed. Widening one into **unclaimed** space is invisible: measured,
-`notarxiv.org`, `notwikipedia.org` and `notgithub.com` all pass the entire fast
-suite, because nothing then accepts a URL twice and a mutual-exclusivity
-property has nothing to see.
+claims, is killed. Widening one into **unclaimed** space is invisible to *this*
+property: measured while E5-1 was written, `notarxiv.org`, `notwikipedia.org`
+and `notgithub.com` all passed the entire fast suite, because nothing then
+accepts a URL twice and a mutual-exclusivity property has nothing to see. **They
+no longer pass** — E5-2 landed a row per host in
+`tests/test_url_parser_identifiers.py`, which is where that claim lives now. The
+blindness of the property itself is unchanged; what changed is that something
+else covers it.
 
 *An earlier draft closed the sentence above with "the other seven pairs".
 Seven reconciles with none of the three models — they leave eight, ten and six
@@ -663,31 +686,39 @@ Kept because deleting a pre-existing branch is a behaviour change E5-1 was not
 asked for; recorded because the mutation step will otherwise surface it as a
 survivor with nothing to consult.
 
-**Adjacent widenings are recorded, not fixed.** `parse_arxiv_url` matches
-`endswith("arxiv.org")` with **no leading dot**, so `notarxiv.org` is accepted —
-the same defect class as the one E5-1 fixed in StackExchange, but it produces no
-overlap today and so is outside a step whose claim is exclusivity. And the
-`*.stackexchange.com` branch takes only the first label, so
+**Adjacent widenings were recorded here, and E5-2 has since closed the host
+ones.** The paragraph keeps the tense it was written in with the outcome added,
+because the reasoning is what a future reader needs and deleting it would leave
+only the answer. `parse_arxiv_url` matched `endswith("arxiv.org")` with **no
+leading dot**, so `notarxiv.org` was accepted — the same defect class as the one
+E5-1 fixed in StackExchange, but it produced no overlap and so sat outside a step
+whose claim is exclusivity. **Repaired in E5-2**; see its landing note below.
+And the `*.stackexchange.com` branch takes only the first label, so
 `math.meta.stackexchange.com` derives `math` where the API's
 `api_site_parameter` is `math.meta`; a characterisation test pins today's wrong
-answer so a future correction is visible rather than silent. And all four non-StackExchange parsers admit unclaimed host space without any
-test noticing, in two distinct conditions that an earlier draft collapsed into
-one count:
+answer so a future correction is visible rather than silent. **That one is still
+open** — it is a slug-derivation defect, not a host one, and E5-2 closed only the
+hosts. All four non-StackExchange parsers admitted unclaimed host space without
+any test noticing, in two distinct conditions that an earlier draft collapsed
+into one count:
 
-- **arXiv needs no mutation at all.** `endswith("arxiv.org")` is *already* a
-  bare suffix test, so `notarxiv.org` is accepted on `main` today. A live
-  defect, not a survivable mutation.
-- **Three admit a widening mutation** that no test kills: `wikipedia.py`'s
+- **arXiv needed no mutation at all.** `endswith("arxiv.org")` was *already* a
+  bare suffix test, so `notarxiv.org` was accepted on `main`. A live defect, not
+  a survivable mutation — and the one production edit E5-2 shipped.
+- **Three admitted a widening mutation** that no test killed: `wikipedia.py`'s
   `endswith(".wikipedia.org")` weakened to a bare suffix, and both GitHub
   parsers' `host not in {"github.com", "www.github.com"}` weakened to a suffix
-  test.
+  test. Each was re-measured against the full gate selection immediately before
+  E5-2 was written — 858 passed, 2 skipped, on every one — and each now fails a
+  named row.
 
 That is the arithmetic behind "three widenings" and "four parsers" — the two
 numbers count different things and the sentence used to give one of them without
 saying which. All four are the defect class E5-1 fixed on the StackExchange side
-and pinned with the `notstackoverflow.com` rows; all four belong to E5-2's
-stable-rejection claim. All are named here so the next reader
-does not re-derive them, and so a mutation report has an answer to point at.
+and pinned with the `notstackoverflow.com` rows; all four were E5-2's
+stable-rejection claim and all four are now closed. All are named here so the
+next reader does not re-derive them, and so a mutation report has an answer to
+point at.
 
 **`_QUESTION_RE` and `_ANSWER_RE` stay unanchored, and the honest reason is
 narrower than the one first written here.** An earlier version of this paragraph
@@ -697,10 +728,95 @@ closest candidate, the Teams `/c/<team>/questions/<id>/…` form, lives on
 `stackoverflowteams.com`, which this allowlist rejects, so it argues against the
 claim rather than for it. The real reason is simply that after the host fix,
 anchoring buys nothing, and narrowing acceptance is a behaviour change E5-1 was
-not asked to make. Nothing currently guards it: `search`→`match` on either
-pattern passes the whole suite, as does dropping the `q` alternative that real
-short links like `https://es.stackoverflow.com/q/12345` depend on. Those cases
-are handed to E5-2.
+not asked to make. Nothing guarded it when this was written: `search`→`match` on
+either pattern passed the whole suite, as did dropping the `q` alternative that
+real short links like `https://es.stackoverflow.com/q/12345` depend on. All three
+were re-measured before E5-2 and all three still survived; **E5-2 owns them
+now.** The two `search` rows are pinned as *characterisation, not endorsement*,
+and say so in their docstring — the anchoring option this section keeps open is
+expected to **delete** them rather than work around them. The `q` row is an
+ordinary claim: that alternative is what the share dialog produces.
+
+**Done, in E5-2 (2026-09-06).** `tests/test_url_parser_identifiers.py` — 149
+cases over the five parsers, table-driven, no Hypothesis. It owns identifier
+preservation, typed rejection over every one of the twenty-one guard-reached
+branches, the suffix-is-not-subdomain rejection handed here by E5-1, and
+stability of both answers under four surface variations — the rejection half
+crossed against **every** branch rather than one URL per parser, which is what
+turned the eighty-first pair into a finding rather than a blind spot.
+
+**One production edit: the arXiv host guard.** `endswith("arxiv.org")` became
+`host != "arxiv.org" and not host.endswith(".arxiv.org")`. *What changed in
+behaviour*, stated on E5-1's model rather than left to the diff: a host that
+merely ends with the string — `notarxiv.org`, `xarxiv.org`, anything registrable
+— is no longer claimed by the arXiv integration and now falls through to the
+universal HTML loader that owns unclaimed hosts. `arxiv.org` itself and every
+subdomain of it, `export.arxiv.org` included, are unaffected, and a row pins each
+direction: narrowing the guard to an equality fails the subdomain row, widening
+it back fails the `notarxiv.org` row.
+
+**The mutation record, from one measured run each, not from arithmetic.**
+Thirty-nine mutations applied one at a time from a pristine copy held outside the
+working tree; **thirty-seven killed by this module, one killed only by another
+module, one equivalent**:
+
+| Group | Tried | Killed here | Also killed by a per-parser module | Also killed by the exclusivity module |
+|---|---|---|---|---|
+| Every `raise` site in the five parse functions | 21 | 21 | 5 | 1 |
+| Host guards — arXiv reverted and narrowed, the three widenings | 5 | 5 | 0 | 0 |
+| Capture-group and slug derivation | 8 | 7 | 6 | 2 |
+| StackExchange path patterns — `q`, both `search`→`match` | 3 | 3 | 0 | 0 |
+| Path normalisation in `arxiv.py` — `unquote`, `rstrip` | 2 | 1 | 0 | 0 |
+
+The last two columns are why the third is not a coverage claim on its own.
+**Thirteen** of the kills are shared with something that already existed —
+eleven with the five per-parser modules, which all assert identifier
+preservation for their own parser and between them reach five of the twenty-one
+rejection branches, and two more with `test_url_parser_exclusivity.py`; one
+mutation is killed by both, so the distinct total is thirteen rather than
+fourteen. **Twenty-four kills are this module's alone**: fifteen raise sites,
+all five host guards, all three pattern mutations and the `unquote` line. E12-1
+reads this table, and "thirty-seven killed" without the split would credit this
+module with work `tests/test_github_issues.py` was already doing.
+
+**One mutation survives this module, and it is recorded rather than closed.**
+Narrowing `_derive_site_parameter`'s `*.stackexchange.com` branch — dropping the
+`.split(".")[0]` so the whole prefix becomes the slug — leaves all **149** cases
+green. Re-measured against the widened module rather than carried over from the
+88-case measurement it was first written against: none of the rows added by the
+widening reaches a two-label prefix under `stackexchange.com`, and the run
+confirms it rather than the reasoning standing alone. The only allowlisted host with a two-label prefix there is
+`math.meta.stackexchange.com`, whose slug is the **characterised defect** three
+paragraphs above: `test_second_level_meta_community_derives_the_wrong_slug_today`
+in `tests/test_url_parser_exclusivity.py` pins `math`, and that is what kills the
+mutation. A row here would be a second owner of another module's characterisation
+and would break the day the defect is fixed, so E5-2 declined it. What E5-2's own
+StackExchange row *does* pin is the neighbouring **apex `.com` fall-through** —
+`es.stackoverflow.com` reaches that branch, not the `*.stackexchange.com` one,
+which is the opposite of the obvious reading and is why it is written down.
+
+**One equivalent mutant, recorded rather than removed.** `arxiv.py`'s
+`.rstrip("/")`: the next line filters empty segments out of the split, so
+`"/abs/2401.12345/"` yields the same parts with or without it. Measured. Its
+neighbour on the same line, `unquote`, is *not* equivalent and was surviving
+everything until a percent-encoded legacy identifier
+(`hep-th%2F9901001`) was added as a row — found by mutation, not by reading.
+
+**One dimension is unkillable by construction, and says so.** No parser reads
+`parsed.scheme`, and `urlsplit` lowercases `hostname` regardless, so the
+upper-case-scheme variation has no mutation that can fail it. **Twenty-three
+rows** of regression armour — eighteen on the rejection side and five on the
+acceptance side, counted after the widening rather than left at the five the
+figure named when the rejection half varied one URL per parser. Named here so a
+mutation report is not read as coverage.
+
+**Two defects are characterised rather than repaired, and both are in §14.**
+A malformed URL escapes all five parsers as `ValueError` before any guard runs;
+and a trailing slash joins the Wikipedia title. The first is the reason the
+typed-rejection claim above is scoped to guard-reached branches rather than
+stated as a universal — a 28-character input falsifies the universal, so the
+universal was never written.
+
 
 **Environment resolvers.** The `_resolve_*` families in `server.py`,
 `chromium_pool.py` and `nodriver_worker.py`, plus `_parse_port_range`,
@@ -1169,28 +1285,156 @@ process machinery. The address matters to whoever implements this section:
 KINDLY_DIAG {"stage": "...", "msg": "...", ...}
 ```
 
-**Test the live path.** `_split_worker_diagnostics` (`universal_html.py:119`)
+**Test the live path.** `_split_worker_diagnostics` (`universal_html.py:124`)
 parses a whole captured stderr string and **has no callers in `src/` or
 `tests/`**; production streams through `worker_runner._read_stderr_stream` →
 `_consume_stderr_line`. That dead function is a removal candidate, flagged here
-rather than deleted by this document. Since E2-3 it is also the **only**
-`KINDLY_DIAG` parser left in `universal_html.py`, which makes it easier to
-mistake for the live one than it was when both sat in the same file.
+and in §14 rather than deleted by this document. Since E2-3 it is also the
+**only** `KINDLY_DIAG` parser left in `universal_html.py`, which makes it easier
+to mistake for the live one than it was when both sat in the same file.
 
 Both sides ship from the same wheel, so this is an **internal protocol**, not an
 agreement between independently versioned parties. It still earns a contract test
 because the two sides are edited independently and the format is all that holds
 them together.
 
-Extract the frame encoder and decoder into one place and test both directions:
+**E6-2 landed this section, and everything below is now a record of what was
+built rather than a specification of what to build.** The suite is
+`tests/test_worker_frame_contract.py`.
 
-- Emission through the real encoder produces a line the real decoder accepts.
+**The codec lives in `utils/diagnostics.py`.** Chosen over a new module because
+that file already owned the encoder (`emit_diagnostic`) and the ceiling
+(`MAX_LINE_CHARS`); because `nodriver_worker.py` already imports from it with a
+recorded rationale — it is stdlib-only behind empty package `__init__` files, so
+the import costs the worker nothing — and because `worker_runner.py` already
+imports from it, so no cycle appears. It also puts the codec **inside** the
+diff-coverage gate, which its previous home is exempt from (§10.4). The surface
+is four names: `FRAME_PREFIX`, `encode_frame`, `frame_payload` and
+`decode_frame_payload`, the decoder being two functions because the router needs
+three outcomes — not a frame, a malformed frame, a record — and two `None`
+returns express that without a result type.
+
+**`encode_frame` is a serializer and deliberately not the redaction point.** It
+is now the one function both writers share, which makes it the tempting place to
+put sanitization; §7.1 requires that at the top of `Diagnostics.emit` instead,
+because `entries` is returned to the MCP caller as well as written to stderr, and
+redacting in the writer alone would clean stderr while leaving the raw value in
+the response.
+
+**The format had four copies before this step**, two of which wrote it: the
+parent's `emit_diagnostic`, the worker's `_emit_diag` — with its own ceiling
+constant carrying the comment *"Keep in sync with utils.diagnostics.MAX_LINE_CHARS"*
+— and the dead parser, plus the live router. They had already diverged in
+behaviour and not merely in risk: only the shared ceiling handled a payload that
+would not serialize at all, so the worker emitted **nothing** in that case, which
+is indistinguishable from the stage never having been reached. The worker gained
+that fallback by adopting the shared one.
+
+The copies that remain are deliberate and counted, not overlooked — **five sites
+across four files**, plus the definition itself:
+
+| Sites | Where | Why it is exempt |
+|---|---|---|
+| 2 | `scrape/universal_html.py` | `_split_worker_diagnostics`, dead; both go when it does (§14) |
+| 1 | `tests/child_processes/worker_child.py` | a test instrument that must not import the package it calibrates |
+| 1 | `tests/test_worker_child_fixture.py` | that instrument's calibration, which reads the frames as raw bytes and so cannot import production either |
+| 1 | `tests/test_worker_frame_contract.py` | the independent literal anchor — see below |
+
+**The last one is not an oversight, it is what makes the rest checkable.** Once
+both sides of the protocol read one `FRAME_PREFIX`, every assertion computed
+through the codec moves with it, so changing the marker or the JSON separators
+breaks nothing: the format stops being observable from inside the code that owns
+it. One hand-written literal, compared against the constant and against a full
+encoded line, is what restores that.
+
+The table is given as a table because prose undercounted it **twice** — first
+omitting the fixture calibration, then omitting this anchor — while the
+executable allow-list `MARKER_ALLOWANCE` was right both times. Read the count
+off that dictionary, not off this paragraph. `tests/test_worker_frame_contract.py` sweeps every
+source file's *syntax tree* for the marker as a string or bytes literal and holds
+an exact per-file count, so a third copy fails and a vanished exemption fails
+too. The vocabulary is the marker **including its trailing space**: without it,
+`KINDLY_DIAGNOSTICS` — the environment variable that enables diagnostics, a
+different identifier sharing the stem — matches wherever that variable is spelled
+in code, in files the allow-list has no reason to name. **The number of those files
+is deliberately not stated here.** It was written as four, review measured five, and
+it moves whenever anything new reads that variable. What holds the property is an
+assertion — `not "KINDLY_DIAGNOSTICS".startswith(FRAME_PREFIX)` — not a figure in a
+paragraph. This is the third hand-maintained count in this section to be wrong, and
+the first two were corrected rather than removed; removing this one is the change
+that stops the pattern.
+
+**Two of the seven stream claims below were false when the step began, and both
+were fixed here.** Both were measured before being trusted, and the other five
+were measured too rather than assumed:
+
+- *A multi-byte character split across chunks.* `_read_stderr_stream` decoded
+  each chunk independently, so a UTF-8 sequence straddling a read boundary became
+  two invalid fragments and `errors="replace"` rendered each byte as `U+FFFD`.
+  Measured: a frame carrying `✓` came back carrying `���`, and because the
+  corruption sits inside a JSON string the frame still parsed — silently wrong,
+  which is worse than failing. **`_read_stdout_stream`, just above, already
+  stated the rule** — *"a multi-byte character split across two reads would
+  otherwise be corrupted at the seam"* — and avoids it by accumulating undecoded
+  bytes and decoding once at the end. Stderr cannot copy that: it must yield lines
+  before the child exits. It carries an incremental decoder instead. The two
+  readers are written to different rules on purpose, recorded here so the next
+  reader neither re-derives it nor "harmonises" them.
+- *An oversized line is truncated rather than buffered without limit.* This was
+  simply absent. Measured: 655 360 bytes of one unterminated line produced a
+  655 360-character buffer. The fix is a **sliding window** — when no newline has
+  arrived and the buffer exceeds `MAX_STDERR_LINE_CHARS`, the front is discarded.
+  Keeping the *end* rather than the beginning is the load-bearing half of that
+  choice: `_append_tail_text` keeps the most recent text *"because the end of a
+  failing child's stderr is what names the failure"*, and a head truncation would
+  invert that rule for exactly the case it was written for — a child that spews
+  and then dies mid-line would hand the caller the start of the spew and drop the
+  message naming the crash. The window is applied only after every complete line
+  has been drained, because `STREAM_READ_CHUNK` (16 384) exceeds the cap and a
+  bound applied first would shred a chunk of many short, complete lines.
+
+`MAX_STDERR_LINE_CHARS` is **16000**, and it answers to two constituencies. It
+must exceed `len(FRAME_PREFIX) + MAX_LINE_CHARS` (8012) or the parent would cut
+up a frame the worker considers legal; and it bounds the reader's memory, which
+is why it exists at all. A reader who knows only the first will lower it toward
+8013 and lose the second.
+
+**That relation needed a production fix to be true.** The ceiling's truncation
+fallback copied `stage` and `msg` verbatim from the record it was shortening, so
+`MAX_LINE_CHARS` bounded what *triggered* the fallback and never what the fallback
+wrote. Measured: a record with a 50 000-character `msg` produced a
+50 156-character line while reporting `line_truncated: True`. The fallback now
+truncates the fields it copies, so the ceiling is real and the parent's cap rests
+on something. It also **verifies** its own result rather than assuming it:
+`elapsed_ms` is the one field copied without conversion, and a large enough
+integer raises inside `json.dumps` on the fallback itself, after the original was
+rejected for that same reason. Nothing reaches that today — both emitters derive
+it from a monotonic clock — but the function is public, E5-7 will drive it with
+generated values, and a postcondition with one uninspected field is not one.
+
+The seven claims, each pinned by a case that dies when its branch is removed:
+
+- Emission through the real encoder produces a line the real decoder accepts —
+  driven through the worker's real `_emit_diag` and the parent's real
+  `_read_stderr_stream`, not through the codec twice.
 - Streaming consumption handles fragmentation: a frame split across chunk
   boundaries, several frames in one chunk, CRLF endings, EOF with no trailing
   newline, and a multi-byte character split across chunks.
 - Malformed payloads are sampled and capped without raising; non-`KINDLY_DIAG`
   lines survive as human-readable stderr.
 - An oversized line is truncated rather than buffered without limit.
+
+**The instrument is a fed stream, not the fixture child, and that is a decision
+rather than a convenience.** Four of those claims are about *where a chunk
+boundary falls*, and where a boundary falls is a property of pipe timing rather
+than of the child — no process can be asked to split a multi-byte character
+across a 16 KiB read. The cases hand `_read_stderr_stream` exact chunks through a
+stand-in with one `read` method, and a calibration case drives the same bytes
+through a real `asyncio.StreamReader` and requires the same result, so the
+stand-in is not uncalibrated. Nothing in the module sleeps for a duration.
+`.github/review/rules/scrape-browser.md` was narrowed in the same change: it
+previously read *every* hermetic runner case as a finding, which was true of a
+spawn seam and not of a stream reader.
 
 ### 4.4 Response-model invariants
 
@@ -1468,8 +1712,24 @@ about arity, and the case that would need a branching tree does not exist yet.
 There is no flag that
 produces a long line with no newline, or more than two malformed frames, so
 §4.3's "capped without raising" and "oversized line truncated" claims have no
-driver here — they belong with the codec work in E6-2, which also owns the fact
-that the parent implements no line cap at all today. Nothing writes undecodable
+driver here.
+
+**E6-2 closed both, and not with the flags this paragraph anticipated.** No flag
+was added, because the fixture is the wrong instrument for these two and adding
+one would have implied otherwise. Both claims are about what the *parent's*
+stream reader does with bytes arriving in a particular shape, and a real child
+cannot be asked to produce a chosen shape: where a chunk boundary falls is
+decided by pipe timing, not by the child. `tests/test_worker_frame_contract.py`
+feeds `_read_stderr_stream` exact chunks instead, and drives the sample cap past
+three and an unterminated 640 KB line without starting a process. The parent's
+missing line cap — which this paragraph correctly recorded — was fixed there;
+§4.3 carries the measurement and the reasoning.
+
+The rule the two claims illustrate, worth keeping when the next one arrives: a
+claim about *this script's* behaviour belongs to a flag here, and a claim about
+the *parent's* handling of a byte pattern belongs to a fed stream. Parking the
+second kind on a future flag is how a claim ends up with an instrument that
+cannot decide it. Nothing writes undecodable
 bytes to *stdout*, so the runner's `errors="ignore"` decode is undriven. And the
 readiness frame is always emitted, so a fixture-driven run can never produce
 zero worker entries the way the real worker does with diagnostics off; the
@@ -2204,7 +2464,10 @@ job.
 
 ### 7.1 Diagnostics must be sanitized at the boundary
 
-`Diagnostics.emit` and `emit_diagnostic` (`utils/diagnostics.py:133,151`) apply
+`Diagnostics.emit` and `emit_diagnostic` (both in `utils/diagnostics.py`, named
+rather than cited by line: those numbers went stale twice, the second time inside
+the very change that had just corrected them, when a docstring above them grew)
+apply
 **no redaction** — only JSON serialization and a line-length cap. Callers pass
 raw data: `server.py` emits `{"url": url}` and `{"detail": full_detail}` where
 the detail is unfiltered exception text. So
@@ -2221,6 +2484,22 @@ stderr write.** `emit` appends to `self.entries` and then calls
 leaving the raw value in the MCP response — the worse of the two paths. One
 sanitizing step at the top of `emit`, covering both consumers, is the
 requirement.
+
+**`encode_frame` (in `utils/diagnostics.py`) is not that place, and since E6-2
+it is the tempting one.** It is now the single serializer both writers share, so
+it looks like the natural chokepoint — and putting redaction there would produce
+exactly the inversion the paragraph above names, because `Diagnostics.emit`
+appends to `entries` *before* calling it. Recorded here rather than only in that
+function's docstring, since this is the section a redaction author reads first.
+
+**The worker is a third consumer and `Diagnostics.emit` does not cover it.**
+`nodriver_worker._emit_diag` builds its own record and calls `apply_line_limit`
+and `encode_frame` directly, never `Diagnostics.emit`, so a sanitizing step
+placed as required above will **not** reach worker frames. Those frames are
+parsed by the parent and merged into the caller's diagnostics, which is the same
+egress path. E9-1 owns the boundary and should say which of the two it treats as
+the seam; the alternative — a second sanitizing step in the worker — is the
+duplication E6-2 spent its diff removing.
 
 Test the **emitted JSON and the returned `entries`**, not the helper. Policy must
 state, and tests must cover:
@@ -3442,21 +3721,42 @@ for why file-granularity `omit` forces it, and why the split is the same argumen
 §2.1 makes about assertions: the seam belongs in the design, not in a side-table.
 
 **Landed in E2-3, with one cost worth stating.** `worker_runner.py` is not purely
-unhermetic: five helpers moved with the process code that a unit test could
+unhermetic: **six** helpers moved with the process code that a unit test could
 perfectly well drive — `_append_tail_text`, `_consume_stderr_line`,
-`_finalize_stderr_state`, `_maybe_emit_stream_progress` and
-`_subprocess_launch_options`. They are exempted along with it, so those five sit
-outside the diff gate.
+`_finalize_stderr_state`, `_maybe_emit_stream_progress`,
+`_subprocess_launch_options` and `_read_stderr_stream`. They are exempted along
+with it, so those six sit outside the diff gate.
+
+**This said five until E6-2, and the sixth was an undercount rather than a
+change.** `_read_stderr_stream` takes its stream as a parameter and always could
+have been driven by a stand-in; nothing made it hermetic, E6-2 merely did it, and
+`tests/test_worker_frame_contract.py` now drives it with exact chunks. Corrected
+in all three places the figure appears — here, §11.2, and `.coveragerc-gate` —
+because a count restated in three files and edited in one is the drift this
+document keeps rediscovering.
 
 They moved because they have exactly one consumer, the runner, and leaving them
 behind would make `universal_html.py` import from `worker_runner.py` while
 `worker_runner.py` imports nothing back — the loader already imports the runner,
 so the reverse edge is a cycle. The third option, a separate module for the pure
 text and stream helpers, would have kept them gated and was rejected as more
-structure than five single-consumer helpers earn; it remains the move if that
-set grows. Recorded because the classification is *file*-granular by design, and
+structure than the five single-consumer helpers then counted earn; it remains
+the move if that set grows.
+
+> **Deferred (E6-2, 2026-09-06).** That trigger has now been touched: the set
+> reads six. E6-2 did **not** take the move, and the reason is that the count
+> rose by correction rather than by growth — no helper migrated, one was found to
+> have been drivable all along. Against that, the step moved the frame codec the
+> *other* way, out of the runner and into `utils/diagnostics.py`, which is inside
+> the gate; the exempt surface therefore shrank in substance while its count rose
+> by one. Taking the third-module move is a sequencing call for the owner, and a
+> step that did it while also shipping three production fixes would have been
+> four changes in one pull request. Recorded here, with the trigger named, so the
+> next reader does not have to rediscover that it fired.
+
+Recorded because the classification is *file*-granular by design, and
 a reader who takes "omitted" to mean "untestable" would draw the wrong
-conclusion about these five. They are testable, and E5-6 owns testing one of
+conclusion about these six. They are testable, and E5-6 owns testing one of
 them — an L1 test on an omitted module, which is already this suite's practice
 (E5-3 targets `chromium_pool.py`, E5-4 `nodriver_worker.py`; both are omitted).
 
@@ -3924,9 +4224,14 @@ in the terminate or the release itself still leaves it recoverable;
 hands one browser and one profile directory to two callers.
 
 `_build_worker_command` stays with `fetch_html_via_nodriver`; it is pure and
-hermetically testable, so it belongs on the gated side. Five smaller helpers that
-are equally hermetic went the other way, for import-cycle reasons; §10.4 records
-which, and what that costs.
+hermetically testable, so it belongs on the gated side. **Six** smaller helpers
+that are equally hermetic went the other way, for import-cycle reasons; §10.4
+records which, and what that costs. (This said five until E6-2 found
+`_read_stderr_stream` had been drivable all along. Note that §10.4 and
+`.coveragerc-gate` state a *different* reason for the same decision — "more
+structure than a handful of single-consumer helpers earns" — and both reasons
+are real: the cycle rules out leaving them behind, the structure argument rules
+out a third module.)
 
 **The command must not become a parameter of the public fetch API.** Adding a
 `command=` argument to `fetch_html_via_nodriver` would turn "execute an arbitrary
@@ -3952,10 +4257,17 @@ the caller. The streaming claim moved to `tests/test_worker_runner.py`, which
 asserts it against a **real** child process, where no fake can satisfy it. That
 file carries **four** `subsystem` cases — stdout returned, non-zero exit, where
 the timeout budget is read from, and the runner's own emit order — plus six
-hermetic guards that hold the module boundary itself. Until E7-2's fixture-child
-battery lands, those four are the whole of the runner's behavioural coverage,
-and §10.4 control 1's "every omitted module has non-zero coverage in the
-observational report" rests on them; E7-2 should say whether it absorbs them or
+hermetic guards that hold the module boundary itself.
+
+**"Those four are the whole of the runner's behavioural coverage" stopped being
+true at E6-2**, which added a hermetic battery over `_read_stderr_stream`,
+`_consume_stderr_line` and `_finalize_stderr_state` in
+`tests/test_worker_frame_contract.py`. The four `subsystem` cases remain the
+whole of its coverage *of things that need a process* — spawning, exit status,
+the timeout budget, emit order — and that is the claim §10.4 control 1's "every
+omitted module has non-zero coverage in the observational report" actually rests
+on. Until E7-2's fixture-child battery lands, those four still carry it; E7-2
+should say whether it absorbs them or
 leaves them, so the claim does not end up with two owners.
 
 **A second consequence, now closed: `FakeWorkerProcess` had no production
@@ -4132,6 +4444,59 @@ is nothing to test.
   acceptance scenarios are reverse-engineered from tool docstrings rather than
   derived from stated acceptance criteria. Which convention should apply is a
   separate question from this document; the gap is the same either way.
+- **Every URL parser can raise a class the resolver does not catch, and two
+  inputs reach it.** `resolve_page_content_markdown` falls through to the next
+  stage only on each parser's *own* error type, so anything else escapes the
+  function; `get_content` then renders the exception's text into the Markdown it
+  returns to the calling model, and the URL never reaches the remaining stages or
+  the HTML loader. Two mechanisms, both measured on `main` at `7fb3e59`:
+  **(a)** a malformed URL — `https://[oops/abs/2401.12345`, twenty-eight
+  characters, an unmatched bracket read as an IPv6 literal — makes `urlsplit`
+  raise `ValueError` inside `parsed.hostname`, which is the *first* statement of
+  all five parse functions, so all five escape; **(b)** an id over CPython's
+  integer-string conversion ceiling makes `parse_stackexchange_url`'s bare
+  `int()` raise `ValueError`. Both GitHub parsers already wrap their conversion;
+  StackExchange does not.
+  **And the obvious repair for (b) is not a bound.** That ceiling is a
+  process-global interpreter setting — `PYTHONINTMAXSTRDIGITS`,
+  `-X int_max_str_digits`, `sys.set_int_max_str_digits()`. Measured with the
+  limit removed, the parser *accepts* a five-thousand-digit id and would forward
+  it to the Stack Exchange API, so a `try`/`except` around the conversion guards
+  a symptom on default-configured interpreters and nothing elsewhere.
+  **Characterised by E5-2, not repaired**, on the product owner's decision and on
+  the precedent this section already records for E5-8's SerpBase leak: that step
+  was scoped to a single production edit, pinned the behaviour and filed the gap.
+  `test_a_malformed_url_escapes_every_parser_as_a_foreign_class_today`,
+  `test_an_oversized_stackexchange_id_escapes_as_a_foreign_class_today` and
+  `test_the_parser_has_no_bound_of_its_own_on_the_id_length` in
+  `tests/test_url_parser_identifiers.py` pin all three facts, so the day someone
+  repairs it those tests fail and point at this entry. Deciding *where* the guard
+  belongs — five parsers, or one place in the resolver, which would also swallow
+  genuine parser defects — is the open question and has no owner yet.
+- **A trailing slash changes the Wikipedia article title, and in one case
+  changes whether the parser accepts at all.** `_WIKI_PATH_RE` is
+  `^/wiki/(.+)$` and captures greedily, so
+  `https://es.wikipedia.org/wiki/Manzana/` yields the title `Manzana/` and a
+  canonical URL carrying the slash. The MediaWiki request that follows asks for
+  an article that does not exist. **The worse half of the same root cause:**
+  `…/wiki/%09` is *declined* — a tab strips to nothing — while `…/wiki/%09/`
+  captures `%09/`, which unquotes to a tab and a slash and strips to `"/"`, so
+  the parser **returns** `title="/"` and the URL is claimed by the Wikipedia
+  integration instead of declining to the universal loader. Measured across the
+  whole grid: eighty-one (rejection branch, surface variation) pairs exist and
+  that is the **only** one that does not hold. It was found by the automated
+  review on E5-2's pull request, after a version of the module that varied one
+  rejected URL per parser — five of the twenty-one branches — under a design
+  sentence that read as though it covered all of them. The other four parsers
+  are stable under the same variation. **Characterised by E5-2, not repaired** —
+  `test_a_trailing_slash_changes_the_wikipedia_title_today` and
+  `test_a_trailing_slash_turns_the_empty_wikipedia_title_into_a_slash` pin
+  today's answers, and both excluded pairs — `("wikipedia", "trailing_slash")`
+  on the acceptance rows and `("wiki_empty_title", "trailing_slash")` on the
+  rejection rows — are excluded **by name**, so each exclusion is visible in the
+  source rather than absorbed into a smaller claim. §3.1 scopes E5-2's stability claim to *rejection*; normalising the
+  captured title changes which request the integration issues, which is a
+  production decision with no owner yet.
 - **`nodriver` and Chromium version drift** is untested at any layer. The worker
   carries compatibility shims (`_patch_nodriver_network_encoding`,
   `_is_snap_browser`), which implies breakage has happened and will recur.

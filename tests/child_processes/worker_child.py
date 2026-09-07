@@ -504,7 +504,7 @@ def _spawn_grandchild(*, new_session: bool, record_dir: str, depth: int) -> int:
 
     ``new_session`` selects which of the two topologies a real browser can
     present. A production Chromium is launched with ``start_new_session`` set on
-    every POSIX platform (``nodriver_worker.py:611`` spells it
+    every POSIX platform (``nodriver_worker.py:604`` spells it
     ``start_new_session=(os.name == "posix")``), which makes it its own session
     and group leader and puts it outside any process group a reaper could aim at
     the worker; the default here inherits this process's group instead. A reaper

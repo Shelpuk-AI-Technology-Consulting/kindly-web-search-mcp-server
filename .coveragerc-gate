@@ -28,12 +28,21 @@ relative_files = true
 # runner could not be exempted while it still lived inside a module that must
 # stay in the gating scope.
 #
-# It carries five helpers that ARE hermetically testable and are exempted with
+# It carries six helpers that ARE hermetically testable and are exempted with
 # it: the tail accumulator, the stderr line consumer and its finaliser, the
-# stream-progress emitter, and the platform launch options. Splitting them into a
-# third module would keep them gated, and was rejected as more structure than a
-# handful of single-consumer helpers earns. The cost is real and is recorded
-# here rather than discovered later: those five are outside the diff gate.
+# stream-progress emitter, the platform launch options, and the stderr stream
+# reader itself. Splitting them into a third module would keep them gated, and
+# was rejected as more structure than a handful of single-consumer helpers earns.
+# The cost is real and is recorded here rather than discovered later: those six
+# are outside the diff gate.
+#
+# This said five until E6-2. The sixth, `_read_stderr_stream`, is a correction
+# rather than a change -- it takes its stream as a parameter and always could
+# have been driven by a stand-in, which `tests/test_worker_frame_contract.py`
+# now does. That step moved the frame codec the other way, out of this module
+# and into `utils/diagnostics.py`, so the exempt surface shrank in substance
+# while its count rose by one. TEST_SUITE.md section 10.4 records why the third
+# module was still not taken.
 omit =
     */scrape/nodriver_worker.py
     */scrape/chromium_pool.py

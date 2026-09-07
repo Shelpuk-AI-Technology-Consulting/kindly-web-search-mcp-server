@@ -144,10 +144,22 @@ Two more, both load-bearing and listed in `python-tests.md`:
 `test_worker_command_builder.py` owns the worker command's exact shape and sweeps
 both modules' public surfaces for a command parameter, and `test_worker_runner.py`
 holds the loader/runner boundary described above and drives the runner against a
-real child process. **The runner has no hermetic seam by design**, so a reviewer
-should expect its behavioural cases to spawn something and be marked `subsystem`;
-a change that adds a spawn-injection point to make them hermetic is a design
-change to argue for, not a test improvement.
+real child process. **The runner has no hermetic *spawn* seam by design**, so a
+reviewer should expect cases about spawning, exit status, timeout and process
+termination to start something and be marked `subsystem`; a change that adds a
+spawn-injection point to make those hermetic is a design change to argue for,
+not a test improvement.
+
+**That does not extend to the stream readers, and the distinction is the whole
+of the rule.** `_read_stderr_stream` takes its stream as a parameter, so feeding
+it exact chunks replaces no process and moves no boundary. The frame-format
+contract suite does exactly that in `tests/test_worker_frame_contract.py`,
+unmarked and in the fast lane,
+because four of the frame-format claims are about *where a chunk boundary falls*
+— and where a boundary falls is decided by pipe timing, not by the child, so a
+real process cannot be asked to put one in a chosen place. For those claims a
+spawned child is not merely slower, it is unable to decide them. Hermetic cases
+over a reader are ordinary work; hermetic cases over the spawn are the finding.
 
 The split between the first two is deliberate and worth keeping. Flag and
 default resolution — sandbox, browser executable, retry attempts, the Chromium

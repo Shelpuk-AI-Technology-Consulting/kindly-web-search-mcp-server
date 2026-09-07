@@ -1058,9 +1058,13 @@ duplicating tests or touching the same files.
   mutant into a killed one. Stated as three numbers because E12-1 consults this
   record and "no survivors" alone cannot be reconciled with the equivalents named
   below: the equivalent is the `meta.<x>.com` branch, which is *not* counted
-  among the nine, and three further mutations survive **by construction** —
+  among the nine, and three further mutations survived **by construction** —
   widening the non-StackExchange host guards into unclaimed space, which this
-  property cannot see and E5-2 now owns. Three findings came from hunting
+  property cannot see. **That number is now zero, and not because this property
+  changed:** E5-2 landed a row per host in
+  `tests/test_url_parser_identifiers.py`, so the mutations are killed there.
+  Corrected here rather than only in E5-2's bullet, because a stale survivor
+  count is what E12-1 would consult. Three findings came from hunting
   survivors rather than from this bullet: the dot (`notstackoverflow.com` became
   a community and every test passed), the generator crossing path prefixes
   instead of identifier vocabularies (which left the arXiv and Wikipedia guards
@@ -1077,11 +1081,16 @@ duplicating tests or touching the same files.
   is observable by definition; it is a recorded defect, filed in §3.1 under the
   widenings left unfixed. An earlier draft called them two, contradicting this
   bullet's own singular count three sentences above.
-- **E5-2.** For each of the five parsers: a generated URL built from known
-  identifiers returns exactly those identifiers; a rejected URL raises that
-  parser's own error type; rejection is stable across trailing slashes, scheme
-  case and query order. *Verify:* each property fails if its parser's group
-  extraction is off by one, and if the parser raises bare `Exception`.
+- **E5-2.** For each of the five parsers: a URL built from known identifiers
+  returns exactly those identifiers; a rejected URL raises that parser's own
+  error type; rejection is stable across trailing slashes, scheme case and query
+  order. *Verify:* each property fails if its parser's group extraction is off by
+  one, and if the parser raises bare `Exception`.
+
+  **"Built", not "generated" — the word changed when the step landed rather than
+  the module being bent to fit it.** E5-1 owns the generated space. These are
+  per-parser facts over small enumerable inputs, and a parametrised table names
+  each case in the failure report where a shrunk counterexample would not.
 
   **Also owns, handed over by E5-1: suffix-is-not-subdomain rejection for the
   four non-StackExchange parsers.** *Verify additionally:* each parser rejects a
@@ -1102,6 +1111,42 @@ duplicating tests or touching the same files.
   belonging here: `_QUESTION_RE`/`_ANSWER_RE` survive `search`→`match`, and
   `_QUESTION_RE` survives losing its `q` alternative, which real short links
   such as `https://es.stackoverflow.com/q/12345` depend on.
+
+  **Landed.** `tests/test_url_parser_identifiers.py` — 149 table-driven cases.
+  It ships **one** production edit, the arXiv host guard, which the bullet above
+  hands here by name: `endswith("arxiv.org")` became
+  `host != "arxiv.org" and not host.endswith(".arxiv.org")`, so a host that
+  merely ends with the string now falls through to the universal HTML loader.
+  Both directions are pinned — narrowing the guard to an equality fails the
+  `export.arxiv.org` row.
+
+  **Thirty-nine mutations tried: thirty-seven killed here, one killed only by
+  `test_url_parser_exclusivity.py`, one equivalent**, and thirteen of the
+  thirty-seven are shared with a module that already existed rather than owned
+  here. The per-group table, the survivor and its owner, and the equivalent are
+  in §3.1 of `TEST_SUITE.md`, written once from one measured run; E12-1 reads it
+  there.
+
+  **Three claims were narrowed against what was measured, and the narrowing is
+  the finding.** The bullet above says a rejected URL raises the parser's own
+  type. A twenty-eight-character malformed URL falsifies that in **all five**
+  parsers — `urlsplit` raises inside `parsed.hostname`, the first statement of
+  every parse function — and an over-long StackExchange id falsifies it in one.
+  So the shipped claim is scoped to the branches each parser's own guards reach,
+  all twenty-one of them, and the two escapes are pinned as characterisation and
+  filed in §14. Likewise "rejection is stable across trailing slashes" needed
+  narrowing on **both** sides, and only the acceptance side was obvious. A
+  trailing slash changes the Wikipedia title, so the acceptance rows exclude that
+  pair by name. It also flips one *rejection* into an acceptance —
+  `…/wiki/%09` is declined and `…/wiki/%09/` returns `title="/"` — which the
+  first version of this step could not see, because its stability rows varied one
+  rejected URL per parser while the bullet above quantified over the branches.
+  The shipped rows cross **every** branch: eighty-one pairs, of which that is the
+  only one that does not hold, and it is excluded by name too. Repairing either was
+  declined by the product owner on E5-8's precedent — a test step ships one
+  production edit — and, for the id, because the ceiling is a process-global
+  interpreter setting rather than anything the parser enforces.
+
 - **E5-3.** Owns `server.py`'s `_resolve_transport`, `_resolve_host_port`,
   `_resolve_tool_total_timeout_seconds`, `_resolve_web_search_max_concurrency`,
   `_resolve_transport_security`, `_cors_origin_regex`, `_get_int_env`,
@@ -1214,7 +1259,11 @@ duplicating tests or touching the same files.
   boundary cases at exactly the limit, one under and one over; each fails if the
   comparison operator is flipped.
 - **E5-7.** Scoped to what `redact_url_credentials`, `mask_env_values`,
-  `truncate_text` and `_apply_line_limit` do **today**, extending
+  `truncate_text` and `apply_line_limit` do **today** — E6-2 made that last one
+  public, gave it a docstring and fixed it to bound the record it *emits* rather
+  than only the one it rejects, so "today" means after that step, and
+  `tests/test_worker_frame_contract.py` already covers the ceiling's two
+  fallbacks — extending
   `test_diagnostics_masking.py` (8 tests, passing) with property-based cases. It
   merges green; every emit-boundary assertion belongs to E9-1.
   *Verify:* properties fail if a masking rule is removed; no test added here fails
@@ -1318,6 +1367,50 @@ duplicating tests or touching the same files.
   EOF without newline, multi-byte split across chunks, malformed payload capping,
   oversized line truncation — each failing if its branch is removed.
   `_split_worker_diagnostics` is dead code; flag it for separate removal.
+
+  **Landed.** The codec is in `utils/diagnostics.py` — `FRAME_PREFIX`,
+  `encode_frame`, `frame_payload`, `decode_frame_payload` — and both writers and
+  the live reader route through it; the suite is
+  `tests/test_worker_frame_contract.py`, 44 cases, hermetic. §4.3 carries the
+  reasoning. `_split_worker_diagnostics` is untouched and still flagged (§14).
+
+  **It shipped three production fixes, which is two more than a test step should
+  and each is recorded where it was found.** Two were §4.3 claims that were false
+  when measured: a multi-byte character split across a chunk boundary was
+  corrupted (`✓` → `���`, inside a frame that still parsed), and an unterminated
+  line was buffered without limit (655 360 bytes in, 655 360 characters held).
+  The third fell out of the second: the line cap is only sound if a legal frame
+  cannot exceed it, and the ceiling's truncation fallback copied `stage` and
+  `msg` verbatim, so a 50 000-character `msg` produced a 50 156-character line
+  while reporting `line_truncated: True`. Fixing the first two without the third
+  would have shipped a cap resting on a false premise.
+
+  **Validated by mutation, not by coverage:** 26 injections, 25 killed, 1
+  discarded as a proven equivalent mutant — flipping the buffer bound's `>` to
+  `>=` cannot change execution, because `buffer[-N:]` is the identity when the
+  buffer is exactly `N`. One genuine gap was found this way and closed: the
+  "a chunk of many complete lines is not truncated as one" case originally
+  asserted on the stderr tail, which carries its own 4000-character cap and so
+  had already discarded the damage before the assertion looked. It asserts on
+  frames now, which are uncapped.
+
+  > **Deferred:** the `--min-selected` floor in `.github/workflows/tests-broad.yml`. That
+  > file's own comment requires the number to be updated "in the same pull
+  > request that deliberately adds tests to this selection", and this step adds
+  > 44. It was **not** updated here: the floor reads 787 while `main` already
+  > collects 827, so the 40-test drift predates this step, and **KMCP-109 owns
+  > repairing it** and was in flight in another worktree when this landed.
+  > Editing the same line from two branches would have produced a conflict on a
+  > number both sides would then have had to re-measure anyway. The floor is a
+  > floor, so 44 further tests cannot breach it. Recorded rather than silently
+  > skipped, because the workflow comment reads as an unconditional obligation
+  > and the next author will otherwise think this step ignored it.
+
+  > **Deferred:** §10.4's "a separate module for the pure text and stream
+  > helpers … remains the move if that set grows" now reads six rather than five.
+  > Not taken here, and §10.4 carries the reasoning: the rise is a correction
+  > rather than growth, and this step moved the codec the other way — into the
+  > gated module — so the exempt surface shrank in substance.
 - **E6-3.** *Verify:* `page_content` is a `str` on every failure path — timeout,
   handler exception, unsupported type, empty provider result — and each assertion
   fails if the `None` conversion is removed from that branch.
