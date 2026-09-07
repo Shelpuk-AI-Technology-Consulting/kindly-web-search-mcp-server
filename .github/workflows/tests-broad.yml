@@ -64,10 +64,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     # 🔴 Measured, not guessed, and strictly below the runner's ceiling. The
     # selection took 8m39s on a developer's Linux machine when this cap was set,
-    # at 785 passed, 2 skipped, 787 selected. That reading is left as it was
-    # taken rather than renumbered as the suite grows: the runtime beside it has
-    # not been re-measured, and substituting today's count would fabricate a
-    # provenance for the cap. This cap is roughly seven times that, because it
+    # at 785 passed, 2 skipped, 787 selected. ⚠️ That is the run this cap was
+    # DERIVED from, and it is deliberately left as it was taken rather than
+    # renumbered as the selection grows: the runtime beside it has not been
+    # re-measured, and substituting today's count would fabricate a provenance
+    # for the cap. Re-deriving it needs a fresh timing on comparable hardware,
+    # which nobody has taken. The live figure is the floor below -- read it
+    # there rather than from a copy here, which is the whole subject of that
+    # floor's own comment. This cap is roughly seven times that measured
+    # duration, because it
     # must also cover Windows -- where a suite that spawns child processes and
     # shells out to mypy commonly runs two to three times slower -- plus a cold
     # dependency install. Both labels above are ordinary GitHub-hosted runners
@@ -155,9 +160,11 @@ jobs:
         # test carrying a `chromium`, `live` or `package` marker is deselected
         # here, so it lowers this count. Those three markers select zero today,
         # so this floor is currently the whole suite; the step that adds the
-        # first browser test owns lowering it.
+        # first browser test owns lowering it -- in the SHRINK direction
+        # described above, so the message it would otherwise get names the
+        # wrong cause.
         run: >-
           python -m pytest
           --ignore=tests/package
           -m "not live and not chromium and not package"
-          --min-selected 894
+          --min-selected 1087
