@@ -13317,5 +13317,141 @@ class OutcomeChainCancellationWiringTests(unittest.TestCase):
                     "superseded push comments or annotates once per push",
                 )
 
+
+class GuardTableCountMatchesItsRowsTests(unittest.TestCase):
+    """The table of load-bearing tests states its own size, and it had drifted.
+
+    🔴 **Measured: the document read "Fifteen tests exist" above sixteen rows.**
+    The word was right when it was written; a later pull request added a row and
+    did not touch it. Nothing paired the two, so the count drifted in the very
+    document that lists the guards against drift.
+
+    ⚠️ **The word is what a reader trusts to know whether a row is missing.** A
+    reviewer checking "is my new guard listed?" counts rows against the word. A
+    word that is one low makes a *missing* row look like a present one, which is
+    the reading that lets a guard land unlisted -- and an unlisted guard is one a
+    later author may weaken without the table telling them not to.
+
+    ⚠️ **Read as text on a bare interpreter**, like every other assertion in this
+    suite: no install, no markdown parser.
+    """
+
+    RULES = Path(__file__).resolve().parents[1] / "rules" / "python-tests.md"
+
+    HEADER = "| Test | What it holds |"
+
+    #: Spelled out because the document spells its counts out, in the house style
+    #: of "eighteen cases" and "thirty-six cases" elsewhere on the page. Digits
+    #: would read as a different document.
+    NUMBER_WORDS = (
+        "zero one two three four five six seven eight nine ten eleven twelve "
+        "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty "
+        "twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six "
+        "twenty-seven twenty-eight twenty-nine thirty"
+    ).split()
+
+    def _counts(self, text):
+        """Return the count the prose states and the number of table rows.
+
+        Args:
+            text: The rules document, as text.
+
+        Returns:
+            A `(stated, rows)` pair.
+
+        Raises:
+            AssertionError: When the sentence or the table is absent, or the
+                sentence names a word this class cannot read as a number. Each
+                of those would otherwise make the comparison below vacuous.
+        """
+
+        stated = re.search(
+            r"^(\w+(?:-\w+)?) tests exist to hold an invariant", text, re.M
+        )
+        self.assertIsNotNone(
+            stated, "the guard table no longer states how many tests it lists"
+        )
+        word = stated.group(1).lower()
+        self.assertIn(
+            word,
+            self.NUMBER_WORDS,
+            f"{stated.group(1)!r} is not a number word this check can read; "
+            "extend NUMBER_WORDS rather than switching the document to digits",
+        )
+
+        self.assertIn(self.HEADER, text, "the guard table's header row moved")
+        body = text[text.index(self.HEADER) :].splitlines()[1:]
+        # The separator row is dropped; the table ends at the first non-row line.
+        rows = 0
+        for line in body[1:]:
+            if not line.startswith("|"):
+                break
+            rows += 1
+        return self.NUMBER_WORDS.index(word), rows
+
+    def test_the_stated_count_matches_the_committed_table(self):
+        """The live document, which is what a reviewer actually counts against."""
+
+        stated, rows = self._counts(self.RULES.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            stated,
+            rows,
+            "the guard table says one number and lists another; a new "
+            "load-bearing test must be added to the table AND to the sentence "
+            "above it, in the same pull request",
+        )
+
+    def _document(self, word, rows):
+        """Compose a rules document stating `word` above `rows` table rows.
+
+        Args:
+            word: The count as the prose spells it.
+            rows: How many rows to write into the table.
+
+        Returns:
+            The synthetic document.
+        """
+
+        body = "".join(f"| `t{n}.py` | holds x |\n" for n in range(rows))
+        return (
+            f"{word} tests exist to hold an invariant that nothing else "
+            f"enforces.\n\n{self.HEADER}\n|---|---|\n{body}\nProse after.\n"
+        )
+
+    def test_a_word_one_low_fails_the_comparison(self):
+        """The direction that actually happened: a row added, the word left alone.
+
+        Asserting only that the pair is read correctly would leave the check
+        itself untested -- the reader could be perfect and the comparison absent.
+        """
+
+        stated, rows = self._counts(self._document("Two", 3))
+
+        self.assertEqual((stated, rows), (2, 3))
+        self.assertNotEqual(stated, rows, "this is the pair the live case rejects")
+
+    def test_a_word_one_high_fails_the_comparison(self):
+        """The opposite direction, because a deleted row is the same defect.
+
+        One case per direction: a check written as "at least as many rows as the
+        word claims" passes the low case and fails nothing.
+        """
+
+        stated, rows = self._counts(self._document("Four", 3))
+
+        self.assertEqual((stated, rows), (4, 3))
+        self.assertNotEqual(stated, rows, "this is the pair the live case rejects")
+
+    def test_a_word_that_matches_is_accepted(self):
+        """The control. Without it, a `_counts` that always disagreed would pass
+        both cases above and fail only the live document, which reads as drift in
+        the document rather than a broken check."""
+
+        stated, rows = self._counts(self._document("Three", 3))
+
+        self.assertEqual(stated, rows)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

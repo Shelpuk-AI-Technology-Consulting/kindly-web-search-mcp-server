@@ -46,3 +46,10 @@ __pycache__/
 # failing examples to replay -- valuable on the machine that found them,
 # meaningless anywhere else, and it must never be what makes a suite green.
 /.hypothesis/
+
+# `uv run` writes a lock as a side effect, and `git add -A` then commits it. The
+# documented install path re-resolves from PyPI and ignores a lock, so a
+# committed one is a second resolution authority contradicting `pyproject.toml`'s
+# bounds -- see the comment there, TEST_SUITE.md section 1.3, and
+# `tests/test_dependency_constraints.py`. It arrived that way once.
+uv.lock

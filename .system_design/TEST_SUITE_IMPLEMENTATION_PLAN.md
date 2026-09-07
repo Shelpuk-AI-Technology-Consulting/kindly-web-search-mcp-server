@@ -885,10 +885,17 @@ marker-selected pytest invocation, so the option does not apply. Its equivalent
 non-vacuity check is in E4-5 — the configured target modules must exist and be
 reported as checked, so a job pointed at a path that no longer exists fails
 instead of passing with nothing to do. A floor is committed alongside the workflow
-and **updated in the same PR whenever tests are deliberately added to or removed
-from that selection**; a job whose selector silently stops matching is otherwise
-green while running nothing. Each job's acceptance includes: a deliberately
-typo'd selector fails the job.
+and **updated in the same PR whenever what that selection collects changes, for
+any reason** — not only a deliberate addition or removal of tests, and not only a
+change under `tests/`: the count moves when a parametrization source moves,
+including one held in a design document. `tests/test_ci_collection_floors.py`
+holds each declared floor to the count its own selection collects, so a stale
+number is red rather than merely wrong; a job whose selector silently stops
+matching is otherwise green while running nothing. **A job added to this list
+must be one that the guard can collect** — it refuses a floor whose selection it
+cannot reproduce, and recording the job in `FLOOR_BEARING_WORKFLOWS` is where
+that is decided. Each job's acceptance includes: a deliberately typo'd selector
+fails the job.
 
 - **E4-1.** **Extend the runner-ceiling table before this lands, or the branch is
   red.** A CI defect fixed on 2026-09-04 added `DeclaredJobCapIsEnforceableTests`
@@ -942,11 +949,15 @@ typo'd selector fails the job.
   >   while the broad selection is roughly nine minutes per leg.
   >
   > **Deferred:** a typo in an *exclusion* term of the marker expression is
-  > invisible to the floor, measured — `-m "... and not packaage"` still selects
-  > 787 and exits 0. The floor catches under-selection, which is the dangerous
-  > case; it cannot catch an exclusion that excludes nothing while the excluded
-  > markers select nothing anyway. This resolves itself as those markers acquire
-  > tests, and is recorded rather than solved.
+  > invisible to the floor, measured when this step landed — `-m "... and not
+  > packaage"` still selected the whole count of the day, 787, and exited 0.
+  > (That figure is the reading of the day and is not the current count; the
+  > current one lives in the workflow.) The floor catches under-selection, which
+  > is the dangerous case; it cannot catch an exclusion that excludes nothing
+  > while the excluded markers select nothing anyway. **Holding the floor to
+  > equality does not close this**, for the same reason: a typo'd exclusion term
+  > changes no count, so both sides still agree. This resolves itself as those
+  > markers acquire tests, and is recorded rather than solved.
 - **E4-2.** No diff to the repository. This is §8B's minimum viable gate and it
   lands immediately after green — which is why E4-3 declares `complete E4-2`
   rather than relying on prose ordering.
@@ -957,7 +968,12 @@ typo'd selector fails the job.
   `subsystem` selecting `-m "subsystem and not chromium and not live"` on both
   platforms; both join `ci-required.needs`.
   *Verify:* every test that ran in E4-1's broad job runs in exactly one of the
-  two; `--min-selected` floors are set from the counts observed in E4-1.
+  two; each new job's `--min-selected` floor is **measured on this step's own
+  branch**, never carried over from E4-1 — that carried-over number is the defect
+  §10.3 now records. This step deletes one floor and adds two, so it also updates
+  `FLOOR_BEARING_WORKFLOWS` in `tests/test_ci_collection_floors.py`; the guard
+  fails on a floor in a file it does not record, and on a recorded file that
+  stopped declaring one, so neither half can be forgotten quietly.
 - **E4-4.** The `fast` selector with `pdf-advanced` installed, Python 3.13 only.
   Created and activated together: its tests already exist, so §1.2's split does
   not apply. *Verify:* a PDF-path test that skips without the extras runs here;
@@ -1598,20 +1614,26 @@ duplicating tests or touching the same files.
   are hermetic and belong in the fast lane. Every claim this step adds there
   needs its own `chromium` or `subsystem` marker, or a step written against a
   locally installed Chromium quietly acquires cases that run everywhere.
-  **This step therefore owns lowering the broad job's `--min-selected` floor,
-  and its acceptance check must say so.** E4-1 measured that floor at 787, and it
-  has been re-measured upward since as later steps added tests — **read the
-  current value from `tests-broad.yml`, never from this sentence**, which records
-  what E4-1 observed rather than what the job declares today. Whatever its
-  value, that floor is the *whole* suite, because `chromium`, `live` and
-  `package` today select zero of it. The first `chromium`-marked case this step adds is
-  deselected by the broad job and drops the count below the floor, so the job
-  exits 4 with *"check the -m expression against the registered markers"*: a
-  message naming the wrong cause, on a step whose selector is fine. §10.3's
-  maintenance rule covers deliberate additions **to** a selection and does not
-  cover this shape, which is a deliberate addition **outside** one.
-  *Verify, added:* the broad job's floor is lowered in the same pull request by
-  exactly the number of cases this step marks, read from an observed run.
+  **This step therefore owns lowering the hermetic selection's `--min-selected`
+  floor, and its acceptance check must say so.** Read the current floor from the
+  workflow that declares it -- `tests-broad.yml` today -- and never from a number
+  quoted here or in an earlier step's notes, which record what was observed then
+  rather than what the job declares now — and note that E4-3 will by then have replaced the single broad
+  job with the `fast` and `subsystem` pair, so the floor to lower may be two
+  floors in two files. The first `chromium`-marked case this step adds is
+  deselected by that selection and drops the count below the floor. **That is
+  the direction in which the guard cannot help**, and knowing so in advance is
+  the point of this note: a shrink trips pytest's own `--min-selected` check
+  during collection, so the job exits 4 with *"check the -m expression against
+  the registered markers"* — a message naming the wrong cause on a step whose
+  selector is fine — and `tests/test_ci_collection_floors.py` never runs to say
+  otherwise. Run that guard locally, where no floor is passed, and it names both
+  numbers and the line to write.
+  *Verify, added:* each affected floor is re-measured in the same pull request
+  and written from that observed run. **Not** computed by subtracting the number
+  of cases this step marks: arithmetic on a measurement invents a number nobody
+  observed, and the equality is checked against the tree rather than against the
+  subtraction.
   **Added scope: settle one §10.4 sentence this step is now the owner of.** §10.4
   holds two positions about hermetic tests on `omit`-ed modules and nothing
   reconciles them. One blesses the practice — "an L1 test on an omitted module,
@@ -1773,8 +1795,17 @@ what flips if a policy proxy is ever added.
   synthetic report with a zero-covered gating module fails; non-zero passes.
 - **E10-3.** The `coverage` job of §10.3 — pinned lane, source checkout,
   `pip install --no-deps -e .`, hermetic selection. **Reporting only.**
+  **This job runs its selection under `coverage run`, so its command does not
+  open with `python -m pytest` and `tests/test_ci_collection_floors.py` refuses
+  it.** That guard holds every declared floor to the count its selection
+  collects, and refusing what it cannot reproduce is deliberate — so this step
+  decides one of two things and records which: teach the guard that spelling, or
+  declare no floor here and satisfy §10.3's non-vacuity requirement another way.
+  Deciding neither leaves the job either red or unguarded.
   *Verify:* produces `coverage.xml` and `coverage.json`; the import-resolution
-  assertion confirms the working tree is measured, not an installed wheel.
+  assertion confirms the working tree is measured, not an installed wheel; the
+  floor decision above is recorded in the workflow and, if a floor is declared,
+  the job is in `FLOOR_BEARING_WORKFLOWS`.
 - **E10-4.** `parallel = true` + `patch = subprocess` in the `subsystem` job,
   local `coverage combine`, HTML/JSON artefact with `if-no-files-found: error`.
   *Verify:* `worker_runner.py` shows non-zero coverage; a forcibly killed child

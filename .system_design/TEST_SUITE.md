@@ -3669,19 +3669,108 @@ under-selection fails at collection (exit 4, with the count in the message),
 while a genuine test failure keeps its own exit 1 — no shell arithmetic in
 between.
 
-**A floor detects loss, not omission, and needs a maintenance rule.** If forty
-tests match today and ten *new* tests are added without the marker, a minimum of
-forty still passes. So: the expected minima are committed alongside the workflow,
-and any deliberate addition or removal of tests in a marked area updates the
-count in the same PR, where a reviewer sees it. The count is a tripwire for
-accidental loss, not a census.
+**A floor detects loss, not omission — so the declared value is held to
+equality.** If forty tests match today and ten *new* tests are added without the
+marker, a minimum of forty still passes. As a pure floor the number is a tripwire
+for accidental loss and nothing more. That was the original design, with a
+maintenance rule to go with it: the minima are committed alongside the workflow
+and updated in the pull request that changes the selection.
+
+**That rule failed within an hour of being written, in the pull request that
+wrote it.** Two branches landed close together. The one adding forty tests merged
+first; the one declaring the floor merged second, carrying a count read from the
+tree *before* that merge. Neither branch was wrong on its own — the number was
+correct when it was read and the tests were correct when they were added.
+**A count calibrated in one branch is invalidated by any other branch that merges
+first, and nothing rechecked it at merge time.** The two merges were
+twenty-eight seconds apart, so the gate went live forty tests short; two further
+merges the same evening took the gap to seventy-three before anyone measured it.
+Either figure is room for a whole subsystem to leave the gate while it stayed
+green, and the second is the one that shows the gap *widens* on its own.
+Reviewer attention cannot see a conflict between two branches no reviewer
+read together, so the rule is enforced by a test rather than stated.
+
+`tests/test_ci_collection_floors.py` recovers every `--min-selected` declared
+under `.github/workflows/`, collects that job's own selection in a child process
+and requires the two numbers to be **equal**. Six things about that are
+decisions rather than details:
+
+- **Equality rather than a bound, because the equality is what fixes the race.**
+  Every pull request that changes the collected count must edit one line of a
+  workflow, so two branches that both change it collide in git and a person
+  resolves the conflict. A bounded slack — `declared <= collected <= declared +
+  K` — costs less friction and restores the race for any two branches that fit
+  inside `K`, with no principled value for `K`.
+- **Declared rather than derived, because a derived floor cannot detect loss.** A
+  number computed from the tree at run time falls whenever the tree falls, so
+  tests silently disappearing take the expectation down with them and both sides
+  agree on nothing. The committed number keeps the tripwire; the guard supplies
+  the maintenance the tripwire needed.
+- **Run-time semantics are unchanged.** `pytest_collection_finish` still fires
+  only when `minimum and not session.testsfailed and len(session.items) <
+  minimum` — the stand-down on an already-failed run included, unchanged, for
+  the reason measured above. The option's help text — "Fail if fewer than N
+  tests are selected" — stays accurate as written.
+  `--min-selected` is a floor when pytest reads it. Only the *declared* value is
+  an equality, and only a test enforces that.
+- **A child that exited non-zero is refused, not counted.** Measured: an
+  unimportable module makes the collecting child exit 2 while the probe file is
+  written anyway, with that module's tests absent. Read silently, the smaller
+  count is indistinguishable from a stale floor, and the guard's own message
+  would instruct lowering the gate by exactly the tests the break removed.
+- **The child runs without pytest's own steering variables.** `PYTEST_ADDOPTS`
+  is prepended to a child's command line and its `--ignore` entries append rather
+  than replace, so a value exported in a developer's shell shrinks the child's
+  collection below the job's — again in the shrink direction, which is the one
+  where this guard's message is the only source of the number.
+- **The count is read from `tests/_baseline_probe.py`, never from pytest's
+  summary line.** Measured: with nothing deselected pytest prints `860 tests
+  collected`; with anything deselected it prints `857/860 tests collected (3
+  deselected)`, and the obvious regex takes the pre-deselection number of the
+  two. The first deselection in the broad selection arrives with the browser
+  tests — the step this guard exists to help.
+
+**What the equality costs, recorded because it will surprise someone.** The
+number becomes derived-but-committed data, so anything that changes how many
+tests are collected changes it, not only adding a test. Cases parametrized over a
+policy held in *this document* move the count when a row is added to the policy:
+**adding a sanitation row to §3.3 requires editing a CI workflow in the same pull
+request.** That is the price of the number being checkable at all, and it is
+cheaper than the number being wrong.
+
+**A selection that collects zero cannot carry an equality, and does not need
+one.** Only a positive floor arms the run-time guard, so a job whose markers
+select nothing is red by construction — which is exactly §1.2's invariant that a
+job never becomes required before its tests exist. Such a job has no floor to
+hold until its tests land, and the guard has none to check.
+
+**Two jobs will have to teach the guard something before they can carry a floor,
+and both are named here rather than deferred silently.**
+`tests/test_ci_collection_floors.py` reproduces a job's invocation in a child, so
+it refuses any command it cannot reproduce — which is the correct behaviour and
+also a bill two later steps inherit:
+
+- **The `package` job.** This section deliberately does not tell it how to spell
+  its target, because `tests/conftest.py` shadows any installed copy of the
+  package. The step that settles the spelling must also teach the guard to
+  collect it: the two are one decision, and splitting them leaves that job with a
+  number nothing checks.
+- **The `coverage` job.** §8 has it run its selection **under `coverage run`**,
+  so its command does not open with `python -m pytest` and the guard refuses it
+  as written. That job's step decides whether the guard learns that spelling or
+  the job declares no floor — and if no floor, it needs the non-vacuity check
+  §10.3 requires of every marker-selected job by some other means.
+
+Nothing else in the job table is affected: every other selection is a direct
+`python -m pytest` invocation.
 
 **Prefer a policy test where ownership is structural.** For a directory with a
 single rule — every test under `tests/package/` carries `@pytest.mark.package` —
-a test that walks the directory and asserts the rule is strictly stronger than a
-count: it catches the newly-added unmarked test that a floor cannot see. Use
-counts only where membership is scattered across the tree and no such rule
-exists.
+a test that walks the directory and asserts the rule is still better than a
+count. The equality now notices the newly-added unmarked test, which a floor
+could not, so the difference is no longer detection but *diagnosis*: the policy
+test names the offending file, while the count says only that a number moved. Use
+counts where membership is scattered across the tree and no such rule exists.
 
 **Secrets.** `SERPER_API_KEY` is a repository Actions secret.
 
