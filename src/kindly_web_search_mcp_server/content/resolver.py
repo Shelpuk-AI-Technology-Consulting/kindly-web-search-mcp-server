@@ -38,9 +38,15 @@ async def resolve_page_content_markdown(
 
     Stage 1: StackExchange API (StackOverflow + stackexchange network).
     Stage 2: GitHub Issue API (GitHub GraphQL).
-    Stage 3: Wikipedia API (MediaWiki Action API).
-    Stage 4: arXiv (Atom API + PDF → Markdown).
-    Stage 5: Universal HTML loader fallback (headless Nodriver).
+    Stage 3: GitHub Discussion API (GitHub GraphQL).
+    Stage 4: Wikipedia API (MediaWiki Action API).
+    Stage 5: arXiv (Atom API + PDF → Markdown).
+    Stage 6: Universal HTML loader fallback (headless Nodriver).
+
+    A stage claims the URL when its parser returns; the body below falls through
+    to the next stage only when the parser raises that stage's **own** error
+    type. Any other exception escapes this function entirely — see section 14 of
+    ``.system_design/TEST_SUITE.md`` for the two inputs that reach it.
     """
     if diagnostics:
         diagnostics.emit("resolver.start", "Resolving URL", {"url": url})
