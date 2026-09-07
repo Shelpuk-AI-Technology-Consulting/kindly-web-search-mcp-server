@@ -536,12 +536,20 @@ def _probe_count(probe_path: Path, output: str) -> int:
     return len(json.loads(probe_path.read_text(encoding="utf-8"))["collected"])
 
 
-def _collect(argv: list[str], probe_path: Path) -> tuple[int, str]:
+def _collect(
+    argv: list[str], probe_path: Path, timeout: float = CHILD_TIMEOUT_SECONDS
+) -> tuple[int, str]:
     """Collect one job's selection in a child process.
 
     Args:
         argv: The workflow command, split into tokens.
         probe_path: Where the probe plugin writes its JSON result.
+        timeout: Seconds to allow the child. A parameter rather than a bare read
+            of the module constant so the timeout refusal can be driven in under
+            a second; overriding the constant by name instead would put an
+            environment-variable-shaped string literal in this file, which the
+            baseline ledger's sweep reads as a project variable its own child
+            must clear.
 
     Returns:
         The collected count and the child's standard output.
@@ -564,13 +572,13 @@ def _collect(argv: list[str], probe_path: Path) -> tuple[int, str]:
             errors="replace",
             cwd=REPO_ROOT,
             env=_child_environment(os.environ),
-            timeout=CHILD_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as expired:
         pytest.fail(
             f"Collecting the selection did not finish within "
-            f"{CHILD_TIMEOUT_SECONDS}s; it normally takes about two. Partial "
+            f"{timeout}s; it normally takes about two. Partial "
             f"output:\n{expired.stdout or ''}\n{expired.stderr or ''}"
         )
     # 🔴 The exit status is read, not discarded. Measured: a module that fails to
@@ -1230,6 +1238,46 @@ def test_a_collection_error_is_named_rather_than_counted(tmp_path: Path) -> None
         "diagnosis this check exists to stop returns through the message"
     )
     assert "fix the collection first" in message
+
+
+@pytest.mark.subsystem
+@pytest.mark.slow
+def test_a_child_that_never_finishes_is_named_rather_than_waited_on(
+    tmp_path: Path,
+) -> None:
+    """The third of `_collect`'s three refusals, and the one that had no case.
+
+    A hang is the failure mode with no output of its own: without this the run
+    stops for the whole cap and then reports a bare
+    :class:`subprocess.TimeoutExpired` traceback. The message names the cap and
+    quotes whatever the child managed to emit, and neither was pinned -- so an
+    edit dropping the partial output left every case here green.
+
+    The child is made to hang at *collection* by a ``conftest.py`` that sleeps,
+    which is the same phase the real call measures.
+
+    Args:
+        tmp_path: Holds a package whose collection blocks.
+    """
+
+    (tmp_path / "conftest.py").write_text(
+        "import time\n\ntime.sleep(30)\n", encoding="utf-8"
+    )
+    (tmp_path / "test_slow.py").write_text(
+        "def test_a():\n    pass\n", encoding="utf-8"
+    )
+
+    with pytest.raises(pytest.fail.Exception) as refusal:
+        _collect(
+            [*PYTEST_INVOCATION, str(tmp_path)], tmp_path / "probe.json", timeout=2
+        )
+
+    message = str(refusal.value)
+    assert "did not finish within 2s" in message, "the message must name the cap it hit"
+    assert "Partial output:" in message, (
+        "the partial output is what distinguishes a hang from a crash; without it "
+        "the reader has the cap and nothing about where the child stopped"
+    )
 
 
 def test_a_child_that_wrote_no_probe_output_is_a_failure(tmp_path: Path) -> None:
