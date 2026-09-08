@@ -604,22 +604,38 @@ reverted **and** both pinned `@example`s deleted, the property still failed on
 five of five trials from a cleared `.hypothesis/examples`, shrinking to
 `https://github.com/a/1/issues/1` — so generation finds the defect unaided and
 the pins are belt-and-braces rather than load-bearing. A 200,000-example soak
-against the fixed code found no overlap. Every figure was measured locally, and
-that is not a preference — **the CI that exists runs no part of this suite.**
-`.github/workflows/ci.yml` carries the banner itself: *"This file is
-deliberately NOT this repository's test suite. It does not run `pytest`, `ruff`,
-or anything under `tests/`."* Its two jobs are `review-scripts`, which runs the
-review system's own tests, and `review_replies`, a merge gate over answered
-review threads that runs no tests at all. Neither touches `tests/`, and neither
-does any job in `claude-code-review.yml` or the CodeQL workflow.
+against the fixed code found no overlap.
 
-The citation here used to be §10.3, which was exactly backwards: §10.3 is this
-document's CI **design** and defines seven jobs — `fast`, `fast-extras`,
-`subsystem`, `chromium`, `package`, `types`, `coverage` — every one of which
-runs a pytest selection. A reader following that pointer found seven jobs where
-the sentence promised none. This document describes the *"To Be"* state
-throughout, so a claim about what runs **today** must cite the workflow file,
-never a section of this one.
+**Every figure above was measured locally, and the reason has an expiry date on
+it.** E5-1 was written and reviewed against a tree in which no CI job ran this
+suite. E4-1 landed the `broad` job while E5-1 was in review, so the hermetic
+selection now runs on Linux and Windows on every pull request, and the
+`738 passed, 2 skipped` figure is reproducible there. What remains local-only is
+the evidence CI still does not produce: the mutation matrix, and the
+200,000-example soak. Those are one-off measurements by construction — E12-1
+owns putting mutation runs on a schedule.
+
+**Two corrections are recorded here rather than silently applied, because each
+was a different way of getting the same claim wrong.** The first cited §10.3 for
+what runs today; §10.3 is this document's CI **design** and defines seven jobs,
+every one of which runs a pytest selection, so a reader following that pointer
+found seven jobs where the sentence promised none. This document describes the
+*"To Be"* state throughout: **a claim about what runs today must cite the
+workflow file, never a section of this one.** The second cited the workflow
+correctly but described a tree that had already changed — it quoted a banner
+E4-1 had deleted and counted two jobs where `ci.yml` now has four
+(`review-scripts`, `review_replies`, `broad`, `ci-required`).
+
+**The second correction is the more instructive, and it generalises past this
+paragraph.** It was verified against the author's own worktree, branched before
+E4-1 landed, rather than against `origin/main` — so it was true of the base
+commit and false the moment it merged. E4-1's landing note records rewriting
+**seven** sentences in six files that said this repository ran no tests in CI,
+all true when written and falsified together by one change; this paragraph was
+an eighth, written after the sweep and merged past it. The guard E4-1 added
+walks `.github/` only, so it cannot see this file. **A claim about the state of
+the repository must be verified against the merge target, not the branch**, and
+the sweep guard's reach is tracked separately.
 
 **Which parser pairs can collide depends entirely on which model you are
 counting under, and an earlier draft of this paragraph gave a number without
