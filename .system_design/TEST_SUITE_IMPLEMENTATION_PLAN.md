@@ -1875,13 +1875,14 @@ operation and would needlessly serialize this.
 | **E11-5** | Migration complete | milestone | merge E11-1, merge E11-2, merge E11-3, merge E11-4 | S |
 
 **E11-1** —
-Files: `tests/test_searxng_unit.py`, `tests/test_serper_unit.py`, `tests/test_serply_unit.py`, `tests/test_sofya_unit.py`, `tests/test_tavily_unit.py`, `tests/test_youcom_unit.py`
+Files: `tests/test_searxng_unit.py`, `tests/test_serper_unit.py`, `tests/test_sofya_unit.py`, `tests/test_tavily_unit.py`, `tests/test_youcom_unit.py`
 
 `tests/test_serper_live.py` is deliberately absent: E8-4 rewrites and migrates it.
 `tests/test_serpbase_unit.py` is deliberately absent too, for the opposite
 reason: E5-8 created it and wrote it pytest-first, so there is nothing to
-convert. `scripts/check_plan_dag.py` is what forces the choice — it rejects a
-new `unittest`-style module no batch claims — and it reads the file as text, so a
+convert. `tests/test_serply_unit.py` is absent for the same reason: PR #94 wrote
+it pytest-first rather than adding it here. `scripts/check_plan_dag.py` is what
+forces the choice — it rejects a new `unittest`-style module no batch claims — and it reads the file as text, so a
 module naming the framework beside `TestCase` even in a docstring lands back in
 this batch's scope.
 

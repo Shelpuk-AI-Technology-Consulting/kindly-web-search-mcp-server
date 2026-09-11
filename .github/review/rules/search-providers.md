@@ -67,6 +67,12 @@ Every provider module must:
    reaches the "no valid URLs" branch. Prefer dropping the value over filtering
    it. `tests/test_provider_credential_disclosure.py` holds this.
 
+   Serply sends its **query**, not its key, in the URL path — `/v1/search/`
+   followed by the URL-encoded `q` and `num` — because that is Serply's only
+   documented form. Changing it to a query string is a behaviour change, not a
+   tidy-up: TEST_SUITE.md §3.1 records why, and §14 records that the path form was
+   merged without a live check.
+
 `serpbase.py` is **not** a base class, despite the name — nothing imports from
 it but the registry, and each provider module stands alone. This paragraph used
 to say a change there applied to every provider built on it; it does not, and a

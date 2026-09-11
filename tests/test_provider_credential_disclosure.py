@@ -404,9 +404,12 @@ async def test_a_transport_failure_without_a_status_is_also_converted(
     **What the catch deliberately does not cover**, measured on ``httpx`` 0.28.1:
     ``InvalidURL``, ``CookieConflict`` and ``StreamError`` are **not**
     ``HTTPError`` subclasses, and ``InvalidURL`` carries no ``.request`` at all.
-    They are unreachable from the five providers that build a URL from a constant.
-    A provider added later that derives its URL from configuration would inherit
-    an uncaught family, which is worth knowing before writing one.
+    They are unreachable from the four providers that send the query in a request
+    body. SerpBase and Serply put the query in the URL, so an over-long query
+    raises ``InvalidURL``; its message carries neither the URL nor the key, which
+    ``test_an_over_long_query_fails_without_quoting_the_url_or_the_credential``
+    pins. A provider added later that derives its URL from configuration would
+    inherit an uncaught family, which is worth knowing before writing one.
 
     Args:
         monkeypatch: pytest's environment patcher.
@@ -457,10 +460,10 @@ async def test_a_providers_own_error_passes_through_untouched(
 async def test_no_providers_credential_reaches_the_mcp_client(
     case: DisclosureCase, status: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Eighteen rows: no configured credential appears in what the client sees.
+    """Twenty-one rows: no configured credential appears in what the client sees.
 
-    Three of these -- SerpBase's -- failed before the repair; the other fifteen
-    passed and are regression cover, so that a later change cannot move the
+    Three of these -- SerpBase's -- failed before the repair; the other eighteen
+    are regression cover, so that a later change cannot move the
     disclosure to a provider nobody was watching.
 
     Args:
@@ -758,11 +761,47 @@ def test_the_httpx_error_family_has_the_shape_the_conversion_assumes(
 def test_invalid_url_carries_no_request_to_read_a_url_from() -> None:
     """The one outside the family that a configuration-derived URL can reach.
 
-    SearXNG builds its URL from ``SEARXNG_BASE_URL``, so unlike the five
-    constant-URL providers it can raise ``InvalidURL`` -- and being outside the
-    family, the router never sees it. What keeps that harmless is asserted here:
+    SearXNG builds its URL from ``SEARXNG_BASE_URL``, so unlike the six
+    fixed-host providers it can raise ``InvalidURL`` from configuration alone --
+    and being outside the family, the router never sees it. (SerpBase and Serply
+    reach it only through an over-long query, covered by the case below.) What keeps that harmless is asserted here:
     the exception carries no ``request``, so there is no URL on it for anything
     downstream to render. Section 14 records that SearXNG's own blanket
     ``except`` is what actually absorbs it.
     """
     assert not hasattr(httpx.InvalidURL("Invalid port: 'notaport'"), "request")
+
+
+@pytest.mark.parametrize("name", ["serpbase", "serply"])
+async def test_an_over_long_query_fails_without_quoting_the_url_or_the_credential(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A query too long for a URL fails with a message that quotes nothing.
+
+    SerpBase and Serply put the query in the request URL, so a query past httpx's
+    URL length limit raises :class:`httpx.InvalidURL`. That class is outside the
+    ``HTTPError`` family, so the router passes it through unconverted and its text
+    is what the client receives. Measured on ``httpx`` 0.28.1 with 70,000
+    characters: ``URL component 'query' too long`` and ``URL too long``. Pinned
+    rather than recorded as prose because ``httpx`` is declared as a range, and a
+    release that quoted the URL here would hand SerpBase's key to the client.
+
+    The query is asserted absent as well as the key. Serply's key travels in a
+    header, so for that row only the query proves the URL was not quoted.
+
+    Args:
+        name: The provider whose environment selects it.
+        monkeypatch: pytest's environment patcher.
+    """
+    case = next(c for c in DISCLOSURE_CASES if c.name == name)
+    build_environment(case.env, monkeypatch)
+    query = "a" * 70_000
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={}))
+    async with REAL_ASYNC_CLIENT(transport=transport) as client:
+        with pytest.raises(httpx.InvalidURL) as raised:
+            await search_web(query, num_results=1, http_client=client)
+
+    assert type(raised.value) is httpx.InvalidURL
+    assert case.secret not in str(raised.value)
+    assert query[:100] not in str(raised.value)

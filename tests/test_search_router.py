@@ -183,29 +183,53 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         mock_youcom.assert_awaited()
 
     async def test_uses_serply_when_only_serply_key(self) -> None:
-        from kindly_web_search_mcp_server.search import search_web
+        """Select Serply when it is the only configured provider"""
+        from kindly_web_search_mcp_server.search import PROVIDERS, search_web
 
-        for name in (
-            "SERPER_API_KEY",
-            "SERPBASE_API_KEY",
-            "TAVILY_API_KEY",
-            "SEARXNG_BASE_URL",
-            "SOFYA_API_KEY",
-            "YDC_API_KEY",
-        ):
-            os.environ.pop(name, None)
-        os.environ["SERPLY_API_KEY"] = "serply_test"
+        # `patch.dict` restores the environment, so no key leaks into later tests.
+        with patch.dict(os.environ):
+            for provider in PROVIDERS:
+                os.environ.pop(provider.env_var, None)
+            os.environ["SERPLY_API_KEY"] = "serply_test"
 
-        with patch(
-            "kindly_web_search_mcp_server.search.search_serply", new_callable=AsyncMock
-        ) as mock_serply:
-            mock_serply.return_value = [
-                WebSearchResult(title="S", link="https://serply.example", snippet="sn", page_content="")
-            ]
-            out = await search_web("q", num_results=1)
+            with patch(
+                "kindly_web_search_mcp_server.search.search_serply", new_callable=AsyncMock
+            ) as mock_serply:
+                mock_serply.return_value = [
+                    WebSearchResult(title="S", link="https://serply.example", snippet="sn", page_content="")
+                ]
+                out = await search_web("q", num_results=1)
 
         self.assertEqual(out[0].link, "https://serply.example")
         mock_serply.assert_awaited()
+
+    async def test_prefers_youcom_over_serply_when_both_keys(self) -> None:
+        """Keep an existing You.com deployment on You.com after Serply is added
+
+        Serply is appended last, so setting its key beside any earlier provider's
+        must not change which provider serves the query. You.com is the provider
+        immediately before it in the registry.
+        """
+        from kindly_web_search_mcp_server.search import PROVIDERS, search_web
+
+        with patch.dict(os.environ):
+            for provider in PROVIDERS:
+                os.environ.pop(provider.env_var, None)
+            os.environ["YDC_API_KEY"] = "ydc_test"
+            os.environ["SERPLY_API_KEY"] = "serply_test"
+
+            with patch(
+                "kindly_web_search_mcp_server.search.search_youcom", new_callable=AsyncMock
+            ) as mock_youcom, patch(
+                "kindly_web_search_mcp_server.search.search_serply", new_callable=AsyncMock
+            ) as mock_serply:
+                mock_youcom.return_value = [
+                    WebSearchResult(title="Y", link="https://youcom.example", snippet="sn", page_content="")
+                ]
+                out = await search_web("q", num_results=1)
+
+        self.assertEqual(out[0].link, "https://youcom.example")
+        mock_serply.assert_not_awaited()
 
     async def test_raises_when_no_provider_configured(self) -> None:
         from kindly_web_search_mcp_server.search import WebSearchProviderError, search_web

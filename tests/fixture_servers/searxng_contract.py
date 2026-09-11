@@ -5,7 +5,7 @@ installed-wheel product test starts the real MCP server as a **separate
 process**, so ``monkeypatch`` cannot reach it, and this project deliberately
 ships no provider-injection hook -- an unrestricted injection point in an
 already-unauthenticated server is a larger risk than any test is worth. What is
-left is configuration: ``search_searxng`` is the only one of the six providers
+left is configuration: ``search_searxng`` is the only one of the seven providers
 configured entirely by a URL, so pointing ``SEARXNG_BASE_URL`` at this module and
 clearing the higher-priority provider variables makes SearXNG win selection in a
 process the test cannot otherwise touch. Section 11.1 of
