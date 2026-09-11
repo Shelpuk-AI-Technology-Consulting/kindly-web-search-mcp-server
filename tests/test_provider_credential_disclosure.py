@@ -21,19 +21,18 @@ on ``mcp`` 1.29.1 and ``httpx`` 0.28.1: the served ``CallToolResult`` carries
 future release that began rendering ``__cause__`` at *either* layer turns these
 cases red, which is the outcome that should follow.
 
-**Why the URL is dropped rather than redacted.** SerpBase authenticates by query
-parameter, SearXNG by base-URL userinfo, and a future provider may use a
-parameter name nobody listed. Stripping parameters named ``api_key``, ``key`` or
-``token`` is a denylist that fails open and silently on the first name outside
-it. Dropping the URL has no such gap, and needs no pattern to be kept current.
+**Why the URL is dropped rather than redacted.** SearXNG may authenticate by
+base-URL userinfo, and a future provider may use a parameter name nobody listed.
+Stripping parameters named ``api_key``, ``key`` or ``token`` is a denylist that
+fails open and silently on the first name outside it. Dropping the URL has no
+such gap, and needs no pattern to be kept current.
 
 **What makes the six-provider sweep non-vacuous.** Only SerpBase disclosed on the
 unrepaired tree; the other five already passed, so on their own they are
 regression cover and not evidence. Pointed at a header-authenticating provider,
 a "the secret is absent" assertion passes while proving nothing. So a **sibling
 case** asserts, once per provider, that the credential was genuinely *in flight*
--- in the request URL for the two providers that carry it there, in a request
-header for the four that do not. A provider that stopped being configured, or
+-- in the request URL for SearXNG, and in a request header for the other five. A provider that stopped being configured, or
 was swapped for one that never disclosed, fails that control instead of passing
 quietly. The sweep rows themselves assert absence only; the control is what makes
 their absence mean something.
@@ -91,8 +90,8 @@ class DisclosureCase:
             cleared environment rather than patched onto the ambient one.
         secret: The exact substring that must never reach the MCP client.
         carried_in_url: ``True`` when this provider puts its credential in the
-            request URL -- SerpBase in a query parameter, SearXNG in the base
-            URL's userinfo. ``False`` when it uses a header. This decides which
+            request URL -- currently only SearXNG through base URL userinfo.
+            ``False`` when it uses a header. This decides which
             in-flight control the case asserts, and is what stops a row passing
             because it silently stopped sending a credential at all.
     """
@@ -117,7 +116,7 @@ DISCLOSURE_CASES: tuple[DisclosureCase, ...] = (
         "SerpBase",
         {"SERPBASE_API_KEY": f"serpbase-{SENTINEL}"},
         f"serpbase-{SENTINEL}",
-        True,
+        False,
     ),
     DisclosureCase(
         "tavily",
@@ -352,8 +351,8 @@ async def test_the_message_carries_neither_the_credential_nor_the_url(
         SERPBASE, lambda request: httpx.Response(status, json={"error": "denied"})
     )
 
-    # The absence is evidence only if the secret was there to be dropped.
-    assert SERPBASE.secret in str(sent[0].url)
+    # The absence is evidence only if the secret was sent to the provider.
+    assert SERPBASE.secret in sent[0].headers.values()
     assert SERPBASE.secret not in str(raised)
     assert "api.serpbase.dev" not in str(raised)
 

@@ -62,11 +62,10 @@ class SearchProviderTransportError(RuntimeError):
     """Report a provider's HTTP failure without quoting the request URL.
 
     Raised in place of any :class:`httpx.HTTPError` a provider lets out.
-    :meth:`httpx.HTTPStatusError.__str__` quotes the full request URL, and at
-    least one provider -- SerpBase -- authenticates with a query parameter, so
-    the unmodified message carries an API key. Because that message is rendered
-    into the error a FastMCP tool returns, the key would reach the MCP client,
-    which for this server is an LLM agent.
+    :meth:`httpx.HTTPStatusError.__str__` quotes the full request URL. A provider
+    URL may contain credentials now or in the future, so forwarding that message
+    to FastMCP would risk exposing them to the MCP client, which for this server
+    is an LLM agent.
 
     The URL is dropped rather than filtered. Stripping parameters whose names
     look credential-shaped is a denylist, and it fails open and silently on the
