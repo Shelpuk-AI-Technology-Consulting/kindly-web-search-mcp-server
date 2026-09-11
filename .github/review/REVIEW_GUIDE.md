@@ -60,7 +60,7 @@ description are the statement of intent.
 A coding agent — Claude Code, Codex, Cursor, Copilot — needs current information:
 the exact text of an error, an API signature that changed last month, the version
 a package is actually on. This server gives it two tools. `web_search` runs a
-query through whichever of five providers the user configured and returns results
+query through whichever of seven providers the user configured and returns results
 **with the page content already fetched**. `get_content` takes a URL it is
 already holding and returns that page as Markdown, through a site-specific
 handler where one exists (Stack Exchange, GitHub issues and discussions,

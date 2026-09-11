@@ -5,10 +5,11 @@ executed by **no test in the tree** -- a whole provider's response parsing with
 nothing asserting it. The layout mirrors the other provider modules: the request
 shape and the parsing here, the transport-level failures (401, 429, a non-JSON
 body, a wrong-shaped JSON body and a timeout) in
-``test_search_provider_error_paths.py``, which drives all six providers from one
+``test_search_provider_error_paths.py``, which drives all seven providers from one
 table.
 
-**Written in pytest style, unlike its five sibling provider modules**, which are
+**Written in pytest style, like ``test_serply_unit.py`` and unlike its other five
+sibling provider modules**, which are
 ``TestCase`` subclasses. Not a stylistic preference: ``scripts/check_plan_dag.py``
 rejects a new ``unittest``-style module that no migration batch claims, and the
 batch converting the provider tests to pytest has not run yet. Adding a sixth
@@ -164,8 +165,8 @@ async def test_an_organic_results_value_that_is_not_a_list_returns_no_results(
     ``TypeError`` and the case fails. It is also the shape a JSON API actually
     sends for "nothing here".
 
-    Returning ``[]`` here, where ``sofya.py`` and ``youcom.py`` raise for the
-    analogous shape, is an inconsistency between the six clients rather than a
+    Returning ``[]`` here, where ``sofya.py``, ``youcom.py`` and ``serply.py`` raise
+    for the analogous shape, is an inconsistency between the seven clients rather than a
     decision anyone recorded. This step pins the current behaviour and does not
     resolve it; section 14 of ``.system_design/TEST_SUITE.md`` names it.
     """

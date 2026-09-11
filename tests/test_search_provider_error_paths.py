@@ -1,9 +1,9 @@
-"""Transport-level failure paths for the six search-provider coroutines.
+"""Transport-level failure paths for the seven search-provider coroutines.
 
-One module rather than six because the five failures pinned here -- ``401``,
+One module rather than seven because the five failures pinned here -- ``401``,
 ``429``, a non-JSON body, a well-formed JSON body of the wrong shape, and a
 timeout -- are identical in shape across every provider. Splitting per provider
-would copy the :class:`httpx.MockTransport` helper six times and let the six
+would copy the :class:`httpx.MockTransport` helper seven times and let the seven
 copies drift.
 
 **What this module does and does not own.** It owns the contract every provider
@@ -14,7 +14,7 @@ malformed items, empty results -- which stays in that provider's own
 ``test_<name>_unit`` module. Nor does it own the *wording* of SearXNG's
 per-status messages: those live beside SearXNG's other behaviour in
 ``test_searxng_unit.py``, because a message is that provider's own choice while
-the contract here is shared by all six.
+the contract here is shared by all seven.
 
 **Three things make these cases non-vacuous, and all three are needed.** Every
 provider's ``*ConfigError`` subclasses its ``*Error``, so a case that loses its
@@ -53,6 +53,7 @@ from kindly_web_search_mcp_server.models import WebSearchResult
 from kindly_web_search_mcp_server.search.searxng import SearxngError, search_searxng
 from kindly_web_search_mcp_server.search.serpbase import SerpbaseError, search_serpbase
 from kindly_web_search_mcp_server.search.serper import SerperError, search_serper
+from kindly_web_search_mcp_server.search.serply import SerplyError, search_serply
 from kindly_web_search_mcp_server.search.sofya import SofyaError, search_sofya
 from kindly_web_search_mcp_server.search.tavily import TavilyError, search_tavily
 from kindly_web_search_mcp_server.search.youcom import YoucomError, search_youcom
@@ -72,11 +73,11 @@ class ProviderCase:
         body_error: Exact exception class raised for a body this provider cannot
             parse.
         status_error: Exact exception class raised for an HTTP error status.
-            Five providers call ``raise_for_status()`` and let
+            Six providers call ``raise_for_status()`` and let
             :class:`httpx.HTTPStatusError` out; SearXNG classifies the status
             itself and its per-instance loop then wraps the result.
         timeout_error: Exact exception class the caller sees when the transport
-            times out. Five providers do not catch it, so the transport's own
+            times out. Six providers do not catch it, so the transport's own
             :class:`httpx.ReadTimeout` arrives; SearXNG's loop catches every
             exception and re-raises its aggregate.
     """
@@ -135,6 +136,14 @@ PROVIDER_CASES: tuple[ProviderCase, ...] = (
         search_youcom,
         {"YDC_API_KEY": "test_key"},
         YoucomError,
+        httpx.HTTPStatusError,
+        httpx.ReadTimeout,
+    ),
+    ProviderCase(
+        "serply",
+        search_serply,
+        {"SERPLY_API_KEY": "test_key"},
+        SerplyError,
         httpx.HTTPStatusError,
         httpx.ReadTimeout,
     ),
@@ -260,7 +269,7 @@ async def test_a_non_json_body_is_reported_as_the_providers_own_error(
     returns.
 
     The mutation this kills differs by provider, and the difference is measured.
-    For five of them, removing the ``except ValueError`` arm lets a raw
+    For six of them, removing the ``except ValueError`` arm lets a raw
     ``json.JSONDecodeError`` escape, and the class assertion alone fails the
     case. For SearXNG it does **not** escape: the per-instance loop catches it and
     re-raises the aggregate, which is still a ``SearxngError``. There, only the
@@ -317,13 +326,13 @@ async def test_a_transport_timeout_reaches_the_caller(
     """Surface a timeout rather than converting it into "no matches"
 
     SearXNG has a branch here -- its per-instance loop catches every exception --
-    and removing it fails this case. **The other five providers have no branch to
+    and removing it fails this case. **The other six providers have no branch to
     remove**, so for them this is a regression guard rather than a mutation
     target: it fails the day someone wraps the request in
     ``except Exception: return []``, which would turn an operator-visible timeout
     into an empty result set indistinguishable from a query with no hits. Stated
     rather than left implicit, because a mutation run will report nothing for
-    those five rows and the next reader would otherwise read that as a hole.
+    those six rows and the next reader would otherwise read that as a hole.
 
     The timeout is injected, so this pins **propagation**, not **arming**. Whether
     a provider sets a deadline at all is a separate claim, and for SearXNG --

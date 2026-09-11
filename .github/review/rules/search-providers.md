@@ -1,6 +1,6 @@
 # Rule: search providers (`search/`)
 
-Six backends — Serper, SerpBase, Tavily, SearXNG, Sofya and You.com — behind one
+Seven backends — Serper, SerpBase, Tavily, SearXNG, Sofya, You.com and Serply — behind one
 registry. They share a single contract, which is why they share one rule file.
 
 ## `PROVIDERS` is the single source of truth
@@ -38,7 +38,7 @@ Every provider module must:
 3. Let an `httpx.HTTPError` reach the router, which converts it. **This rule
    used to say the opposite** — that an `httpx` exception escaping to the router
    was a finding — and it described something that never existed: no provider
-   raises `WebSearchProviderError`, and five of the six call `raise_for_status()`
+   raises `WebSearchProviderError`, and six of the seven call `raise_for_status()`
    and let httpx's exception out. The router is now the enforcement point.
    `search_web` catches the whole `httpx.HTTPError` family and re-raises
    `SearchProviderTransportError`, whose message is built from the provider's
@@ -66,6 +66,12 @@ Every provider module must:
    and is measured useless on a value with no scheme, which is exactly what
    reaches the "no valid URLs" branch. Prefer dropping the value over filtering
    it. `tests/test_provider_credential_disclosure.py` holds this.
+
+   Serply sends its **query**, not its key, in the URL path — `/v1/search/`
+   followed by the URL-encoded `q` and `num` — because that is Serply's only
+   documented form. Changing it to a query string is a behaviour change, not a
+   tidy-up: TEST_SUITE.md §3.1 records why, and §14 records that the path form was
+   merged without a live check.
 
 `serpbase.py` is **not** a base class, despite the name — nothing imports from
 it but the registry, and each provider module stands alone. This paragraph used

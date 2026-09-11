@@ -167,7 +167,7 @@ for another.
 
 **Search-provider response parsing and error paths.** `search_serper`,
 `search_serpbase`, `search_tavily`, `search_searxng`, `search_sofya`,
-`search_youcom` — the six coroutines `PROVIDERS` dispatches to. Driven with
+`search_youcom`, `search_serply` — the seven coroutines `PROVIDERS` dispatches to. Driven with
 `httpx.MockTransport`, so this is L1 and belongs in the `fast` job.
 
 **Coverage today runs inversely to selection priority**, which is the reason this
@@ -224,7 +224,8 @@ the table owns the contract all six providers share, and the rewritten cases own
 the *wording* of SearXNG's per-status messages, which is that provider's own
 choice.
 
-**`tests/test_serpbase_unit.py` is pytest-style, unlike its five siblings.**
+**`tests/test_serpbase_unit.py` is pytest-style, like `tests/test_serply_unit.py`
+and unlike its other five siblings.**
 `scripts/check_plan_dag.py` rejects a new `unittest`-style module that no E11
 migration batch claims, which is how the decision surfaced: enlarging E11-1 to
 convert a file written after that migration was planned is worse than writing it
@@ -274,9 +275,10 @@ scheme, so the URL test rejects exactly the same inputs. Measured over `""`,
 it is triaged in the docstring of the case that would have had to kill it.
 
 **Named follow-up, deliberately not absorbed here: the missing-credential branch
-is covered for You.com alone.** Each provider's `_get_*_api_key` raises its
+is covered for You.com and Serply only.** Each provider's `_get_*_api_key` raises its
 `*ConfigError` when the variable is unset, and only
-`test_youcom_unit.py::test_missing_key_raises_config_error` asserts it. That is a
+`test_youcom_unit.py::test_missing_key_raises_config_error` and the two
+missing-key cases in `test_serply_unit.py` assert it. That is a
 *configuration* path, not one of the five transport failures E5-8 is scoped to,
 and it is named in neither this section's target list nor the plan step — so it
 is recorded rather than folded in. It is worth a small change of its own: this is
@@ -289,10 +291,10 @@ two in `sofya.py`. All four now have a case in their provider's unit module. The
 §9 parsing row would have been flipped to *covered* with them untested if this
 step had trusted the per-provider test counts instead of measuring.
 
-**The timeout row has no branch for five of the six providers**, and that is
+**The timeout row has no branch for six of the seven providers**, and that is
 recorded in the case rather than left for a mutation run to report as a hole.
 SearXNG's loop catches every exception, so removing that arm fails its row; the
-other five simply do not catch, and the row is a regression guard — it fails the
+other six simply do not catch, and the row is a regression guard — it fails the
 day someone wraps the request in `except Exception: return []`, which would turn
 an operator-visible timeout into an empty result set indistinguishable from a
 query with no hits. It pins **propagation**, not **arming**: see §14 for what
@@ -336,6 +338,36 @@ The assertion it enables is not cosmetic: it is what makes the status-
 classification arm killable at all (above), and it pins that the aggregate chains
 to the **last** instance's failure, so a `last_error` that is never updated inside
 the loop fails the case as surely as a missing `from` does.
+
+**Serply, added after E5-8 (PR #94, 2026-09-11), is the seventh provider and is
+appended last**, so a deployment that already had a key keeps its provider —
+`test_search_router.py::test_prefers_youcom_over_serply_when_both_keys` pins the
+adjacent pair. It follows the E5-8 layout: `tests/test_serply_unit.py` for the
+request and parsing, written pytest-first for the reason recorded above for
+SerpBase, and five more rows in the shared error-path table, which now drives
+seven providers. **How the E5-8 record above was brought up to date:** counts it
+gives as measured on 2026-09-05 — its tables, its thirty rows, "all six
+providers" in its *Done* paragraph — are left as measured, while sentences about
+the tree as it stands (SerpBase's siblings, the missing-credential follow-up, the
+timeout row) now count Serply. Three choices in the module would otherwise look
+arbitrary:
+
+- **The query travels in the URL path** — `GET /v1/search/` followed by the
+  URL-encoded `q=<query>&num=<n>` — because that is the only form Serply's
+  reference and its own example code show. The contributed version sent a query
+  string, which its author reported working against the live API but which is
+  documented nowhere. The documented form was chosen over the observed one and
+  **merged without a live check**: no key was available to the maintainer, who
+  accepted the risk, and §14 carries it. The request cases pin the path form for
+  `&`, `+`, `/`, `?`, `#` and non-ASCII queries, which httpx 0.28.1 sends exactly
+  as `urlencode` produced them.
+- **`num` is forwarded unclamped.** You.com and Sofya clamp because their APIs
+  document a range and reject values outside it. Serply documents no maximum, so
+  a clamp would invent a bound; the returned list is still capped at
+  `num_results` locally.
+- **A missing or reshaped `results` list raises** rather than returning `[]`, as
+  in Sofya and You.com, so Serply sits on the raising side of the split §14
+  records.
 
 **Launch-argument and sandbox decisions.** `_build_chromium_launch_args`,
 `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
@@ -1969,7 +2001,7 @@ fail in 31 s total instead of hanging the suite.
 **The provider and router cases run with the environment cleared, not with a
 delete-list.** `patch.dict(os.environ, {"SEARXNG_BASE_URL": …}, clear=True)`.
 A delete-list clears the variables somebody thought of, and production reads
-more than the six that select a provider: eight `SEARXNG_*` tuning variables, of
+more than the seven that select a provider: eight `SEARXNG_*` tuning variables, of
 which `SEARXNG_TIMEOUT_SECONDS` makes these cases flaky and
 `SEARXNG_HEADERS_JSON` makes them raise before a socket is opened — and,
 decisively, `search_searxng` and `search_web` both build
@@ -2988,8 +3020,8 @@ The **Today** column describes *test coverage*, not implementation status.
 | Subsystem / behaviour | Today | Target layer | CI job | Owner |
 |---|---|---|---|---|
 | Provider routing, strict order, no fallback | covered | L1 | `fast` | |
-| Serper / SerpBase / Tavily / SearXNG / Sofya parsing | covered (E5-8) — §3.1 records what landed | L1 | `fast` | |
-| Provider errors: 401, 429, malformed JSON, timeout, empty | covered (E5-8) — all six providers, one table | L1 (`httpx.MockTransport`) | `fast` | |
+| Serper / SerpBase / Tavily / SearXNG / Sofya / You.com / Serply parsing | covered (E5-8; Serply in PR #94) — §3.1 records what landed | L1 | `fast` | |
+| Provider errors: 401, 429, malformed JSON, timeout, empty | covered (E5-8) — all seven providers, one table | L1 (`httpx.MockTransport`) | `fast` | |
 | Provider registry ⇄ docs | covered | L2 | `fast` | |
 | StackExchange / GitHub issues / GitHub discussions / Wikipedia | partial — parsing covered, failure paths thin | L1 + L2 | `fast` | |
 | arXiv + PDF extraction | partial | L1 | `fast` | |
@@ -4818,10 +4850,10 @@ is nothing to test.
   conversion as a unit, and the payload a client is actually served — driven
   through the **low-level `CallToolRequest` handler**, not `mcp.call_tool`, because
   `call_tool` raises FastMCP's `ToolError` and the served text and `isError` are
-  composed one layer below it. The six-provider sweep is kept
+  composed one layer below it. The seven-provider sweep is kept
   non-vacuous by a **sibling case** asserting, once per provider, that the
   credential was genuinely in flight — in the URL for the two providers that carry
-  it there, in a header for the four that do not — because an absence assertion
+  it there, in a header for the five that do not — because an absence assertion
   over a provider that never sends a credential proves nothing. The sweep rows
   themselves assert absence only.
 
@@ -4890,8 +4922,12 @@ is nothing to test.
   declared as a **range** — `httpx[socks]>=0.28,<1`. The ratchet file pins
   `0.28.1`, but that governs one job rather than what an ordinary install
   resolves, so an upgrade could otherwise have made this paragraph quietly false
-  with nothing to notice. Five providers build
-  their URL from a constant and cannot reach them. **SearXNG can, and does** — it
+  with nothing to notice. The four providers that send the query in a request
+  body cannot reach them. SerpBase and Serply put the query in the URL, so an
+  over-long query raises `InvalidURL` — measured with 70,000 characters, whose
+  messages (`URL component 'query' too long`, `URL too long`) carry neither the
+  URL nor the key, pinned by
+  `test_an_over_long_query_fails_without_quoting_the_url_or_the_credential`. **SearXNG can reach it from configuration alone, and does** — it
   derives its URL from configuration, and a `SEARXNG_BASE_URL` of
   `https://user:pw@host:notaport` raises `InvalidURL("Invalid port: 'notaport'")`,
   measured. It is saved not by the router but by its own blanket
@@ -4977,15 +5013,26 @@ is nothing to test.
   `test_search_searxng_arms_no_request_timeout_by_default` pins the current
   answer so a change to it is deliberate. Which deadline SearXNG should carry is
   a production decision with no owner yet.
-- **The six providers disagree on what a reshaped result container means, and
+- **The seven providers disagree on what a reshaped result container means, and
   nobody decided it.** `serper.py` and `serpbase.py` return `[]` when `organic` /
   `organic_results` is present but not a list; `tavily.py`, `searxng.py`,
-  `sofya.py` and `youcom.py` raise. The raising side carries a recorded reason —
+  `sofya.py`, `youcom.py` and `serply.py` raise. The raising side carries a recorded reason —
   *"returning an empty list would be indistinguishable from 'no matches' and
   would hide the mismatch"* — which argues against the silent `[]` in the two
   providers a default deployment reaches **first**. E5-8 pins both behaviours as
   they are and does not resolve the split; resolving it is a production change
   and needs an owner.
+- **Serply's documented path-form request has not been run against the live API.
+  ACCEPTED** — a known risk, not a gap with an owner. PR #94 moved
+  `search_serply` from the contributor's query string (`/v1/search?q=…`), which
+  its author reported working live, to the only documented form
+  (`/v1/search/q=…&num=…`). No key was available, and the maintainer chose to
+  merge without a live check (2026-09-11). The unit cases prove what is *sent*;
+  nothing proves Serply *answers* it. One risk belongs to the path form alone: a
+  `/` in a query travels as `%2F` inside the path, which some servers and proxies
+  reject or decode before routing. A rejected form would surface as an HTTP
+  error status on Serply queries, reported by the router as a
+  `SearchProviderTransportError` naming Serply and the status.
 - **`_is_snap_browser` misclassified the commonest snap install. CLOSED** — the
   repair landed as a change of its own, which is what this entry said it
   deserved. `/snap/bin/chromium` is a symlink to `/usr/bin/snap` on Ubuntu and

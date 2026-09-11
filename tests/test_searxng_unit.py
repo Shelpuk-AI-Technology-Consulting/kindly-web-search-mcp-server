@@ -16,7 +16,7 @@ class TestSearxngParsing(unittest.TestCase):
 
     The transport-level failures every provider shares -- 401, 429, a non-JSON
     body, a wrong-shaped JSON body and a timeout -- live in
-    ``test_search_provider_error_paths.py``, which drives all six providers from
+    ``test_search_provider_error_paths.py``, which drives all seven providers from
     one table and owns the contract they share.
 
     ``test_search_searxng_raises_on_403``, ``..._on_429`` and

@@ -5,7 +5,7 @@ SearXNG instance with the JSON output format enabled. It exists because the
 deterministic installed-wheel product test drives the MCP server in a **separate
 process**, where ``monkeypatch`` cannot reach and where this project deliberately
 offers no provider-injection hook in shipped code. Configuration is the only
-stubbing mechanism left, and ``search_searxng`` -- alone among the six providers
+stubbing mechanism left, and ``search_searxng`` -- alone among the seven providers
 -- is configured entirely by a URL. Section 11.1 of
 ``.system_design/TEST_SUITE.md`` records keeping that true as a standing
 constraint on production.
