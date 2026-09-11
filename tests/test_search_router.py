@@ -182,6 +182,31 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out[0].link, "https://youcom.example")
         mock_youcom.assert_awaited()
 
+    async def test_uses_serply_when_only_serply_key(self) -> None:
+        from kindly_web_search_mcp_server.search import search_web
+
+        for name in (
+            "SERPER_API_KEY",
+            "SERPBASE_API_KEY",
+            "TAVILY_API_KEY",
+            "SEARXNG_BASE_URL",
+            "SOFYA_API_KEY",
+            "YDC_API_KEY",
+        ):
+            os.environ.pop(name, None)
+        os.environ["SERPLY_API_KEY"] = "serply_test"
+
+        with patch(
+            "kindly_web_search_mcp_server.search.search_serply", new_callable=AsyncMock
+        ) as mock_serply:
+            mock_serply.return_value = [
+                WebSearchResult(title="S", link="https://serply.example", snippet="sn", page_content="")
+            ]
+            out = await search_web("q", num_results=1)
+
+        self.assertEqual(out[0].link, "https://serply.example")
+        mock_serply.assert_awaited()
+
     async def test_raises_when_no_provider_configured(self) -> None:
         from kindly_web_search_mcp_server.search import WebSearchProviderError, search_web
 
@@ -190,6 +215,7 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         os.environ.pop("SEARXNG_BASE_URL", None)
         os.environ.pop("SOFYA_API_KEY", None)
         os.environ.pop("YDC_API_KEY", None)
+        os.environ.pop("SERPLY_API_KEY", None)
 
         with self.assertRaises(WebSearchProviderError):
             await search_web("q", num_results=1)

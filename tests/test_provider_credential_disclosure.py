@@ -27,13 +27,13 @@ parameter name nobody listed. Stripping parameters named ``api_key``, ``key`` or
 ``token`` is a denylist that fails open and silently on the first name outside
 it. Dropping the URL has no such gap, and needs no pattern to be kept current.
 
-**What makes the six-provider sweep non-vacuous.** Only SerpBase disclosed on the
-unrepaired tree; the other five already passed, so on their own they are
+**What makes the seven-provider sweep non-vacuous.** Only SerpBase disclosed on the
+unrepaired tree; the other six already passed, so on their own they are
 regression cover and not evidence. Pointed at a header-authenticating provider,
 a "the secret is absent" assertion passes while proving nothing. So a **sibling
 case** asserts, once per provider, that the credential was genuinely *in flight*
 -- in the request URL for the two providers that carry it there, in a request
-header for the four that do not. A provider that stopped being configured, or
+header for the five that do not. A provider that stopped being configured, or
 was swapped for one that never disclosed, fails that control instead of passing
 quietly. The sweep rows themselves assert absence only; the control is what makes
 their absence mean something.
@@ -145,6 +145,13 @@ DISCLOSURE_CASES: tuple[DisclosureCase, ...] = (
         "You.com",
         {"YDC_API_KEY": f"ydc-{SENTINEL}"},
         f"ydc-{SENTINEL}",
+        False,
+    ),
+    DisclosureCase(
+        "serply",
+        "Serply",
+        {"SERPLY_API_KEY": f"serply-{SENTINEL}"},
+        f"serply-{SENTINEL}",
         False,
     ),
 )

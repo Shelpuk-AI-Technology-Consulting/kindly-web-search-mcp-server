@@ -1,4 +1,4 @@
-"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com).
+"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com → Serply).
 
 :data:`PROVIDERS` is the single source of truth for which providers exist, what
 configures them, and the order they are selected in. Adding a provider means
@@ -21,6 +21,7 @@ from ..utils.diagnostics import Diagnostics
 from .searxng import search_searxng
 from .serpbase import search_serpbase
 from .serper import search_serper
+from .serply import search_serply
 from .sofya import search_sofya
 from .tavily import search_tavily
 from .youcom import search_youcom
@@ -40,6 +41,7 @@ __all__ = [
     "search_searxng",
     "search_serpbase",
     "search_serper",
+    "search_serply",
     "search_sofya",
     "search_tavily",
     "search_web",
@@ -151,6 +153,9 @@ PROVIDERS: tuple[SearchProviderSpec, ...] = (
     ),
     SearchProviderSpec(
         "youcom", "You.com", "YDC_API_KEY", "search_youcom", "has_youcom_key"
+    ),
+    SearchProviderSpec(
+        "serply", "Serply", "SERPLY_API_KEY", "search_serply", "has_serply_key"
     ),
 )
 

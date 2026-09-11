@@ -1,6 +1,6 @@
 # Rule: search providers (`search/`)
 
-Six backends — Serper, SerpBase, Tavily, SearXNG, Sofya and You.com — behind one
+Seven backends — Serper, SerpBase, Tavily, SearXNG, Sofya, You.com and Serply — behind one
 registry. They share a single contract, which is why they share one rule file.
 
 ## `PROVIDERS` is the single source of truth
@@ -38,7 +38,7 @@ Every provider module must:
 3. Let an `httpx.HTTPError` reach the router, which converts it. **This rule
    used to say the opposite** — that an `httpx` exception escaping to the router
    was a finding — and it described something that never existed: no provider
-   raises `WebSearchProviderError`, and five of the six call `raise_for_status()`
+   raises `WebSearchProviderError`, and six of the seven call `raise_for_status()`
    and let httpx's exception out. The router is now the enforcement point.
    `search_web` catches the whole `httpx.HTTPError` family and re-raises
    `SearchProviderTransportError`, whose message is built from the provider's
