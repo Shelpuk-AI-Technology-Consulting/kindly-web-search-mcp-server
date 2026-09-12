@@ -1,4 +1,4 @@
-"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com → Serply).
+"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com → Serply → apifare).
 
 :data:`PROVIDERS` is the single source of truth for which providers exist, what
 configures them, and the order they are selected in. Adding a provider means
@@ -18,6 +18,7 @@ import httpx
 
 from ..models import WebSearchResult
 from ..utils.diagnostics import Diagnostics
+from .apifare import search_apifare
 from .searxng import search_searxng
 from .serpbase import search_serpbase
 from .serper import search_serper
@@ -38,6 +39,7 @@ __all__ = [
     "WebSearchProviderError",
     "any_provider_configured",
     "provider_env_vars",
+    "search_apifare",
     "search_searxng",
     "search_serpbase",
     "search_serper",
@@ -156,6 +158,9 @@ PROVIDERS: tuple[SearchProviderSpec, ...] = (
     ),
     SearchProviderSpec(
         "serply", "Serply", "SERPLY_API_KEY", "search_serply", "has_serply_key"
+    ),
+    SearchProviderSpec(
+        "apifare", "apifare", "APIFARE_TOKEN", "search_apifare", "has_apifare_token"
     ),
 )
 
