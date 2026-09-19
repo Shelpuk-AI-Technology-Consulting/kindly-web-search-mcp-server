@@ -7,6 +7,13 @@ import httpx
 
 from ..models import WebSearchResult
 
+#: The one endpoint this provider talks to. A module constant rather than a
+#: local, so ``tests/test_serpbase_live.py`` sends the request this code sends
+#: instead of a copy of it -- a live test built on a duplicated URL stops
+#: checking the provider the moment the two drift. `apifare.py` names its
+#: endpoint the same way and for the same reason.
+SEARCH_ENDPOINT = "https://api.serpbase.dev/google/search"
+
 
 class SerpbaseError(RuntimeError):
     pass
@@ -48,12 +55,11 @@ async def search_serpbase(
         return []
 
     api_key = _get_serpbase_api_key()
-    url = "https://api.serpbase.dev/google/search"
     payload = {"q": query}
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
 
     async def _do_request(client: httpx.AsyncClient) -> dict[str, Any]:
-        resp = await client.post(url, headers=headers, json=payload)
+        resp = await client.post(SEARCH_ENDPOINT, headers=headers, json=payload)
         resp.raise_for_status()
         try:
             data = resp.json()
