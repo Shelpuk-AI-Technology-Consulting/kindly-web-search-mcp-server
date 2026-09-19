@@ -126,8 +126,33 @@ browser knobs.
   README documents installing one. An image change that removes it, or that
   changes where `KINDLY_BROWSER_EXECUTABLE_PATH` should point, must move the
   README with it.
+- **This image is published for two architectures, and this file is the one a
+  `Dockerfile` change loads.** `select_rules.py` routes `Dockerfile` and
+  `.dockerignore` here, not to `ci`, so the arm64 constraint has to be stated
+  here or the reviewer of the change most likely to break it never sees it. A
+  change is a finding if it only works on x86-64: an architecture-specific
+  download (`...amd64.deb`, a `uname -m` assumption), a `FROM --platform=...`, or
+  a package Debian does not build for arm64. `.github/workflows/docker-publish.yml`
+  builds both on every pull request, but it gates no merge, so a red build there
+  is a signal somebody has to look at rather than one that stops the change.
+- **A second `FROM` is not a free refactor.** The cache export mode in
+  `docker-publish.yml` is paired to this file's stage count --
+  `CacheModeMatchesTheBuildTests` fails until both move -- because `mode=min` and
+  `mode=max` cache the same layers over one stage and very different ones over
+  two.
 - Pin what the image installs. An unpinned base tag or package makes the built
   image differ from the one that was reviewed.
+  - ⚠️ **Exception, deliberate, since the image is published: the base tag and
+    `chromium` float.** `FROM python:3.13-slim` and `apt-get install chromium`
+    are both unpinned on purpose. Chromium is this image's attack surface and it
+    fetches arbitrary URLs on a user's behalf, so a pinned digest would make
+    every security update wait for somebody to notice and bump it;
+    `workflow_dispatch` with `no-cache:` exists to refresh it on demand instead.
+    Reproducibility is not lost and is in fact stronger: readers pin the
+    **published image digest**, which pins the whole image rather than only its
+    base. So "the image differs from the one reviewed" is answered by the digest,
+    not by the tag. A change that pins the base is not wrong, but it takes on the
+    update duty and should say who carries it.
 
 ## Version
 

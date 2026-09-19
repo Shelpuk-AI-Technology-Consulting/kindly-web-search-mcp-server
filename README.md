@@ -736,9 +736,47 @@ Whether you can run the MCP server on a different PC depends on your MCP client:
 - **Stdio / command-based clients** (config uses `command` + `args` to spawn the server): the server must run on the same machine (or at least somewhere the client can run the command). You can still use Docker, but locally (the client launches `docker run ...`).
 - **HTTP-capable clients** (can connect to a server URL): you can run Kindly remotely in Docker using **Streamable HTTP**.
 
+### Prebuilt image (GHCR)
+
+Pull the image instead of building it. It is published for Intel/AMD
+(`linux/amd64`) and ARM (`linux/arm64`) — so it runs on ordinary servers and PCs,
+on an Apple Silicon Mac, and on ARM cloud instances:
+
+```bash
+# Newest build of the default branch:
+docker pull ghcr.io/shelpuk-ai-technology-consulting/kindly-web-search-mcp-server:latest
+
+# Or one build that never changes, using its digest from the package page:
+docker pull ghcr.io/shelpuk-ai-technology-consulting/kindly-web-search-mcp-server@sha256:<digest>
+```
+
+> **If `docker pull` says `denied` or `unauthorized`**, the package is still
+> private. GitHub creates a new container package as private even under a public
+> repository — a package inherits the repository's permissions but not its
+> visibility, and there is no API for it. A maintainer has to open the package's
+> **Package settings** once and set visibility to Public.
+
+Two tags track the newest build of the default branch and therefore **move**:
+`latest`, and the package version the image contains (the `version` in
+`pyproject.toml`). Pin the `@sha256:` digest when you need a build that never
+changes.
+
+Run it the same way as a locally built image — just use the full name:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e SERPER_API_KEY="..." \
+  -e GITHUB_TOKEN="..." \
+  ghcr.io/shelpuk-ai-technology-consulting/kindly-web-search-mcp-server \
+  --http --host 0.0.0.0 --port 8000
+```
+
+See the section below for the other environment variables and the allowlist
+caveats — they apply identically to the prebuilt image.
+
 ### Docker (Streamable HTTP)
 
-Build the image:
+Or build the image yourself:
 
 ```bash
 docker build -t kindly-web-search-mcp-server .
@@ -841,6 +879,11 @@ docker compose up -d
 ```
 
 Container will be built at the first run. To rebuild it, append `--build` to the command above.
+To use the prebuilt image instead of building, replace the `build:` and `context:` lines with:
+
+```yaml
+    image: ghcr.io/shelpuk-ai-technology-consulting/kindly-web-search-mcp-server:latest
+```
 
 > **Warning:** `ports: - "8000:8000"` publishes the server on **all** host interfaces. As with
 > `docker run` above, remote HTTP here is **unauthenticated** and **unencrypted** — don’t expose

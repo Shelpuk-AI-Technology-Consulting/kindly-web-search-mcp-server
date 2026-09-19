@@ -1,7 +1,7 @@
 # System design — kindly-web-search-mcp-server
 
-**Scope of this document today: the pooled-browser lifecycle.** It is
-deliberately partial. `.system_design/` already holds the test suite's design
+**Scope of this document today: the pooled-browser lifecycle, and how the project
+is distributed.** It is deliberately partial. `.system_design/` already holds the test suite's design
 (`TEST_SUITE.md`) and its plan; this file is the home for *production* design,
 seeded with the one area that had none and needed it — the contract by which the
 parent process, the Chromium pool and the nodriver worker share a long-lived
@@ -180,3 +180,84 @@ timers and in-flight requests; cookies, storage and service-worker registrations
 live in the slot's profile directory and survive every request the slot serves.
 A new window is not a new profile. `Target.createBrowserContext` is the lever if
 per-request isolation is ever wanted, and nothing uses it today.
+
+---
+
+## 2. Distribution: the published container image
+
+### 2.1 What the repository actually ships
+
+The project publishes **two** artifacts from one source tree, and they version
+independently:
+
+| Artifact | Where it comes from | How a user pins it |
+|---|---|---|
+| Python package | `pyproject.toml` `version`, installed via `uvx` / pip | the version string |
+| Container image | `.github/workflows/docker-publish.yml` → `ghcr.io/<owner>/<repo>` | the image **digest** |
+
+They are tied together deliberately but loosely: the image carries a
+`:<package version>` tag read from `pyproject.toml` at build time, so a reader can
+tell which package version an image contains. The tie is a *label*, not a
+guarantee of immutability — see §2.3.
+
+### 2.2 Why the image is built for two architectures
+
+`README.md` documents `docker run` as a supported way to run the server, so the
+image has to work on the machines readers actually have. Publishing only
+`linux/amd64` does not degrade on ARM, it **fails**: Docker refuses to pull an
+image with no entry for the host architecture. Forcing it with
+`--platform linux/amd64` runs the headless Chromium this image exists to carry
+under emulation, which is the one thing the image must do well.
+
+`linux/amd64` and `linux/arm64` cover servers, PCs, Apple Silicon Macs and ARM
+cloud instances. The list is short on purpose: each platform is another emulated
+build leg, and an architecture only works where both the base image and Debian's
+`chromium` exist for it.
+
+**One emulated job rather than one native job per architecture.** Free
+`ubuntu-24.04-arm` runners exist, so the faster shape is available — but it costs
+three jobs, digests passed between them, a second runner label in the recorded
+ceilings, and a pull-request path with more than one cache scope. Measured cost of
+the simple shape: **5m26s** for both architectures on a cold cache. That is the
+number to revisit the trade against, not an estimate.
+
+### 2.3 The tag contract, and the one surprise in it
+
+- `:latest` and `:<package version>` both track the newest build of the default
+  branch. **They move.** `:0.1.9` names *the newest build carrying package version
+  0.1.9*, not one artifact.
+- `:sha-<short>` and the `@sha256:` digest are immutable. The digest is what
+  README tells readers to pin, and it is stronger than pinning a base image would
+  be: it pins the whole image rather than only its base.
+- The `v*` tag trigger and the `type=semver` patterns exist and **have never
+  fired** — the repository has no tags and no releases. They are kept because a
+  release process is the intended direction.
+
+**Why the base image and `chromium` are deliberately unpinned.** Chromium is this
+image's attack surface and it fetches arbitrary URLs on a user's behalf. A pinned
+base digest makes every security update wait for somebody to notice and bump it;
+`workflow_dispatch` with `no-cache:` refreshes it on demand instead. The digest
+above is what gives a user reproducibility, so nothing is lost. This is an
+explicit exception to `.github/review/rules/packaging.md`'s "pin what the image
+installs", recorded in that file so the next reader cannot mistake it for an
+oversight.
+
+### 2.4 Reachability is not controlled by anything in this repository
+
+GitHub creates a new container package as **private** even under a public
+repository: a package inherits the repository's permissions but not its
+visibility, and there is no API for it. So the first successful publish leaves an
+image nobody can pull until a maintainer changes the setting by hand. This is the
+only thing the repository produces whose reachability no file here controls —
+which is why README documents the `denied` / `unauthorized` symptom rather than
+assuming the pull works.
+
+### 2.5 How this is kept honest
+
+The publishing workflow gates no merge (it is one of exactly two jobs outside
+`ci-required`), so its correctness cannot rely on a red check stopping a bad
+change. It relies instead on offline guards in
+`.github/review/tests/test_review_scripts.py` — L2 contract tests in
+`TEST_SUITE.md`'s sense, pairing the workflow against itself, against `README.md`
+and against the `Dockerfile`. `.github/review/rules/ci.md` § `docker-publish.yml`
+names them and says what each defends.

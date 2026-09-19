@@ -101,10 +101,11 @@ concurrency:
 
 jobs:
   review-scripts:
-    # The Claude review system's own tests -- 555 of them, covering the rule
+    # The Claude review system's own tests -- 582 of them, covering the rule
     # selector, the result classifier, the failure notices, the prompt redactor,
     # the findings schema, the workflow's own wiring, the workflow parser behind
-    # the runner-ceiling guard, and the `ci-required` aggregation.
+    # the runner-ceiling guard, the `ci-required` aggregation, and the
+    # image-publishing workflow's pairings with `README.md` and the `Dockerfile`.
     #
     # Pure Python and subprocesses, no service container, no pip install at all --
     # the suite runs in about a second.

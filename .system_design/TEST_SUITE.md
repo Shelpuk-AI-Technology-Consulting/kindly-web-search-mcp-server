@@ -3314,6 +3314,7 @@ installs `--no-deps`, so pip never compares those pins with these bounds.
 | `coverage` | pinned lane; runs the three controls of §10.4 | `requirements-ratchet.txt` (no `mypy`) | Python 3.13, pinned | Linux |
 | `broad` (transitional) | `--ignore=tests/package -m "not live and not chromium and not package"` | `.[dev]` | Python 3.13 | Windows + Linux |
 | `ci-required` | aggregation only — no tests | — | | Linux |
+| `build-and-push` (`docker-publish.yml`) | **runs no tests** — builds and publishes the container image | — | | Linux |
 
 `fast`, `fast-extras`, `subsystem`, `chromium`, `package`, `types` and `coverage`
 run on every push and PR.
@@ -3325,6 +3326,17 @@ exists at all before the rest of the design is built; E4-3 replaces it with
 so the recorded job set in `.github/review/tests/test_review_scripts.py` does not
 name a job this table never mentions — a reader finding a job there and not here
 has no way to tell a transitional one from an accident.
+
+**`build-and-push` is listed for that same reason and runs no tests at all.** It
+builds the container image for `linux/amd64` and `linux/arm64` and publishes it
+to GHCR; on a pull request it builds both and pushes nothing, which makes it a
+portability *signal* for `Dockerfile` changes rather than a test job. It is one of
+exactly two jobs outside `ci-required` — see `JOBS_OUTSIDE_THE_REQUIRED_AGGREGATE`
+in `test_review_scripts.py`, which records both and fails when a third appears
+unrecorded. Its own invariants are guarded offline in that same file, by the
+classes `.github/review/rules/ci.md` § `docker-publish.yml` names: those are **L2
+contract tests** in this document's sense — the workflow paired against itself,
+against `README.md` and against the `Dockerfile` — not tests of the server.
 
 **The `coverage` job is where §10.4's controls actually execute**, and it is a
 required dependency of `ci-required` (which remains the only *required check*).

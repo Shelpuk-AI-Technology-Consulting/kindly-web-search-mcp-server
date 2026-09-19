@@ -150,12 +150,74 @@ EXPECTED_JOBS = {
     ("ci.yml", "ci-required"),
     ("tests-broad.yml", "broad"),
     ("claude-code-review.yml", "review"),
+    # Publishes the container image. Whether it feeds the aggregate is recorded
+    # once, in :data:`JOBS_OUTSIDE_THE_REQUIRED_AGGREGATE`, rather than argued
+    # again here: two records of one fact is what this set stopped being.
+    ("docker-publish.yml", "build-and-push"),
 }
 
 #: The workflow files themselves, pinned for the same reason one level up: the
 #: sweep globs rather than enumerates, so a file added later is checked -- and
 #: this set is what fails if one is added, renamed or deleted without a thought.
-EXPECTED_WORKFLOW_FILES = {"ci.yml", "claude-code-review.yml", "tests-broad.yml"}
+EXPECTED_WORKFLOW_FILES = {
+    "ci.yml",
+    "claude-code-review.yml",
+    "docker-publish.yml",
+    "tests-broad.yml",
+}
+
+#: Jobs that no `ci-required` run waits on.
+#:
+#: 🔴 **A set, because the alternative is a comment and this file already learned
+#: not to trust one.** :class:`CiRequiredAggregatorTests` derives the aggregate's
+#: dependencies from `ci.yml` alone -- correct for what it checks, and it means a
+#: job in any OTHER workflow file sits outside the aggregate by construction with
+#: nothing to compare against. `claude-code-review.yml/review` had been in that
+#: position since it was written and was never recorded anywhere;
+#: `docker-publish.yml/build-and-push` has just joined it. Recording both is what
+#: makes the next one an addition somebody has to justify rather than a silence.
+#:
+#: ⚠️ **Named for the AGGREGATE, not for "the merge gate", and the distinction is
+#: the whole reason this set can be checked.** What actually blocks a merge is
+#: branch protection, which lives in repository settings that no file here can
+#: read -- so a set claiming to hold "every job that gates no merge" would be
+#: asserting something this suite has no access to. `ci-required` is the only
+#: *required check* (`.system_design/TEST_SUITE.md`), and it is readable, so that
+#: is what this is measured against. A job listed here is one the aggregate does
+#: not wait on; whether some setting elsewhere also requires it is a question for
+#: the settings page.
+#:
+#: Neither entry is an oversight. The Claude review job posts findings and is not
+#: a verdict the aggregate waits on; the image build is a signal about
+#: `Dockerfile` portability. `rules/ci.md` says so under each.
+JOBS_OUTSIDE_THE_REQUIRED_AGGREGATE = {
+    ("claude-code-review.yml", "review"),
+    ("docker-publish.yml", "build-and-push"),
+}
+
+#: The architectures the image is published for, pinned as a SET for the reason
+#: :data:`EXPECTED_JOBS` gives: a sweep that reads `platforms:` and finds one
+#: entry passes, and so does a sweep that finds one because somebody deleted the
+#: other. Only a comparison against a record tells those apart.
+PUBLISHED_PLATFORMS = {"linux/amd64", "linux/arm64"}
+
+#: Words a reader recognises for each published platform, which README must carry
+#: **beside** the identifier itself.
+#:
+#: ⚠️ **The identifier is the thing paired; the prose is checked separately, and
+#: that split is deliberate.** An earlier draft paired `platforms:` to README's
+#: prose alone -- `linux/arm64` against the phrase "ARM" -- which made a guard out
+#: of a translation nobody had agreed to: rewording one user-facing sentence
+#: turned the suite red for a reason that had nothing to do with what the image
+#: supports, and that is the shape that gets a guard edited into silence. README
+#: now writes both (``ARM (`linux/arm64`)``), so the load-bearing half is a
+#: token-to-token comparison and the prose is held only to *existing*, not to a
+#: wording. Somebody shopping for an Apple Silicon Mac still needs the word "ARM"
+#: to know the image is for them, which is why the prose is checked at all.
+PLATFORM_IN_PROSE = {
+    "linux/amd64": "Intel/AMD",
+    "linux/arm64": "ARM",
+}
 
 
 def _workflow_files():
@@ -484,6 +546,85 @@ def _declared_jobs(path):
             }
         )
     return jobs
+
+
+def _step_block(text: str, name: str) -> str | None:
+    """Return one workflow step's text, bounded to that step.
+
+    Bounded rather than swept, for the reason :func:`_jobs_section` gives one
+    level up: an unbounded slice reads the *next* step's keys, so a step
+    declaring no ``if:`` of its own acquires the following step's condition and a
+    guard pairing the two reports an agreement that is not there.
+
+    🔴 **The bound is the next LIST ITEM, not the next ``- name:``.** The first
+    draft ended the slice at `^      - name:` and was measured going hollow: a
+    step written `- uses: …` with no `name:` is invisible to that pattern, so the
+    named step above it swallowed the next one whole. Moving the login step's
+    `if:` down onto a following name-less step then left
+    :class:`PublishConditionIsPairedTests` green while the workflow logged in to
+    the registry on every pull request. Name-less steps are this repository's
+    ordinary style -- `ci.yml` and `tests-broad.yml` are full of them -- so this
+    was not a hypothetical shape.
+
+    Args:
+        text: The whole workflow file.
+        name: The step's ``name:`` value, matched exactly.
+
+    Returns:
+        The step's text, from its ``- name:`` line up to the next step at the
+        same depth, or ``None`` when no step carries that name.
+    """
+
+    opening = re.search(rf"^      - name: {re.escape(name)}[ \t]*$", text, re.M)
+    if opening is None:
+        return None
+    tail = text[opening.end() :]
+    following = re.search(r"^      - \S", tail, re.M)
+    return tail[: following.start()] if following else tail
+
+
+def _condition(expression: str) -> str:
+    """Normalise a workflow condition so two spellings of it compare equal.
+
+    ``if:`` takes a bare expression and an input like ``push:`` needs ``${{ }}``
+    around it, so two lines saying the same thing are never textually identical.
+    Nothing else is touched: quoting and operators are exactly what decide
+    whether a push happens.
+
+    Args:
+        expression: The value as written in the file.
+
+    Returns:
+        The expression with any surrounding ``${{ }}`` removed and runs of
+        whitespace collapsed.
+    """
+
+    stripped = expression.strip()
+    wrapped = re.fullmatch(r"\$\{\{(.*)\}\}", stripped, re.S)
+    if wrapped is not None:
+        stripped = wrapped.group(1)
+    return " ".join(stripped.split())
+
+
+def _dockerfile_stages(text: str) -> int:
+    """Return how many build stages a ``Dockerfile`` declares.
+
+    Counts ``FROM`` at the start of a line, case-insensitively and tolerating
+    leading whitespace: Docker accepts any casing for an instruction and ignores
+    indentation before it, and a counter understanding only the conventional
+    spelling reads a lowercase *or indented* multi-stage file as single-stage --
+    the direction that passes. Both shapes were measured surviving an earlier
+    draft of this function.
+
+    Args:
+        text: The whole ``Dockerfile``.
+
+    Returns:
+        The number of ``FROM`` instructions.
+    """
+
+    return len(re.findall(r"^[ \t]*FROM[ \t]", text, re.M | re.I))
+
 
 REVIEW_DIR = Path(__file__).resolve().parents[1]
 PROMPT = REVIEW_DIR / "REVIEW_PROMPT.md"
@@ -3754,7 +3895,7 @@ class TestInterpolationGuardItself(unittest.TestCase):
 INTERPRETER = r'"?\$\{?pythonLocation\}?/bin/python3?"?'
 
 
-def _workflow_step_script(step_name: str) -> str:
+def _workflow_step_script(step_name: str, path: Path | None = None) -> str:
     """Extract a step's ``run:`` block verbatim from the real workflow file.
 
     Testing the shell the workflow actually runs, rather than a copy of it, is
@@ -3764,6 +3905,9 @@ def _workflow_step_script(step_name: str) -> str:
 
     Args:
         step_name: Value of the step's ``name:`` key.
+        path: The workflow to read. Defaults to :data:`WORKFLOW`, which is what
+            every caller written before a second workflow grew a ``run:`` step
+            passes; :class:`VersionTagIsDerivedTests` names `docker-publish.yml`.
 
     Returns:
         The dedented shell script the step runs.
@@ -3772,7 +3916,7 @@ def _workflow_step_script(step_name: str) -> str:
         AssertionError: When the step or its ``run:`` block cannot be found.
     """
 
-    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    lines = (WORKFLOW if path is None else path).read_text(encoding="utf-8").splitlines()
     start = next(
         (i for i, ln in enumerate(lines) if ln.strip() == f"- name: {step_name}"), None
     )
@@ -11646,6 +11790,941 @@ class DeclaredJobCapIsEnforceableTests(unittest.TestCase):
                     "annotation naming a limit this repository does not "
                     "declare anywhere",
                 )
+
+
+
+class PublishConditionIsPairedTests(unittest.TestCase):
+    """Two lines decide whether a pull request can publish. Nothing paired them.
+
+    🔴 **This is the shape :data:`RUNNER_JOB_CEILING_MINUTES` was written after,
+    one workflow later.** There, a cap and a runner label contradicted each other
+    and every check read one line or the other. Here, `push:` on the build step
+    and `if:` on the login step were documented in `rules/ci.md` as working "only
+    as a pair", and that sentence was the whole of the enforcement.
+
+    🔴 **Deleting `push:` fails SILENTLY and GREEN.** `docker/build-push-action`
+    declares that input with ``default: 'false'``, so a change dropping the line
+    does not break the build -- it quietly stops publishing, and the first symptom
+    is a reader pulling a `:latest` that stopped moving weeks ago.
+
+    ⚠️ **The reassurance in the workflow is narrower than it reads.** Both the
+    workflow and the rule note that a pull request from a *fork* gets a read-only
+    `GITHUB_TOKEN`, so a push would fail there regardless. True -- and not true of
+    a pull request from a branch in this repository, which gets the declared
+    `packages: write`. This repository takes both shapes. For the branch shape the
+    single `push:` expression is the only thing between a pull request and a
+    publish, which is why it is paired here rather than trusted.
+    """
+
+    WORKFLOW = WORKFLOW_DIR / "docker-publish.yml"
+    LOGIN_STEP = "Log in to GitHub Container Registry"
+    BUILD_STEP = "Build and push image"
+
+    def _text(self):
+        """Return the whole workflow file.
+
+        Returns:
+            `docker-publish.yml` as text.
+        """
+
+        return self.WORKFLOW.read_text(encoding="utf-8")
+
+    def _login_condition(self):
+        """Return the login step's ``if:``, normalised.
+
+        Returns:
+            The condition text.
+
+        Raises:
+            AssertionError: The step is absent, or declares no ``if:``.
+        """
+
+        block = _step_block(self._text(), self.LOGIN_STEP)
+        self.assertIsNotNone(block, f"no step named {self.LOGIN_STEP!r}")
+        found = re.search(r"^        if:[ \t]*(\S.*?)[ \t]*$", block, re.M)
+        self.assertIsNotNone(
+            found,
+            f"the {self.LOGIN_STEP!r} step declares no `if:`, so it authenticates "
+            "on pull requests for a push that never happens -- and the pairing "
+            "below can no longer be checked at all",
+        )
+        return _condition(found.group(1))
+
+    def _push_condition(self):
+        """Return the build step's ``push:`` value, normalised.
+
+        Returns:
+            The condition text.
+
+        Raises:
+            AssertionError: The step is absent, or declares no ``push:``.
+        """
+
+        block = _step_block(self._text(), self.BUILD_STEP)
+        self.assertIsNotNone(block, f"no step named {self.BUILD_STEP!r}")
+        found = re.search(r"^          push:[ \t]*(\S.*?)[ \t]*$", block, re.M)
+        self.assertIsNotNone(
+            found,
+            f"the {self.BUILD_STEP!r} step declares no `push:`, and the action "
+            "defaults it to false -- so the workflow now builds on every trigger "
+            "and publishes on none of them, with every check green",
+        )
+        return _condition(found.group(1))
+
+    def test_the_login_step_and_the_build_step_agree_on_when_a_push_happens(self):
+        """The claim. Both lines read, normalised, and compared."""
+
+        self.assertEqual(
+            self._login_condition(),
+            self._push_condition(),
+            "the login step and the build step no longer agree about when this "
+            "workflow publishes. Logging in without pushing is harmless; pushing "
+            "without logging in fails the run; and pushing on a pull request from "
+            "a branch in THIS repository would publish an unmerged change, "
+            "because that token is not the read-only one a fork gets. Change both "
+            "lines or neither",
+        )
+
+    def test_the_condition_is_the_one_that_keeps_pull_requests_out(self):
+        """🔴 Agreement is necessary and not sufficient.
+
+        Both lines could agree on `true` and the case above would pass while
+        every pull request published; both could move to
+        `github.ref == 'refs/heads/main'` and agree perfectly while silently
+        dropping the `v*` tag path this workflow declares a trigger for. The
+        pairing stops them drifting apart; this stops them agreeing on the wrong
+        thing.
+        """
+
+        self.assertEqual(
+            self._push_condition(),
+            "github.event_name != 'pull_request'",
+            "this workflow must not publish from a pull request: the tag list "
+            "includes `type=ref,event=pr`, so a pull request that pushed would "
+            "put an unreviewed build in the registry under a `pr-<n>` tag",
+        )
+
+    #: Build-step inputs keyed to *publishing*, as opposed to keyed to some other
+    #: event. Enumerated rather than swept, because a sweep cannot tell them
+    #: apart: `no-cache:` also tests `github.event_name`, but against
+    #: `workflow_dispatch`, and a guard demanding one predicate everywhere would
+    #: report a correct line as wrong. The control below pins that distinction so
+    #: this tuple cannot quietly absorb it.
+    PUBLISHING_KEYS = ("push", "cache-to")
+
+    def test_every_line_keyed_to_the_publishing_path_uses_the_same_predicate(self):
+        """🔴 Three lines, not two, and the third is easy to forget.
+
+        `cache-to:` is keyed to the same event as `push:` and the login `if:` --
+        `rules/ci.md` argues for it at length -- so a change to "when does this
+        workflow publish" has three sites and a pair check would bless two of
+        them.
+
+        ⚠️ Checked per key against :data:`PUBLISHING_KEYS`, over the whole file.
+        A fourth publishing-keyed input added later is **not** covered
+        automatically: it has to be added to that tuple, which is the price of
+        being able to tell it apart from `no-cache:`.
+        """
+
+        text = self._text()
+        predicate = "github.event_name != 'pull_request'"
+        for key in self.PUBLISHING_KEYS:
+            with self.subTest(key=key):
+                found = re.search(
+                    rf"^          {re.escape(key)}:[ \t]*(\S.*?)[ \t]*(?:#.*)?$",
+                    text,
+                    re.M,
+                )
+                self.assertIsNotNone(found, f"the build step declares no `{key}:`")
+                self.assertIn(
+                    predicate,
+                    found.group(1),
+                    f"`{key}:` is no longer keyed to the publishing path; it and "
+                    "the login step's `if:` have to move together or the "
+                    "workflow does half of publishing",
+                )
+
+    def test_the_manual_rebuild_is_keyed_to_a_different_event_on_purpose(self):
+        """🔴 The control that keeps the tuple above honest.
+
+        `no-cache:` reads `github.event_name` too, and it must NOT carry the
+        publishing predicate: it is true for `workflow_dispatch`, which is how a
+        manual rebuild refuses the stale `apt-get` layer. If somebody ever
+        "fixes" the case above by sweeping every `github.event_name` line, this
+        is what stops it.
+        """
+
+        found = re.search(
+            r"^          no-cache:[ \t]*(\S.*?)[ \t]*(?:#.*)?$", self._text(), re.M
+        )
+        self.assertIsNotNone(found, "the build step declares no `no-cache:`")
+        self.assertIn("workflow_dispatch", found.group(1))
+        self.assertNotIn("pull_request", found.group(1))
+
+    def test_the_normaliser_does_not_make_different_conditions_look_equal(self):
+        """🔴 The control. A normaliser returning a constant passes everything.
+
+        The case above compares two strings this module produced, so a bug
+        flattening both to ``""`` -- an over-eager strip, a regex matching
+        nothing -- would report agreement for ever.
+        """
+
+        self.assertEqual(
+            _condition("${{ github.event_name != 'pull_request' }}"),
+            _condition("github.event_name  !=  'pull_request'"),
+        )
+        self.assertNotEqual(
+            _condition("${{ github.event_name != 'pull_request' }}"),
+            _condition("true"),
+        )
+        self.assertNotEqual(
+            _condition("github.event_name == 'pull_request'"),
+            _condition("github.event_name != 'pull_request'"),
+        )
+
+    def test_the_step_slice_stops_at_the_next_step(self):
+        """🔴 The control for the bound, which is what makes the pairing real.
+
+        An unbounded slice hands the login step the *build* step's keys, so both
+        conditions this class compares would come from one line and agree with
+        themselves no matter what the file said.
+
+        🔴 **The name-less case is the one that was actually hollow**, and it is
+        checked against a synthetic file rather than against this repository's
+        own, which happens to name every step in `docker-publish.yml`. Measured:
+        with the bound at `^      - name:`, deleting the login step's `if:` and
+        putting it on a name-less step below left every case in this class green
+        while the workflow authenticated on every pull request.
+        """
+
+        block = _step_block(self._text(), self.LOGIN_STEP)
+        self.assertNotIn("docker/build-push-action", block)
+        self.assertIn("docker/login-action", block)
+
+        synthetic = (
+            "jobs:\n"
+            "  j:\n"
+            "    steps:\n"
+            "      - name: First\n"
+            "        uses: a/b@v1\n"
+            "      - uses: c/d@v1\n"
+            "        if: github.event_name != 'pull_request'\n"
+        )
+        self.assertNotIn("c/d@v1", _step_block(synthetic, "First"))
+
+
+class PublishedPlatformsArePinnedTests(unittest.TestCase):
+    """The architectures are why this workflow exists, and nothing read them.
+
+    🔴 **Removing one is the change that goes green.** `rules/ci.md` states the
+    failure in its own words -- *"Removing one to make the build faster stops
+    publishing for those users without anything going red"* -- and then left it to
+    the reader. A dropped `linux/arm64` builds faster, passes every check, and is
+    discovered by somebody on an Apple Silicon Mac whose `docker pull` fails with
+    no matching manifest.
+
+    ⚠️ **README is held to the same record, in a reader's words.** The image is
+    only useful to somebody who knows it is for their machine, so the prose
+    promise and the build list are two parties to one contract -- see
+    :data:`PLATFORM_IN_PROSE` for why they cannot be compared literally.
+    """
+
+    WORKFLOW = WORKFLOW_DIR / "docker-publish.yml"
+    README = Path(__file__).resolve().parents[3] / "README.md"
+
+    def _platforms(self):
+        """Return the architectures the workflow publishes for.
+
+        Returns:
+            The ``platforms:`` entries as a set.
+
+        Raises:
+            AssertionError: The build step declares no ``platforms:``.
+        """
+
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        found = re.search(r"^          platforms:[ \t]*(\S.*?)[ \t]*$", text, re.M)
+        self.assertIsNotNone(
+            found,
+            "the build step declares no `platforms:`, so buildx builds for the "
+            "runner's architecture alone and the image silently becomes x86-64 "
+            "only -- the exact outcome this workflow was added to prevent",
+        )
+        return {item.strip() for item in found.group(1).split(",") if item.strip()}
+
+    def test_the_published_architectures_are_the_ones_recorded(self):
+        """Pinned as a set, so an addition is as loud as a removal."""
+
+        self.assertEqual(
+            self._platforms(),
+            PUBLISHED_PLATFORMS,
+            "the set of published architectures moved. Removing one stops "
+            "`docker pull` working for those users with nothing going red; adding "
+            "one only works where the base image and Debian's `chromium` both "
+            "exist for it, and needs a line in README telling those users the "
+            "image is now for them",
+        )
+
+    def test_every_published_architecture_has_words_a_reader_recognises(self):
+        """The translation table covers the record exactly -- no gaps, no rot."""
+
+        self.assertEqual(
+            set(PLATFORM_IN_PROSE),
+            PUBLISHED_PLATFORMS,
+            "every published architecture needs the words README uses for it, and "
+            "an entry for an architecture no longer published is a sentence "
+            "promising a machine this image does not run on",
+        )
+
+    def test_the_readme_names_every_architecture_that_is_built(self):
+        """The load-bearing half: identifier against identifier."""
+
+        readme = self.README.read_text(encoding="utf-8")
+        for platform in sorted(PUBLISHED_PLATFORMS):
+            with self.subTest(platform=platform):
+                self.assertIn(
+                    platform,
+                    readme,
+                    f"the image is published for {platform} and README does not "
+                    "name it, so a reader cannot tell whether it is for their "
+                    "machine -- and an architecture quietly dropped from the "
+                    "build would leave this sentence promising one that no "
+                    "longer exists",
+                )
+
+    def test_the_readme_says_it_in_words_as_well(self):
+        """The other half, held to existing rather than to a wording.
+
+        An identifier alone is not an answer to "will this run on my laptop".
+        This asserts the recognisable word is somewhere in the file; it
+        deliberately does not pin the sentence around it, so ordinary editing of
+        user-facing prose does not turn the suite red.
+        """
+
+        readme = self.README.read_text(encoding="utf-8")
+        for platform in sorted(PUBLISHED_PLATFORMS):
+            with self.subTest(platform=platform):
+                self.assertIn(
+                    PLATFORM_IN_PROSE[platform],
+                    readme,
+                    f"the image is published for {platform} and README never says "
+                    f"{PLATFORM_IN_PROSE[platform]!r}, so the people it was built "
+                    "for have no way to know it is for them",
+                )
+
+    def test_the_platform_list_is_read_from_the_key_and_not_from_the_prose(self):
+        """🔴 The control, and it is not hypothetical for this file.
+
+        `docker-publish.yml`'s header discusses `linux/386`, `linux/ppc64le`,
+        `linux/arm/v7`, `linux/s390x` and `linux/riscv64` -- architectures it
+        deliberately does NOT publish. A guard that searched the file for
+        `linux/arm64` would pass with `platforms:` deleted outright, and one that
+        collected every `linux/...` it found would report five extra platforms.
+        Reading the key line alone is what makes the set above mean anything.
+        """
+
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("linux/ppc64le", text, "the header no longer names it")
+        self.assertNotIn("linux/ppc64le", self._platforms())
+        self.assertEqual(len(self._platforms()), 2)
+
+
+class ReadmeNamesThePublishedImageTests(unittest.TestCase):
+    """README hardcodes a registry path the workflow derives. They must agree.
+
+    🔴 **The workflow cannot be read for the answer, and that is the point.**
+    ``IMAGE_NAME: ${{ github.repository }}`` resolves at run time, so the image's
+    real name appears nowhere in the tree while README writes it out three times.
+
+    ⚠️ **The authority is the Compose build context, not "README's GitHub
+    links".** That was the first draft and it failed on the real file: README
+    links to four repositories -- `serena`, `agent-skill-tdd`, `lad_mcp_server`
+    and this one -- so "the slug the links agree on" had no answer. The
+    `build: context:` URL is the one place README names the repository an image
+    is built *from*, which is exactly the thing the GHCR path is an alternative
+    to. A rename moves both or the pair fails.
+
+    ⚠️ **Lowercased, because the registry is.** `metadata-action` lowercases the
+    repository for the registry, which is exactly why the workflow does not write
+    the name out; a README copying the repository's mixed-case spelling would be
+    documenting a pull that fails.
+    """
+
+    README = Path(__file__).resolve().parents[3] / "README.md"
+
+    def _readme(self):
+        """Return README.
+
+        Returns:
+            `README.md` as text.
+        """
+
+        return self.README.read_text(encoding="utf-8")
+
+    def _slug(self):
+        """Return the ``owner/name`` README builds the image from.
+
+        Returns:
+            The slug, exactly as the Compose build context writes it.
+
+        Raises:
+            AssertionError: README names no build context, or more than one.
+        """
+
+        found = set(
+            re.findall(
+                r"context: https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)\.git",
+                self._readme(),
+            )
+        )
+        self.assertEqual(
+            len(found),
+            1,
+            f"README names {sorted(found)} as a Docker build context; this guard "
+            "derives the registry path from that line, so it cannot settle which "
+            "repository the published image belongs to",
+        )
+        return found.pop()
+
+    def test_every_registry_path_matches_the_repository_readme_links_to(self):
+        """The claim. Every `ghcr.io/...` reference, against one slug."""
+
+        expected = f"ghcr.io/{self._slug().lower()}"
+        paths = set(re.findall(r"ghcr\.io/[A-Za-z0-9._/-]+", self._readme()))
+        self.assertTrue(paths, "README names no GHCR image at all")
+        for path in sorted(paths):
+            with self.subTest(path=path):
+                # 🔴 Equality, not `startswith`. Measured: with a prefix
+                # test, renaming every README path to `...-server-v2` while
+                # leaving the build context alone stayed green -- and a suffixed
+                # rename is the most likely shape of the drift this class exists
+                # to catch. The capture stops at `:` and `@`, so the tag and
+                # digest forms both reduce to the bare path and equality is the
+                # right comparison.
+                self.assertEqual(
+                    path,
+                    expected,
+                    f"README tells a reader to pull {path!r}, but the repository "
+                    f"its own build context names publishes to {expected!r}",
+                )
+
+    def test_the_slug_is_read_and_not_assumed(self):
+        """🔴 The control: a circular slug would make the case above always true.
+
+        If the link pattern also matched the *registry* path, the comparison
+        would be the registry path against itself and could never fail.
+        """
+
+        self.assertNotIn("ghcr.io", self._slug())
+        self.assertIn("/", self._slug())
+
+
+class CacheModeMatchesTheBuildTests(unittest.TestCase):
+    """``mode=max`` exports intermediate stages. This `Dockerfile` has none.
+
+    ⚠️ **Not a style preference -- a pairing, and the pair is in two files.**
+    ``mode=max`` exports every intermediate layer, which earns its size only on a
+    multi-stage build where those layers are discarded from the final image.
+    `Dockerfile` declares one `FROM`, so every layer it builds -- including the
+    expensive `apt-get install chromium` and `pip install` -- is already exported
+    by ``mode=min``. Over a single stage the two cache the same work and ``max``
+    merely spends more of a 10 GB budget this workflow is the only consumer of,
+    evicting its own older entries sooner.
+
+    🔴 **The day `Dockerfile` gains a second `FROM`, ``min`` starts costing real
+    rebuild time**, and nothing about the workflow file would look wrong. That is
+    why the two files check each other here rather than the reasoning living in a
+    comment beside one of them.
+
+    If a build genuinely wants ``max`` over a single stage, that is an argument
+    worth having in the pull request: change this case and say why, rather than
+    letting the two drift apart in silence.
+    """
+
+    WORKFLOW = WORKFLOW_DIR / "docker-publish.yml"
+    DOCKERFILE = Path(__file__).resolve().parents[3] / "Dockerfile"
+
+    def _cache_to(self):
+        """Return the ``cache-to:`` value as written.
+
+        Returns:
+            The expression text.
+
+        Raises:
+            AssertionError: The build step declares no ``cache-to:``.
+        """
+
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        found = re.search(r"^          cache-to:[ \t]*(\S.*?)[ \t]*$", text, re.M)
+        self.assertIsNotNone(
+            found,
+            "the build step declares no `cache-to:`, so nothing is ever written "
+            "to the cache and the `cache-from:` above it can only ever miss",
+        )
+        return found.group(1)
+
+    def test_the_cache_export_mode_matches_the_number_of_build_stages(self):
+        """The claim. One file's stage count decides the other's mode."""
+
+        stages = _dockerfile_stages(self.DOCKERFILE.read_text(encoding="utf-8"))
+        self.assertGreater(stages, 0, "Dockerfile declares no `FROM` at all")
+        expected = "mode=min" if stages == 1 else "mode=max"
+        self.assertIn(
+            expected,
+            self._cache_to(),
+            f"Dockerfile declares {stages} build stage(s), so the cache export "
+            f"should be {expected}: over a single stage `max` exports the same "
+            "layers as `min` and spends more of the shared 10 GB, and over "
+            "several `min` drops the intermediate layers that make a rebuild "
+            "cheap. Change both files together",
+        )
+
+    def test_the_export_still_only_runs_on_the_publishing_triggers(self):
+        """The condition `rules/ci.md` argues for, kept where the mode changed.
+
+        Editing the mode means editing this line, and the conditional around it
+        is the half a careless edit drops -- leaving every pull request writing a
+        cache entry only a re-run of that same pull request could ever read.
+        """
+
+        self.assertIn(
+            "github.event_name != 'pull_request'",
+            self._cache_to(),
+            "`cache-to:` no longer skips pull requests. A pull request's cache "
+            "entry belongs to its own merge ref, so nothing else can read it, and "
+            "it still consumes the repository's shared 10 GB",
+        )
+
+    def test_the_stage_counter_reads_what_docker_reads(self):
+        """🔴 The control. A counter returning 1 for everything passes silently.
+
+        Docker accepts any casing for an instruction, so a counter anchored on
+        `FROM` alone reads a lowercase multi-stage file as single-stage -- the
+        direction that passes. The last case is the mirror: a `FROM` that is not
+        an instruction must not be counted, or a comment mentioning one flips the
+        expected mode.
+        """
+
+        self.assertEqual(_dockerfile_stages("FROM python:3.13-slim\nRUN x\n"), 1)
+        self.assertEqual(
+            _dockerfile_stages(
+                "FROM a AS build\nRUN x\nFROM b\nCOPY --from=build /x /x\n"
+            ),
+            2,
+        )
+        self.assertEqual(_dockerfile_stages("from a AS build\nFROM b\n"), 2)
+        self.assertEqual(_dockerfile_stages("FROM a AS build\n FROM b\n"), 2)
+        self.assertEqual(
+            _dockerfile_stages("# FROM a\nFROM b\nCOPY --from=x /y /z\n"), 1
+        )
+
+
+@unittest.skipIf(BASH is None, "bash is required to run workflow steps")
+class VersionTagIsDerivedTests(unittest.TestCase):
+    """The image's version tag is read from `pyproject.toml`, never written here.
+
+    🔴 **A literal version in a workflow is a second place to bump**, and the one
+    nobody remembers: the package version moves, the image keeps tagging the old
+    number, and `:0.1.9` names a build of 0.2.0. `packaging.md` calls
+    `pyproject.toml` "the published version", so there is exactly one authority
+    and this keeps the workflow reading it.
+
+    ⚠️ **The step is EXECUTED here, not pattern-matched.** A case asserting the
+    `sed` line exists passes on a `sed` that prints nothing -- which would tag the
+    image with an empty string and fail somewhere far away. Running it against the
+    real `pyproject.toml` is what proves it extracts the real version.
+    """
+
+    WORKFLOW = WORKFLOW_DIR / "docker-publish.yml"
+    ROOT = Path(__file__).resolve().parents[3]
+    STEP = "Read the package version"
+
+    def _declared_version(self):
+        """Return the version `pyproject.toml` declares.
+
+        Returns:
+            The version string.
+
+        Raises:
+            AssertionError: The file declares no ``version``.
+        """
+
+        text = (self.ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        found = re.search(r'^version = "([^"]+)"$', text, re.M)
+        self.assertIsNotNone(found, "pyproject.toml declares no `version`")
+        return found.group(1)
+
+    def _run_version_step(self, cwd):
+        """Run the real version step against a checkout.
+
+        Args:
+            cwd: The directory to run it in, standing in for the checkout.
+
+        Returns:
+            A tuple of the exit code and the parsed ``$GITHUB_OUTPUT``.
+        """
+
+        script = _workflow_step_script(self.STEP, path=self.WORKFLOW)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.touch()
+            env = dict(os.environ)
+            # Forward slashes, for the reason `resolve_outcome` gives: a Windows
+            # temp path reaches bash with backslashes and cannot be redirected to.
+            env["GITHUB_OUTPUT"] = out.as_posix()
+            proc = subprocess.run(
+                [BASH, "-c", script],
+                env=env,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+            )
+            parsed = {}
+            for line in out.read_text(encoding="utf-8").splitlines():
+                key, _, value = line.partition("=")
+                if key:
+                    parsed[key] = value
+            return proc.returncode, parsed
+
+    def test_the_step_extracts_the_version_the_package_declares(self):
+        """The claim, run against the real file rather than a fixture."""
+
+        code, outputs = self._run_version_step(self.ROOT)
+        self.assertEqual(code, 0, "the version step failed on this repository")
+        self.assertEqual(
+            outputs.get("version"),
+            self._declared_version(),
+            "the step no longer reads the version `pyproject.toml` declares, so "
+            "the image would be tagged with something else -- or with nothing",
+        )
+
+    def test_a_version_it_cannot_read_fails_the_run(self):
+        """🔴 The control, and the behaviour keeping a blank tag out of GHCR.
+
+        Without the emptiness check the step succeeds, writes ``version=``, and
+        `metadata-action` is handed a tag with no value. Failing here is the
+        difference between a red workflow and a package page with a blank tag.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "pyproject.toml").write_text(
+                '[project]\nname = "x"\n', encoding="utf-8"
+            )
+            code, outputs = self._run_version_step(tmp)
+        self.assertNotEqual(code, 0, "a pyproject with no version was accepted")
+        self.assertFalse(outputs.get("version"))
+
+    def test_the_workflow_writes_no_version_of_its_own(self):
+        """The literal this class exists to keep out of the file."""
+
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        version = self._declared_version()
+        self.assertNotIn(
+            f"value={version}",
+            text,
+            f"the workflow writes the version {version!r} out as a literal; it is "
+            "declared in `pyproject.toml` and must be read from there, or the two "
+            "drift the first time the package version moves",
+        )
+        # 🔴 The step's OWN `id:`, not the literal `version`. Measured: renaming
+        # `id: version` to `id: pkg_version` and leaving the tag line alone left
+        # this class green, and CI would then have published
+        # `type=raw,value=` -- the blank tag the step's emptiness check exists to
+        # prevent, arriving by the one route that check cannot see. The `id:` and
+        # the reference to it are two halves of one link, so they are read
+        # together.
+        block = _step_block(text, self.STEP)
+        self.assertIsNotNone(block, f"no step named {self.STEP!r}")
+        step_id = re.search(r"^        id:[ \t]*(\S+)[ \t]*$", block, re.M)
+        self.assertIsNotNone(
+            step_id,
+            f"the {self.STEP!r} step declares no `id:`, so nothing can reference "
+            "its output and the version tag resolves to an empty string",
+        )
+        # Anchored to the tag line rather than searched for in the file: a
+        # mention in a comment is not a tag, and this file comments heavily.
+        found = re.search(
+            r"^            type=raw,value=\$\{\{ steps\."
+            + re.escape(step_id.group(1))
+            + r"\.outputs\.version \}\}(.*)$",
+            text,
+            re.M,
+        )
+        self.assertIsNotNone(
+            found,
+            f"no tag reads `steps.{step_id.group(1)}.outputs.version`, which is "
+            f"the id the {self.STEP!r} step actually declares. A tag referencing "
+            "some other id resolves to an empty string, and `metadata-action` is "
+            "handed a tag with no value",
+        )
+        self.assertIn(
+            "enable={{is_default_branch}}",
+            found.group(1),
+            "the version tag is not limited to the default branch, so a "
+            "`workflow_dispatch` run from a feature branch would publish "
+            f"`:{version}` built from unmerged code, over the one the default "
+            "branch published",
+        )
+
+
+class PublishSurfaceIsDeclaredTests(unittest.TestCase):
+    """The three one-line invariants whose loss is invisible from a green run.
+
+    ⚠️ **Collected here because each is a single line with a consequence far from
+    it.** `rules/ci.md` argues all three and, until now, argued them at a reader
+    rather than at anything that runs. None of them is exotic; that is the point,
+    because a one-line deletion in a 190-line workflow is exactly what a review
+    skims past.
+    """
+
+    WORKFLOW = WORKFLOW_DIR / "docker-publish.yml"
+
+    def _text(self):
+        """Return the whole workflow file.
+
+        Returns:
+            `docker-publish.yml` as text.
+        """
+
+        return self.WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_job_asks_for_nothing_beyond_pushing_a_package(self):
+        """🔴 `packages: write` is the whole grant, and the whole exposure.
+
+        This job runs a `Dockerfile` from a fork's branch. Every permission it
+        holds is one that build can reach, so the block is asserted whole rather
+        than checked for absences: naming any permission zeroes the rest, so a
+        block that grew a line is a real widening and a block that lost one may
+        have broken the push instead.
+        """
+
+        found = re.search(
+            r"^    permissions:\n((?:^      \S.*\n)+)", self._text(), re.M
+        )
+        self.assertIsNotNone(found, "the job declares no `permissions:` block")
+        # ⚠️ Comment lines are STEPPED OVER rather than parsed. Measured:
+        # with a dict comprehension over every matched line, moving one trailing
+        # `# actions/checkout` onto its own line raised `IndexError` instead of
+        # printing the message below -- so an ordinary edit in a heavily
+        # commented file replaced the diagnosis with a traceback.
+        granted = {}
+        for line in found.group(1).splitlines():
+            if line.strip().startswith("#"):
+                continue
+            key, _, value = line.partition(":")
+            granted[key.strip()] = value.split("#")[0].strip()
+        self.assertEqual(
+            granted,
+            {"contents": "read", "packages": "write"},
+            "this job builds a `Dockerfile` that a fork's pull request controls. "
+            "`contents: read` is for the checkout and `packages: write` is the "
+            "push; anything else is reachable from that build and needs to say "
+            "what it is for",
+        )
+
+    def test_one_build_per_ref_and_the_older_one_is_cancelled(self):
+        """The spend argument in `rules/ci.md`, which only holds with this.
+
+        Without the group, a run of quick pushes starts a full two-architecture
+        emulated build for each, and `rules/ci.md`'s answer to "what does this
+        cost" stops being true.
+        """
+
+        text = self._text()
+        self.assertIn("concurrency:", text, "the workflow declares no concurrency group")
+        self.assertIn("cancel-in-progress: true", text)
+
+    def test_the_attestation_mode_is_a_decision_rather_than_a_default(self):
+        """🔴 Deleting one line restores a default keyed to repository visibility.
+
+        With no `provenance:` input the action chooses `mode=max` on a public
+        repository and `mode=min,inline-only` on a private one, so the same file
+        would mean different things depending on a setting outside it. That
+        conditional default is the entire reason the line exists; its absence is
+        invisible from a green run, because the build still succeeds either way.
+        """
+
+        self.assertRegex(
+            self._text(),
+            re.compile(r"^          provenance: \S+", re.M),
+            "`provenance:` is no longer declared, so what this job attests is "
+            "decided by the repository's visibility rather than by this file",
+        )
+
+    def test_latest_is_limited_to_the_default_branch(self):
+        """The other half of `flavor: latest=false`, and easy to lose alone.
+
+        `latest=false` stops the *action's* default from moving `:latest` on a
+        tag push; this stops the explicit `type=raw` line from doing the same.
+        README documents `:latest` as the newest build of the default branch, so
+        both halves have to hold for that sentence to be true.
+        """
+
+        found = re.search(
+            r"^            type=raw,value=latest(.*)$", self._text(), re.M
+        )
+        self.assertIsNotNone(found, "no `type=raw,value=latest` tag is declared")
+        self.assertIn(
+            "enable={{is_default_branch}}",
+            found.group(1),
+            "`:latest` is no longer limited to the default branch, so a `v*` tag "
+            "push or a `workflow_dispatch` from a feature branch would move it",
+        )
+
+    def test_latest_does_not_move_on_a_tag_push(self):
+        """`flavor: latest=false` is one line and `:latest` is what readers pull.
+
+        The action's default moves `latest` on a tag push as well. README
+        documents `:latest` as the newest build of the default branch, so the
+        default would quietly make that sentence false the first time anybody
+        pushed a `v*` tag.
+        """
+
+        # Compiled with `re.M` rather than passed as a pattern string:
+        # `assertRegex` searches without it, so the anchors would look for the
+        # start of the FILE and the case would fail on a correct workflow.
+        self.assertRegex(
+            self._text(),
+            re.compile(r"^          flavor: \|\n            latest=false$", re.M),
+            "`latest=false` is gone, so `metadata-action`'s default takes over "
+            "and `:latest` would also move on a `v*` tag push -- while the "
+            "explicit `type=raw,value=latest` line still claims to be the only "
+            "thing that sets it",
+        )
+
+
+class AggregateExemptionIsRecordedTests(unittest.TestCase):
+    """Two jobs here gate no merge. Only now is that written down.
+
+    🔴 **:class:`CiRequiredAggregatorTests` cannot see this and never could.** It
+    derives the aggregate's dependencies from `ci.yml` alone, which is right for
+    what it checks and means a job in any OTHER workflow file is outside the merge
+    gate by construction -- with nothing failing, because there is nothing to
+    compare against. `claude-code-review.yml/review` had been in that position
+    since it was written and it was never recorded;
+    `docker-publish.yml/build-and-push` has just joined it.
+
+    ⚠️ **The exemption is granted BY NAME**, the same way the caller-job exemption
+    one class up is, and for the same reason: the difference between an exemption
+    and a hole is whether adding to it takes an edit somebody has to justify.
+    """
+
+    CI = WORKFLOW_DIR / "ci.yml"
+    AGGREGATE = "ci-required"
+
+    def _gated(self):
+        """Return every job the required check actually waits on.
+
+        Resolved rather than listed: the aggregate's ``needs:`` names jobs in
+        `ci.yml`, and one of them is a caller whose reusable workflow's jobs are
+        gated too -- which a flat list of names would miss.
+
+        Returns:
+            A set of ``(file name, job id)``.
+
+        Raises:
+            AssertionError: The aggregate declares no flow-style ``needs:``.
+        """
+
+        text = self.CI.read_text(encoding="utf-8")
+        section = _jobs_section(text)
+        marks = [
+            (m.group(1), m.start())
+            for m in re.finditer(
+                r"^  ([A-Za-z_][A-Za-z0-9_-]*):[ \t]*$", section, re.M
+            )
+        ]
+        bodies = {
+            name: section[start : (marks[i + 1][1] if i + 1 < len(marks) else len(section))]
+            for i, (name, start) in enumerate(marks)
+        }
+
+        # 🔴 The AGGREGATE's own `needs:`, found inside its job body. Measured:
+        # an unanchored `^    needs: \[` over the whole file reads whichever job
+        # declares one first, and giving `review_replies` a `needs:` of its own
+        # made this resolver report `broad` and the repository's entire test
+        # suite as ungated -- with a message telling the maintainer to record
+        # them as gating no merge, which is the outcome
+        # `test_the_resolver_reaches_through_a_caller` exists to prevent.
+        self.assertIn(self.AGGREGATE, bodies, f"`ci.yml` declares no {self.AGGREGATE}")
+        needs = re.search(r"^    needs: \[(.+)\]$", bodies[self.AGGREGATE], re.M)
+        self.assertIsNotNone(needs, "the aggregate declares no flow-style `needs:`")
+
+        gated = {(self.CI.name, self.AGGREGATE)}
+        # Followed transitively: a dependency may itself declare `needs:`, and a
+        # resolver that read only the aggregate's own list would report the far
+        # end of a two-link chain as ungated.
+        pending = [item.strip() for item in needs.group(1).split(",")]
+        while pending:
+            name = pending.pop()
+            if (self.CI.name, name) in gated or name not in bodies:
+                continue
+            gated.add((self.CI.name, name))
+            body = bodies[name]
+            onward = re.search(r"^    needs: \[(.+)\]$", body, re.M)
+            if onward is not None:
+                pending.extend(item.strip() for item in onward.group(1).split(","))
+            called = re.search(
+                r"^    uses:[ \t]*\./\.github/workflows/(\S+?)[ \t]*$", body, re.M
+            )
+            # A gated caller gates everything in the workflow it calls.
+            if called is not None:
+                target = WORKFLOW_DIR / called.group(1)
+                # ⚠️ Checked rather than left to raise. Measured: a caller
+                # pointing at a file that does not exist -- a rename, a `.yaml`
+                # for a `.yml` -- came out of here as a bare `FileNotFoundError`
+                # from two frames down, which is a traceback where this suite
+                # promises a diagnosis.
+                self.assertTrue(
+                    target.is_file(),
+                    f"`{self.CI.name}`'s `{name}` job calls "
+                    f"`{called.group(1)}`, which does not exist. Every job that "
+                    "workflow declares is currently counted as gating no merge",
+                )
+                gated.update(
+                    (target.name, job["job"]) for job in _declared_jobs(target)
+                )
+        return gated
+
+    def test_every_job_outside_the_merge_gate_is_one_that_was_recorded(self):
+        """The claim, derived from the tree on both sides."""
+
+        self.assertEqual(
+            EXPECTED_JOBS - self._gated(),
+            JOBS_OUTSIDE_THE_REQUIRED_AGGREGATE,
+            "a job gates no merge and is not recorded as doing so. A job outside "
+            "`ci-required` can go red on every pull request for a week without "
+            "blocking one, which is fine when it is deliberate and invisible when "
+            "it is not -- add it to `JOBS_OUTSIDE_THE_REQUIRED_AGGREGATE` with the reason, "
+            "or wire it into the aggregate",
+        )
+
+    def test_the_recorded_exemptions_are_jobs_that_exist(self):
+        """🔴 The control against the record rotting into a list of ghosts.
+
+        A ``(file, job)`` that no longer exists subtracts nothing, so the case
+        above keeps passing while the record describes a tree that is gone.
+        """
+
+        self.assertLessEqual(
+            JOBS_OUTSIDE_THE_REQUIRED_AGGREGATE,
+            EXPECTED_JOBS,
+            "an exemption names a job this repository does not have",
+        )
+
+    def test_the_resolver_reaches_through_a_caller(self):
+        """🔴 The control that stops the exemption set absorbing the test suite.
+
+        `ci.yml/broad` declares only ``uses:``; the job actually running the tests
+        lives in `tests-broad.yml`. A resolver stopping at the caller would report
+        the broad test job as ungated, and the fix somebody reached for would be
+        to record the repository's own test suite as gating no merge.
+        """
+
+        gated = self._gated()
+        self.assertIn(("tests-broad.yml", "broad"), gated)
+        self.assertIn(("ci.yml", "review-scripts"), gated)
+
 
 
 class WorkflowJobParserTests(unittest.TestCase):
