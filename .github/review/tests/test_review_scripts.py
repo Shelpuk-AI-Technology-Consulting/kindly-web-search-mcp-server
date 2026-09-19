@@ -14392,10 +14392,29 @@ class NoDocumentMisdescribesTheSlimRunnerTests(unittest.TestCase):
         self.assertIn(self.MARKER, line)
 
     def test_the_sweep_actually_reaches_the_files_it_claims_to(self):
-        """A walk that found nothing satisfies an empty-offences assertion."""
+        """A walk that found nothing satisfies an empty-offences assertion.
 
-        root = self._root()
-        seen = {path.name for path in root.rglob("*") if path.is_file()}
+        🔴 **Reads the SAME source as the sweep, and that is the whole point.**
+        This control kept walking `rglob` after the sweep moved to the tracked
+        set, which left it answering a different question from the one it
+        exists to answer. Measured: breaking `_tracked_files_under`'s prefix
+        match left the sweep iterating an empty list and reporting a clean
+        sweep of nothing, while this case stayed green because the files were
+        still on disk. `NoDocumentClaimsTheRepositoryHasNoTestGateTests`'
+        control, which reads its sweep's own source, failed the same mutation
+        on four subtests.
+
+        ⚠️ **This is the lesson :class:`NoPrivateReferenceLeaksTests` already
+        recorded, applied one class over**: "when each computed its own root,
+        moving the sweep's left the control green ... A control that cannot see
+        the thing it controls is not one." Independence sounds like the safer
+        property and is the one that goes quietly hollow.
+        """
+
+        carried = _tracked_files_under((self._root().name,))
+        if carried is None:
+            self.skipTest("git is unavailable, cannot enumerate tracked files")
+        seen = {relative.rsplit("/", 1)[-1] for relative, _path in carried}
         for expected in ("claude-code-review.yml", "ci.md", "README.md"):
             with self.subTest(file=expected):
                 self.assertIn(expected, seen)
