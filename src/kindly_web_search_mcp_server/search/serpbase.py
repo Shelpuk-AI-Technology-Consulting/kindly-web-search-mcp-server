@@ -34,9 +34,10 @@ async def search_serpbase(
     """Query SerpBase and return parsed Google organic results.
 
     SerpBase endpoint:
-    - GET https://api.serpbase.dev/google/search
-    - Params: q, num, api_key
-    - Returns JSON with ``organic_results`` array (title, link, snippet, position).
+    - POST https://api.serpbase.dev/google/search
+    - Header: X-API-Key
+    - JSON: {"q": "<query>"}
+    - Returns JSON with ``organic`` array (title, link, snippet, position).
 
     Docs: https://serpbase.dev/docs
     """
@@ -48,10 +49,11 @@ async def search_serpbase(
 
     api_key = _get_serpbase_api_key()
     url = "https://api.serpbase.dev/google/search"
-    params = {"q": query, "num": int(num_results), "api_key": api_key}
+    payload = {"q": query}
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
 
     async def _do_request(client: httpx.AsyncClient) -> dict[str, Any]:
-        resp = await client.get(url, params=params)
+        resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         try:
             data = resp.json()
@@ -67,7 +69,7 @@ async def search_serpbase(
     else:
         data = await _do_request(http_client)
 
-    organic = data.get("organic_results", [])
+    organic = data.get("organic", [])
     if not isinstance(organic, list):
         return []
 

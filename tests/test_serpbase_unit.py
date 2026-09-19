@@ -20,9 +20,8 @@ That guard reads the file as **text**, framework imports and class bases alike,
 so spelling the framework name next to ``TestCase`` anywhere in this module --
 this docstring included -- puts it back in the batch's scope. Measured.
 
-SerpBase is also the only provider that sends its credential as a **query
-parameter** rather than a header, so the request case asserts that rather than
-copying a header assertion from a neighbour.
+SerpBase authenticates with an ``X-API-Key`` header, so the request case pins
+both that credential placement and the JSON request body.
 """
 
 from __future__ import annotations
@@ -84,7 +83,7 @@ async def test_parses_organic_results(configured: None) -> None:
     results = await run_search(
         {
             "search_metadata": {"status": "Success"},
-            "organic_results": [
+            "organic": [
                 {
                     "title": "Apple",
                     "link": "https://www.apple.com/",
@@ -106,30 +105,24 @@ async def test_parses_organic_results(configured: None) -> None:
 
 
 async def test_sends_the_documented_request(configured: None) -> None:
-    """Send a GET whose credential travels as a parameter, not as a header
-
-    Asserted separately from the parse because it is a separate claim, and
-    because SerpBase is the only provider in the set that authenticates this way
-    -- a header assertion copied from a neighbour would pass vacuously.
-    """
+    """Send a POST with the credential header and JSON query body."""
     seen: list[httpx.Request] = []
-    await run_search({"organic_results": []}, num_results=4, query="apple inc", seen=seen)
+    await run_search({"organic": []}, num_results=4, query="apple inc", seen=seen)
 
     assert len(seen) == 1
     request = seen[0]
-    assert request.method == "GET"
-    assert str(request.url.copy_with(query=None)) == "https://api.serpbase.dev/google/search"
-    params = dict(request.url.params)
-    assert params.get("q") == "apple inc"
-    assert params.get("num") == "4"
-    assert params.get("api_key") == "serpbase_test"
+    assert request.method == "POST"
+    assert str(request.url) == "https://api.serpbase.dev/google/search"
+    assert request.headers["X-API-Key"] == "serpbase_test"
+    assert request.headers["Content-Type"] == "application/json"
+    assert request.content == b'{"q":"apple inc"}'
 
 
 async def test_keeps_only_entries_carrying_three_strings(configured: None) -> None:
     """Drop what cannot be rendered rather than emitting a half-filled result"""
     results = await run_search(
         {
-            "organic_results": [
+            "organic": [
                 "not an object",
                 {"title": "No link", "snippet": "s"},
                 {"title": "Link is not a string", "link": 42, "snippet": "s"},
@@ -147,15 +140,15 @@ async def test_keeps_only_entries_carrying_three_strings(configured: None) -> No
     assert [result.title for result in results] == ["Good"]
 
 
-async def test_an_empty_organic_results_list_returns_no_results(configured: None) -> None:
+async def test_an_empty_organic_list_returns_no_results(configured: None) -> None:
     """Report a query with no hits as an empty list, not as an error"""
-    assert await run_search({"organic_results": []}) == []
+    assert await run_search({"organic": []}) == []
 
 
-async def test_an_organic_results_value_that_is_not_a_list_returns_no_results(
+async def test_an_organic_value_that_is_not_a_list_returns_no_results(
     configured: None,
 ) -> None:
-    """Survive a reshaped `organic_results`, as `serper.py` does for `organic`
+    """Survive a reshaped `organic` value, as `serper.py` does
 
     Driven with ``null`` rather than with an object, and the difference is
     measured: with the guard removed, an object is iterable, the loop walks its
@@ -170,14 +163,14 @@ async def test_an_organic_results_value_that_is_not_a_list_returns_no_results(
     decision anyone recorded. This step pins the current behaviour and does not
     resolve it; section 14 of ``.system_design/TEST_SUITE.md`` names it.
     """
-    assert await run_search({"organic_results": None}) == []
+    assert await run_search({"organic": None}) == []
 
 
 async def test_returns_at_most_num_results(configured: None) -> None:
     """Stop at the caller's bound even when the provider ignores `num`"""
     results = await run_search(
         {
-            "organic_results": [
+            "organic": [
                 {"title": f"R{i}", "link": f"https://e.example/{i}", "snippet": "s"}
                 for i in range(5)
             ]

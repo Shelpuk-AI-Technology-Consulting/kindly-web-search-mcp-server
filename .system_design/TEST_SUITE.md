@@ -4849,7 +4849,10 @@ is nothing to test.
   a separate change.
 - **SerpBase's API key travelled in the URL and reached the MCP client in an
   error message. CLOSED**, with a second disclosure of the same class found and
-  closed alongside it. `serpbase.py` puts `api_key` in the request `params`;
+  closed alongside it. `serpbase.py` **then** put `api_key` in the request
+  `params` (it no longer does — the provider went POST-only and the key moved to
+  an `X-API-Key` header, so SearXNG is now the only credential reachable through
+  a URL; the incident is kept as written because it is what happened);
   `httpx.HTTPStatusError`'s message quotes the full URL, key included; and
   `search_web` was called with no `except` around it, so the provider exception
   propagated out of the MCP tool and FastMCP rendered its message into the
@@ -4981,8 +4984,8 @@ is nothing to test.
   declared as a **range** — `httpx[socks]>=0.28,<1`. The ratchet file pins
   `0.28.1`, but that governs one job rather than what an ordinary install
   resolves, so an upgrade could otherwise have made this paragraph quietly false
-  with nothing to notice. The four providers that send the query in a request
-  body cannot reach them. SerpBase and Serply put the query in the URL, so an
+  with nothing to notice. Every provider that sends the query in a request
+  body cannot reach them. Serply puts the query in the URL, so an
   over-long query raises `InvalidURL` — measured with 70,000 characters, whose
   messages (`URL component 'query' too long`, `URL too long`) carry neither the
   URL nor the key, pinned by

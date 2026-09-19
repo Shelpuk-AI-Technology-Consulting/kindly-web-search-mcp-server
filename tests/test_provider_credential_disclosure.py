@@ -21,19 +21,19 @@ on ``mcp`` 1.29.1 and ``httpx`` 0.28.1: the served ``CallToolResult`` carries
 future release that began rendering ``__cause__`` at *either* layer turns these
 cases red, which is the outcome that should follow.
 
-**Why the URL is dropped rather than redacted.** SerpBase authenticates by query
-parameter, SearXNG by base-URL userinfo, and a future provider may use a
-parameter name nobody listed. Stripping parameters named ``api_key``, ``key`` or
-``token`` is a denylist that fails open and silently on the first name outside
-it. Dropping the URL has no such gap, and needs no pattern to be kept current.
+**Why the URL is dropped rather than redacted.** SearXNG may authenticate by
+base-URL userinfo, and a future provider may use a parameter name nobody listed.
+Stripping parameters named ``api_key``, ``key`` or ``token`` is a denylist that
+fails open and silently on the first name outside it. Dropping the URL has no
+such gap, and needs no pattern to be kept current.
 
 **What makes the provider sweep non-vacuous.** Only SerpBase disclosed on the
 unrepaired tree; the rest already passed, so on their own they are
 regression cover and not evidence. Pointed at a header-authenticating provider,
 a "the secret is absent" assertion passes while proving nothing. So a **sibling
 case** asserts, once per provider, that the credential was genuinely *in flight*
--- in the request URL for the two providers that carry it there, in a request
-header for those that do not. A provider that stopped being configured, or
+-- in the request URL for SearXNG, now the only provider that carries it there,
+and in a request header for the rest. A provider that stopped being configured, or
 was swapped for one that never disclosed, fails that control instead of passing
 quietly. The sweep rows themselves assert absence only; the control is what makes
 their absence mean something.
@@ -100,8 +100,8 @@ class DisclosureCase:
             cleared environment rather than patched onto the ambient one.
         secret: The exact substring that must never reach the MCP client.
         carried_in_url: ``True`` when this provider puts its credential in the
-            request URL -- SerpBase in a query parameter, SearXNG in the base
-            URL's userinfo. ``False`` when it uses a header. This decides which
+            request URL -- currently only SearXNG through base URL userinfo.
+            ``False`` when it uses a header. This decides which
             in-flight control the case asserts, and is what stops a row passing
             because it silently stopped sending a credential at all.
     """
@@ -126,7 +126,7 @@ DISCLOSURE_CASES: tuple[DisclosureCase, ...] = (
         "SerpBase",
         {"SERPBASE_API_KEY": f"serpbase-{SENTINEL}"},
         f"serpbase-{SENTINEL}",
-        True,
+        False,
     ),
     DisclosureCase(
         "tavily",
@@ -375,8 +375,8 @@ async def test_the_message_carries_neither_the_credential_nor_the_url(
         SERPBASE, lambda request: httpx.Response(status, json={"error": "denied"})
     )
 
-    # The absence is evidence only if the secret was there to be dropped.
-    assert SERPBASE.secret in str(sent[0].url)
+    # The absence is evidence only if the secret was sent to the provider.
+    assert SERPBASE.secret in sent[0].headers.values()
     assert SERPBASE.secret not in str(raised)
     assert "api.serpbase.dev" not in str(raised)
 
@@ -420,8 +420,9 @@ async def test_a_transport_failure_without_a_status_is_also_converted(
     **What the catch deliberately does not cover**, measured on ``httpx`` 0.28.1:
     ``InvalidURL``, ``CookieConflict`` and ``StreamError`` are **not**
     ``HTTPError`` subclasses, and ``InvalidURL`` carries no ``.request`` at all.
-    They are unreachable from the four providers that send the query in a request
-    body. SerpBase and Serply put the query in the URL, so an over-long query
+    They are unreachable from every provider that sends the query in a request
+    body, which is now all of them but Serply. Serply puts the query in the URL,
+    so an over-long query
     raises ``InvalidURL``; its message carries neither the URL nor the key, which
     ``test_an_over_long_query_fails_without_quoting_the_url_or_the_credential``
     pins. A provider added later that derives its URL from configuration would
@@ -779,8 +780,8 @@ def test_invalid_url_carries_no_request_to_read_a_url_from() -> None:
 
     SearXNG builds its URL from ``SEARXNG_BASE_URL``, so unlike every
     fixed-host provider it can raise ``InvalidURL`` from configuration alone --
-    and being outside the family, the router never sees it. (SerpBase and Serply
-    reach it only through an over-long query, covered by the case below.) What keeps that harmless is asserted here:
+    and being outside the family, the router never sees it. (Serply reaches it
+    only through an over-long query, covered by the case below.) What keeps that harmless is asserted here:
     the exception carries no ``request``, so there is no URL on it for anything
     downstream to render. Section 14 records that SearXNG's own blanket
     ``except`` is what actually absorbs it.
@@ -788,22 +789,29 @@ def test_invalid_url_carries_no_request_to_read_a_url_from() -> None:
     assert not hasattr(httpx.InvalidURL("Invalid port: 'notaport'"), "request")
 
 
-@pytest.mark.parametrize("name", ["serpbase", "serply"])
+@pytest.mark.parametrize("name", ["serply"])
 async def test_an_over_long_query_fails_without_quoting_the_url_or_the_credential(
     name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A query too long for a URL fails with a message that quotes nothing.
 
-    SerpBase and Serply put the query in the request URL, so a query past httpx's
-    URL length limit raises :class:`httpx.InvalidURL`. That class is outside the
+    Serply puts the query in the request URL, so a query past httpx's URL length
+    limit raises :class:`httpx.InvalidURL`. That class is outside the
     ``HTTPError`` family, so the router passes it through unconverted and its text
     is what the client receives. Measured on ``httpx`` 0.28.1 with 70,000
     characters: ``URL component 'query' too long`` and ``URL too long``. Pinned
     rather than recorded as prose because ``httpx`` is declared as a range, and a
-    release that quoted the URL here would hand SerpBase's key to the client.
+    release that quoted the URL here would hand a key to the client.
+
+    🔴 **SerpBase was the second row here and is gone, not forgotten.** It moved
+    to ``POST`` with the query in a JSON body, so its URL is now a fixed string
+    and no query can lengthen it -- measured: the case failed with
+    ``DID NOT RAISE InvalidURL`` before it was removed. Kept as a parametrised
+    list of one rather than inlined, because the next provider to put a query in
+    a URL belongs here and a list says so.
 
     The query is asserted absent as well as the key. Serply's key travels in a
-    header, so for that row only the query proves the URL was not quoted.
+    header, so the query is what proves the URL was not quoted.
 
     Args:
         name: The provider whose environment selects it.
