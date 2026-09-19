@@ -706,9 +706,13 @@ def _tracked_paths():
     about a missing executable, for which `subprocess.run` raises
     `FileNotFoundError`. So the "not a work tree" case returned ``None`` as
     documented while the "not on `PATH`" case raised past every caller's
-    ``skipTest`` and errored five tests with a traceback. Invisible in CI, which
+    ``skipTest`` and errored them with a traceback. Invisible in CI, which
     always has git; visible to a contributor on a stripped-down machine, which
-    is exactly who the skip is for.
+    is exactly who the skip is for. (⚠️ That sentence used to count the callers.
+    The number was stale within the same pull request that wrote it, because
+    converting the remaining sweeps added more -- the same rot
+    :class:`RecordedTestCountTests` exists for. "every caller" carries the
+    meaning and cannot go stale.)
     """
 
     repo = Path(__file__).resolve().parents[3]
@@ -1485,6 +1489,39 @@ class NoPrivateReferenceLeaksTests(unittest.TestCase):
             "than deleting the sentence, so the reasoning survives:\n  "
             + "\n  ".join(offences),
         )
+
+    def test_the_sweep_reaches_the_documents_it_claims_to(self):
+        """🔴 An empty sweep satisfies an empty-offences assertion.
+
+        The guard above asserts that it found *no* offence. A `SWEPT_DIRS` that
+        matched nothing in the tracked set -- a renamed directory, a dropped
+        entry -- makes it iterate zero paths and report zero offences, and it
+        passes for having looked at nothing. Measured: pointing `SWEPT_DIRS` at a
+        directory that does not exist left this whole class green.
+
+        ⚠️ **Named files, not a count**, which is the sibling class's convention
+        and for its reason: a count drifts with every document added.
+
+        ⚠️ **`.requirements/` is deliberately NOT pinned by name.** It is
+        gitignored apart from one legacy tracked file, so naming that file would
+        turn a legitimate deletion into a failure of this guard. The non-empty
+        assertion covers the directory disappearing from the record entirely;
+        pinning a filename inside it would be a guard about that one document.
+        """
+
+        carried = _tracked_files_under(self.SWEPT_DIRS)
+        if carried is None:
+            self.skipTest("git is unavailable, cannot enumerate tracked files")
+        self.assertTrue(
+            carried,
+            "the leak sweep reached no tracked document at all -- SWEPT_DIRS "
+            "matches nothing the repository carries, so the guard it feeds "
+            "reports a clean sweep of an empty set",
+        )
+        seen = {relative.rsplit("/", 1)[-1] for relative, _path in carried}
+        for expected in ("ci.md", "REVIEW_PROMPT.md", "claude-code-review.yml"):
+            with self.subTest(document=expected):
+                self.assertIn(expected, seen)
 
     def test_the_sweep_ignores_a_document_the_repository_does_not_carry(self):
         """🔴 The regression. An untracked draft is not published, so not a leak.
