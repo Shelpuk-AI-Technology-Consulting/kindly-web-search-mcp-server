@@ -83,9 +83,14 @@ Every provider module must:
    every new error path — a common shape is `raise ... f"{response.text}"` where
    the provider echoed the request back.
 
-   Two credentials do not travel in a header and so are reachable through a URL:
-   SerpBase's `api_key` query parameter and SearXNG's base-URL userinfo. Both
-   have disclosed to the MCP client in the past — see TEST_SUITE.md §14 — so
+   **SearXNG's base-URL userinfo is the credential that does not travel in a
+   header, and so is reachable through a URL.** SerpBase's `api_key` query
+   parameter used to be the other one; it moved to an `X-API-Key` header when the
+   provider went POST-only, and `DisclosureCase.carried_in_url` in
+   `tests/test_provider_credential_disclosure.py` is the record of which
+   providers carry it where — read that rather than this sentence if they
+   disagree. Both have disclosed to the MCP client in the past — see
+   TEST_SUITE.md §14 — so
    **anything derived from a request URL or from `SEARXNG_BASE_URL` is
    credential-bearing until shown otherwise**, including a log line. Redaction is
    not automatically the answer: `redact_url_credentials` matches `://user:pass@`

@@ -24,16 +24,12 @@ case (a) runs on an environment cleared to nothing and built back up additively,
 (c) asserts the mocked transport was actually reached. Any one of the three alone
 leaves a way to pass without an exchange.
 
-**Statuses are read structurally, never out of the message.** SerpBase sends its
-credential as a URL query parameter, so ``httpx``'s own
-:class:`~httpx.HTTPStatusError` message quotes a URL containing the API key.
-Asserting on that string would make the key part of a pinned expectation. See
-``.system_design/TEST_SUITE.md`` section 14, which records the leak -- now
-**closed**, and closed in a way that leaves this rule untouched. The repair
-converts the exception in the *router*; these cases call the provider coroutines
-directly, below it, so what arrives here is still the raw
-:class:`~httpx.HTTPStatusError` with the URL in its message.
-``tests/test_provider_credential_disclosure.py`` owns the repaired boundary.
+**Statuses are read structurally, never out of the message.** Error wording is
+an unstable interface and ``httpx`` includes request URLs in status errors.
+The router converts those errors before they reach an MCP client; these cases
+call provider coroutines directly and therefore inspect the raw
+:class:`~httpx.HTTPStatusError`. ``tests/test_provider_credential_disclosure.py``
+owns the repaired boundary.
 """
 
 from __future__ import annotations
@@ -197,9 +193,8 @@ def status_code_of(error: BaseException) -> int | None:
     """Find the HTTP status behind an exception, following the chain.
 
     Read from :attr:`httpx.Response.status_code` rather than matched in the
-    exception's message. ``httpx``'s message quotes the request URL, and SerpBase
-    puts its API key in the query string, so a message assertion would pin a
-    string containing a credential.
+    exception's message. ``httpx``'s message quotes the request URL, while the
+    status remains available directly on the response.
 
     Args:
         error: The exception the provider raised.

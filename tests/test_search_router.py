@@ -98,9 +98,9 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
 
         The subject is unchanged: no second provider is tried. What changed is
         the type carried out of the router. It used to be the provider's raw
-        ``httpx.HTTPStatusError``, whose message quotes the request URL -- which
-        for SerpBase holds the API key, and which FastMCP renders into the error
-        an MCP client receives. The router now converts that family into
+        ``httpx.HTTPStatusError``, whose message quotes the request URL and which
+        FastMCP renders into the error an MCP client receives. The router converts
+        that family into
         ``SearchProviderTransportError`` and keeps the original as ``__cause__``,
         so the assertion is retyped and the cause asserted alongside it rather
         than the check being dropped. See
