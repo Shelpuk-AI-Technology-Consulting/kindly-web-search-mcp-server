@@ -150,12 +150,21 @@ EXPECTED_JOBS = {
     ("ci.yml", "ci-required"),
     ("tests-broad.yml", "broad"),
     ("claude-code-review.yml", "review"),
+    # Publishes the container image. It gates no merge -- nothing `needs:` it and it
+    # feeds no aggregate -- but the sweep below globs rather than enumerates, so it
+    # is checked for a declared cap either way and belongs in the record.
+    ("docker-publish.yml", "build-and-push"),
 }
 
 #: The workflow files themselves, pinned for the same reason one level up: the
 #: sweep globs rather than enumerates, so a file added later is checked -- and
 #: this set is what fails if one is added, renamed or deleted without a thought.
-EXPECTED_WORKFLOW_FILES = {"ci.yml", "claude-code-review.yml", "tests-broad.yml"}
+EXPECTED_WORKFLOW_FILES = {
+    "ci.yml",
+    "claude-code-review.yml",
+    "docker-publish.yml",
+    "tests-broad.yml",
+}
 
 
 def _workflow_files():

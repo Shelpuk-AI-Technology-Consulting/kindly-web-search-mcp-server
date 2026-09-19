@@ -1,12 +1,13 @@
 # Rule: CI and the review system (`.github/**`)
 
 This directory contains `claude-code-review.yml`, the `ci.yml` that calls the
-test jobs and aggregates them into `ci-required`, and the reusable
-`tests-broad.yml` those jobs live in — plus the review system
-`claude-code-review.yml` drives. (⚠️ The count that used to open this sentence is
-deliberately gone. It said "three" and would have been wrong the moment the next
-job landed, silently, in prose nothing checked — the same rot the test-count
-guard was written for. The files are **named** instead, and a guard holds this
+test jobs and aggregates them into `ci-required`, the reusable `tests-broad.yml`
+those jobs live in, and `docker-publish.yml`, which builds and publishes the
+container image — plus the review system `claude-code-review.yml` drives. (⚠️ The
+count that used to open this sentence is deliberately gone. It said "three" and
+would have been wrong the moment the next job landed, silently, in prose nothing
+checked — the same rot the test-count guard was written for. The files are
+**named** instead, and a guard holds this
 list to the recorded set.) **The reviewer is reviewing itself here**, so the bar is higher, not
 lower: a defect in this tree degrades or disables review across the repository
 without anything going red. The same is now true of the merge gate: an aggregate
@@ -138,14 +139,15 @@ that overrides the child's endpoint and credentials.
 
 ## Runner and caps
 
-- `runs-on: ubuntu-latest` for the review job and for `ci-required`,
-  `ubuntu-slim` for the two review-system jobs in `ci.yml`, and a
-  `${{ matrix.os }}` over `ubuntu-latest` and `windows-latest` for the broad test
-  job — all GitHub-hosted, **not** the self-hosted fleet the upstream repository
-  uses. This repository is public, and a runner group's "Allow public
-  repositories" setting is off by default, so it reaches no self-hosted group at
-  all. A change that moves either back to `[self-hosted, ...]` needs to say what
-  changed about that grant, or it will silently never run.
+- `runs-on: ubuntu-latest` for the review job, for `ci-required` and for
+  `docker-publish.yml`'s `build-and-push`, `ubuntu-slim` for the two
+  review-system jobs in `ci.yml`, and a `${{ matrix.os }}` over `ubuntu-latest`
+  and `windows-latest` for the broad test job — all GitHub-hosted, **not** the
+  self-hosted fleet the upstream repository uses. This repository is public, and a
+  runner group's "Allow public repositories" setting is off by default, so it
+  reaches no self-hosted group at all. A change that moves either back to
+  `[self-hosted, ...]` needs to say what changed about that grant, or it will
+  silently never run.
 - 🔴 **A `timeout-minutes:` above the runner's platform ceiling is a fiction, and
   nothing warns.** `ubuntu-slim` is a single-CPU runner with a **15-minute job
   ceiling that cannot be raised from configuration** (GitHub: *"The job timeout
@@ -211,6 +213,54 @@ Weakening the `if:` is a **critical** finding either way. Two specific forms:
 adding `pull_request_target`, which runs in the base-branch context **with**
 secrets and is the classic exfiltration vector; and dropping the head-repository
 comparison.
+
+## `docker-publish.yml`
+
+Every section above is about the review system and the merge gate. This one is about
+the other kind of workflow here: it builds something instead of reaching a verdict,
+and it is the only one that writes to a registry. Judge it on different terms.
+
+**It runs on pull requests from forks on purpose**, which is the opposite of the
+section above. That section asks two questions, and both still have answers.
+Secrets: the job pushes nothing on that path and needs no credential, so there is
+nothing for a stranger's branch to reach. Spend: standard GitHub runners are free on
+a public repository, and the `concurrency` group keeps one pull request to one
+running build. Removing that group, or moving this job to a paid runner, brings the
+spend question back.
+
+- **`packages: write` is all the access it has, and that is what to protect.**
+  `contents: read` is for the checkout and nothing more. If a change adds a
+  permission, or uses a personal access token where the built-in `GITHUB_TOKEN`
+  works, it should say what the token can now do that the job could not do before.
+- 🔴 **The login step skips pull requests on purpose.** Nothing is pushed on that
+  path, so logging in there would authenticate for work that never happens. A pull
+  request from a fork does get a `GITHUB_TOKEN`, but a read-only one, so
+  `packages: write` is reduced to read and a push would fail anyway. Deleting that
+  `if:`, or pushing on the pull-request path, is a finding. Those two lines only
+  work as a pair, so read them together: `push:` on the build step, and the `if:`
+  on the login step.
+- **`platforms:` lists every architecture the image is published for.** Removing one
+  to make the build faster stops publishing for those users without anything going
+  red. A change that does it should say so. Adding one only works where the base
+  image and Debian's `chromium` both exist for that architecture.
+- 🔴 **`cache-to` runs only on the publishing triggers, and the reason is scope, not
+  permissions.** A pull request *can* write the cache. What it cannot do is write
+  somewhere another run will read it, because the entry belongs to that pull
+  request's own merge ref. It still uses the repository's shared 10 GB, and over that
+  limit GitHub deletes caches by last access date, oldest first. So writing it on
+  pull requests trades away the default branch's older layers for entries only a
+  re-run of the same pull request could use. A change that turns it on everywhere
+  should say what it expects to gain.
+- The 60-minute limit fits under `ubuntu-latest`'s ceiling of 360, and it is the same
+  limit `tests-broad.yml`'s matrix and the review job use. It is a safety net rather
+  than a budget, and not a claim about which job is slowest: the arm64 half runs
+  under emulation, so a stuck build would otherwise hold a runner for six hours. See
+  the ceiling bullet above.
+- **A published package is private until someone changes it.** GitHub creates a new
+  container package as private even under a public repository, and a package inherits
+  the repository's permissions but not its visibility. This is the one thing the
+  repository produces whose reachability no file here controls, so changing the
+  README's pull instructions is not the same as changing what readers can pull.
 
 ## Actions and pinning
 

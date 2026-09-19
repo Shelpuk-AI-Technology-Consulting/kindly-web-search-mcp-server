@@ -1,0 +1,176 @@
+name: Build and publish Docker image
+
+# Builds the image for linux/amd64 and linux/arm64 and pushes it to this
+# repository's GitHub Container Registry package.
+#
+# **Why more than one architecture.** `README.md` documents `docker run` as a
+# supported way to run this server, so the image has to work on the machines readers
+# have. Two cover almost all of them: x86-64 servers and PCs, and arm64, which is
+# Apple Silicon Macs and arm64 cloud instances. Publishing only x86-64 does not
+# degrade on arm64, it fails: Docker refuses to pull an image with no entry for the
+# host architecture, and forcing it with `--platform linux/amd64` runs the headless
+# Chromium this image exists to carry under emulation.
+#
+# **Adding another architecture later.** It is one more entry in `platforms:` below,
+# but only where both the base image and Debian's `chromium` exist for it. Debian 13
+# builds `chromium` for amd64, arm64, armhf, i386 and ppc64el, and `python:3.13-slim`
+# covers all of those, so `linux/386` and `linux/ppc64le` would work if anyone asks.
+# Two to avoid: `linux/arm/v7` builds, but Debian's armhf `chromium` is three major
+# versions behind with no security updates and a removal request open, so it would
+# ship a knowingly unpatched browser; `linux/s390x` and `linux/riscv64` have no
+# Debian `chromium` at all and would fail at `apt-get install`. Each platform added
+# is another emulated build leg, so the list is short on purpose rather than by
+# oversight.
+#
+# **About arm64 and Chromium.** Publishing an arm64 image does not change whether
+# Debian's arm64 `chromium` works on a given host; it only saves that host the
+# build. It was measured starting and rendering pages on two arm64 hosts before this
+# landed -- see the commit that added this file. Both use 4 KiB memory pages, which
+# is worth recording because Chromium's arm64 build assumes that, and arm64 machines
+# with 16 KiB pages are known to break it.
+#
+# **What each trigger does.**
+#
+# - `push` to the default branch, and `v*` tags: build and push. The tag list below
+#   is what produces `:latest`, `:main`, `:sha-<short>` and the version tags.
+# - `pull_request`: build both architectures and push nothing, so a `Dockerfile`
+#   change that breaks arm64 shows up here instead of in the next release. ⚠️ It is
+#   a signal, not a gate: nothing `needs:` this job and `ci-required` does not
+#   include it, so on its own it blocks no merge. It is also the only shape a fork
+#   can run, because nothing on that path needs a credential.
+# - `workflow_dispatch`: a manual rebuild, for a base image or OS package update
+#   that no commit here triggers. It builds with `no-cache:` for that reason -- the
+#   `apt-get` layer is keyed on the base image digest and the command, so a cached
+#   run would republish the same `chromium` it built weeks ago.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  # Limited to `main`, like `ci.yml`. Deliberately not limited by path: the list
+  # would be short, because `.dockerignore` only admits `pyproject.toml`,
+  # `README.md` and `src/`, but the day it missed a path the build context does
+  # admit, this check would stop running and nothing would go red. That is the same
+  # reason `.dockerignore` is an allowlist rather than a denylist. The cost is wall
+  # clock rather than money, because standard runners are free on a public
+  # repository: a pull request that changes nothing in the build context restores
+  # the default branch's layers from the cache below, and one that changes `src/`,
+  # `pyproject.toml` or `README.md` runs `pip install` again on both architectures.
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # `metadata-action` lowercases this for the registry, so a mixed-case owner or
+  # repository name does not have to be written out here.
+  IMAGE_NAME: ${{ github.repository }}
+
+# One build per ref, scoped the same way `ci.yml` scopes its own. Without this, a
+# run of quick pushes to the default branch starts a full build for each one while
+# the earlier builds are still going, and every one of them emulates arm64.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ⚠️ **One emulated job, rather than one native job per architecture.** Standard
+# `ubuntu-24.04-arm` runners are free and unlimited on a public repository, so the
+# faster shape is available: one job per architecture pushing by digest, plus a job
+# that merges them with `buildx imagetools create`. That costs three jobs instead of
+# one, digests passed between them, a second runner label in this repository's
+# recorded ceilings, and a pull-request path with more than one cache scope. This
+# job is the simple end of that trade, and what emulation costs is wall clock on a
+# free runner. Say so if the balance should go the other way.
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    # 🔴 **Paired with the runner label, per `DeclaredJobCapIsEnforceableTests`.**
+    # `ubuntu-latest`'s ceiling is 360 minutes, so 60 is a number that can actually
+    # be enforced. It is the same 60 that `tests-broad.yml`'s matrix and the review
+    # job use, and for the same reason: a safety net, not a budget. The arm64 half
+    # runs under emulation, and a stuck build would otherwise hold a runner for six
+    # hours.
+    timeout-minutes: 60
+    permissions:
+      contents: read # actions/checkout
+      packages: write # push to this repository's GHCR package
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # Registers the handlers that let an x86-64 runner execute arm64 build steps.
+      # Needed because the `Dockerfile` runs `apt-get` and `pip install` inside the
+      # target architecture rather than cross-compiling.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      # BuildKit, which `platforms:` and the cache below both need.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # ⚠️ Skipped on pull requests, and that matters rather than being tidiness:
+      # nothing is pushed on that path -- see `push:` on the build step -- so a login
+      # would authenticate for work that never happens. A pull request from a fork
+      # does get a `GITHUB_TOKEN`, but a read-only one, so `packages: write` is
+      # reduced to read and a push would fail whether or not the login ran.
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags and image labels. `org.opencontainers.image.source` is one of the
+      # labels below. GitHub documents it as what connects a package to a repository
+      # when the push comes from outside Actions; a push from a workflow using
+      # `GITHUB_TOKEN` is connected to its own repository either way.
+      #
+      # 🔴 **Connected is not the same as public.** A connected package inherits the
+      # repository's permissions but not its visibility, and GitHub creates a new
+      # package as private even under a public repository. So after the first
+      # successful run on `main`, someone has to change the package's visibility
+      # once before `docker pull` works for anyone not logged in.
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `latest` comes from the explicit `type=raw` line below rather than from
+          # the action's default, which would also move it on a tag push.
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # See the header before adding to this list: an architecture only works
+          # here if Debian ships a `chromium` for it.
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # A manual rebuild is the one run that must not reuse the `apt-get` layer;
+          # see `workflow_dispatch` in the header.
+          no-cache: ${{ github.event_name == 'workflow_dispatch' }}
+          cache-from: type=gha
+          # Written only on the publishing paths. A pull request's cache belongs to
+          # its own merge ref, so only a re-run of that same pull request could read
+          # it back, and it still uses the repository's shared 10 GB. Over that limit
+          # GitHub deletes caches "in order of last access date, from oldest to most
+          # recent", so writing one cache per pull request costs the default branch's
+          # older layers and buys almost nothing.
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}

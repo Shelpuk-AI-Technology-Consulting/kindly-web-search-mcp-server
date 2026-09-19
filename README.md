@@ -736,9 +736,25 @@ Whether you can run the MCP server on a different PC depends on your MCP client:
 - **Stdio / command-based clients** (config uses `command` + `args` to spawn the server): the server must run on the same machine (or at least somewhere the client can run the command). You can still use Docker, but locally (the client launches `docker run ...`).
 - **HTTP-capable clients** (can connect to a server URL): you can run Kindly remotely in Docker using **Streamable HTTP**.
 
+### Prebuilt image (GHCR)
+
+Pull the image instead of building it. It runs on Intel/AMD and on ARM machines
+such as an Apple Silicon Mac or an ARM server:
+
+```bash
+# Newest build:
+docker pull ghcr.io/shelpuk-ai-technology-consulting/kindly-web-search-mcp-server:latest
+
+# Or one build that never changes, using its digest from the package page:
+docker pull ghcr.io/shelpuk-ai-technology-consulting/kindly-web-search-mcp-server@sha256:<digest>
+```
+
+Run it exactly like the image you build below, using the full name above wherever
+that section writes `kindly-web-search-mcp-server`.
+
 ### Docker (Streamable HTTP)
 
-Build the image:
+Or build the image yourself:
 
 ```bash
 docker build -t kindly-web-search-mcp-server .
@@ -841,6 +857,11 @@ docker compose up -d
 ```
 
 Container will be built at the first run. To rebuild it, append `--build` to the command above.
+To use the prebuilt image instead of building, replace the `build:` and `context:` lines with:
+
+```yaml
+    image: ghcr.io/shelpuk-ai-technology-consulting/kindly-web-search-mcp-server:latest
+```
 
 > **Warning:** `ports: - "8000:8000"` publishes the server on **all** host interfaces. As with
 > `docker run` above, remote HTTP here is **unauthenticated** and **unencrypted** — don’t expose
