@@ -5094,6 +5094,33 @@ is nothing to test.
   reject or decode before routing. A rejected form would surface as an HTTP
   error status on Serply queries, reported by the router as a
   `SearchProviderTransportError` naming Serply and the status.
+- **SerpBase's wire format has never been run against the live API. ACCEPTED,
+  with the artefact in place.** PR #99 moved the provider from `GET` with an
+  `api_key` query parameter to `POST https://api.serpbase.dev/google/search`
+  with an `X-API-Key` header, a `{"q": ...}` JSON body and an `organic` response
+  key — method, authentication, request encoding and response envelope changed
+  together. The contract was cross-checked against SerpBase's published
+  documentation, which confirms each part and also confirms there is **no `num`
+  parameter**, so `num_results` is honoured by client-side truncation rather
+  than by the API.
+
+  Documentation is not behaviour. `tests/test_serpbase_unit.py` pins what is
+  *sent*, in full, so the contract is fixed rather than floating, but it asserts
+  against a mock written from those same docs: if they are wrong, or change
+  again, the unit tests keep passing while every real call fails.
+  `tests/test_serpbase_live.py` is the artefact that settles it —
+  `KINDLY_RUN_LIVE_TESTS=1 SERPBASE_API_KEY=... pytest
+  tests/test_serpbase_live.py` — and it distinguishes the failures that matter:
+  405 means not POST-only, 401 with a valid key means the header name moved, a
+  missing `organic` means the envelope moved. It is marked `live`, and CI selects
+  `-m "not live and not chromium and not package"`, so **no scheduled job runs it
+  today**; adding one needs a repository secret, per §6.3.
+
+  Severity is lower than apifare's: the contract here is documented rather than
+  guessed, and the worst symptom is a loud 4xx on first use by an operator who
+  configured a SerpBase key, not a credential disclosure. The risk stays open
+  until somebody with a key runs the file.
+
 - **apifare's wire format has never been run against the live API, and half of
   it cannot be. ACCEPTED** — a known risk, not a gap with an owner. PR #95 added
   `search_apifare`, which posts `{"q", "count"}` to
