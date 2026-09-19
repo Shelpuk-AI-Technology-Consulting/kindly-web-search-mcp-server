@@ -548,6 +548,45 @@ def _declared_jobs(path):
     return jobs
 
 
+def _tracked_files_under(directories):
+    """Return the files this repository carries under these directories.
+
+    The shared body of three sweeps that all mean the same thing by "every file
+    here": every file *publishing publishes*. See :func:`_tracked_paths` for why
+    that is not the same question as what is on disk.
+
+    Args:
+        directories: Repo-relative top-level directory names, without a trailing
+            slash.
+
+    Returns:
+        A sorted list of ``(repo-relative posix path, absolute Path)``, or
+        ``None`` when git cannot answer -- which callers skip on, exactly as
+        they skip on :func:`_tracked_paths` returning ``None``.
+    """
+
+    tracked = _tracked_paths()
+    if tracked is None:
+        return None
+    repo = Path(__file__).resolve().parents[3]
+    prefixes = tuple(f"{directory}/" for directory in directories)
+    found = []
+    for relative in sorted(tracked):
+        if not relative.startswith(prefixes):
+            continue
+        # By path segment, matching the `path.parts` check these sweeps used
+        # before they read the tracked set.
+        if "__pycache__" in relative.split("/"):
+            continue
+        path = repo / relative
+        # A tracked path can be absent from the work tree mid-rebase or under a
+        # sparse checkout; a sweep that tried to read it would fail for a reason
+        # that has nothing to do with what it guards.
+        if path.is_file():
+            found.append((relative, path))
+    return found
+
+
 def _step_block(text: str, name: str) -> str | None:
     """Return one workflow step's text, bounded to that step.
 
@@ -658,21 +697,36 @@ def _tracked_paths():
         A frozenset of repo-relative posix paths, or ``None`` when git cannot
         answer -- not on `PATH`, or not a work tree. ``None`` is *skipped* by
         callers rather than failed: unlike the shapes this file refuses, an
-        absent git says nothing about the repository being wrong, and the one
-        pre-existing caller (`test_every_spec_is_reachable_from_a_real_repository_path`)
-        already set that precedent.
+        absent git says nothing about the repository being wrong, and
+        `test_every_spec_is_reachable_from_a_real_repository_path` set that
+        precedent before this helper existed.
+
+    ⚠️ **Both halves of that promise need code, and one of them nearly did not
+    get any.** ``check=False`` suppresses a non-zero *exit*; it does nothing
+    about a missing executable, for which `subprocess.run` raises
+    `FileNotFoundError`. So the "not a work tree" case returned ``None`` as
+    documented while the "not on `PATH`" case raised past every caller's
+    ``skipTest`` and errored five tests with a traceback. Invisible in CI, which
+    always has git; visible to a contributor on a stripped-down machine, which
+    is exactly who the skip is for.
     """
 
     repo = Path(__file__).resolve().parents[3]
     key = str(repo)
     if key not in _TRACKED_PATHS_MEMO:
-        listed = subprocess.run(
-            ["git", "-C", key, "ls-files", "-z"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if listed.returncode != 0:
+        try:
+            listed = subprocess.run(
+                ["git", "-C", key, "ls-files", "-z"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            # The "not on `PATH`" case the docstring names. `check=False` does
+            # not cover it: a missing executable raises rather than returning a
+            # non-zero exit, so without this the skip below is unreachable.
+            listed = None
+        if listed is None or listed.returncode != 0:
             _TRACKED_PATHS_MEMO[key] = None
         else:
             # NUL-separated, so a path containing a newline cannot split into
@@ -1151,6 +1205,38 @@ class TestSelectRules(unittest.TestCase):
             "guard reading this set is back to asking the filesystem",
         )
 
+    def test_a_missing_git_is_skipped_rather_than_a_traceback(self):
+        """🔴 The escape hatch is exercised, or it is only a docstring.
+
+        `check=False` suppresses a non-zero *exit* and does nothing about a
+        missing executable: `subprocess.run` raises `FileNotFoundError` for that.
+        So the branch every caller's ``skipTest`` depends on was unreachable, and
+        five tests would have errored with a traceback on a machine without git
+        -- the machine the skip exists for. CI always has git, so nothing there
+        could ever have shown it.
+
+        Driven by making the call itself raise, rather than by editing `PATH`:
+        the point is that :func:`_tracked_paths` converts an `OSError` into
+        ``None``, and `PATH` is only one of the ways that `OSError` arrives.
+        """
+
+        real = subprocess.run
+
+        def raising(*args, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+        _TRACKED_PATHS_MEMO.clear()
+        self.addCleanup(_TRACKED_PATHS_MEMO.clear)
+        subprocess.run = raising
+        try:
+            self.assertIsNone(
+                _tracked_paths(),
+                "a missing git raised past the caller instead of returning "
+                "None, so every guard reading this errors rather than skipping",
+            )
+        finally:
+            subprocess.run = real
+
     def test_every_pulls_in_name_is_a_real_rule(self):
         """A fan-out target that is not a rule name vanishes without a trace.
 
@@ -1228,16 +1314,14 @@ class TestSelectRules(unittest.TestCase):
         matched it. Walking the actual tree is the only check that catches it.
         """
 
-        repo = Path(__file__).resolve().parents[3]
-        tracked = subprocess.run(
-            ["git", "-C", str(repo), "ls-files"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if tracked.returncode != 0:
+        # Shares :func:`_tracked_paths` with the other sweeps rather than
+        # shelling out again. This call is where the pattern came from, and it
+        # carried the same defect: `check=False` does not cover a missing
+        # executable, so `git` off `PATH` raised past the skip below.
+        tracked = _tracked_paths()
+        if tracked is None:
             self.skipTest("git is unavailable, cannot enumerate tracked files")
-        paths = [ln.strip() for ln in tracked.stdout.splitlines() if ln.strip()]
+        paths = sorted(tracked)
         self.assertTrue(paths, "git ls-files returned nothing")
 
         selected_by_tree = set(select_rules.select(paths))
@@ -1380,25 +1464,17 @@ class NoPrivateReferenceLeaksTests(unittest.TestCase):
         prose directory appears; nothing will fail to tell you it is missing.
         """
 
-        repo = Path(__file__).resolve().parents[3]
-        tracked = _tracked_paths()
-        if tracked is None:
-            self.skipTest("git is unavailable, cannot enumerate tracked files")
         # 🔴 The tracked set, not `rglob`. This guard's entire premise is that
         # the repository is PUBLIC, so what it must sweep is what publishing
         # publishes. An untracked draft under a swept directory is not published
         # and never was -- reporting it is a false leak report, which is the way
         # a guard like this gets switched off. Measured: four gitignored
         # `.requirements/` drafts were being read on every local run.
+        carried = _tracked_files_under(self.SWEPT_DIRS)
+        if carried is None:
+            self.skipTest("git is unavailable, cannot enumerate tracked files")
         offences = []
-        for relative in sorted(tracked):
-            if not relative.startswith(tuple(f"{d}/" for d in self.SWEPT_DIRS)):
-                continue
-            if "__pycache__" in relative.split("/"):
-                continue
-            path = repo / relative
-            if not path.is_file():
-                continue
+        for relative, path in carried:
             for lineno, token, line in self._offences(path):
                 offences.append(f"{relative}:{lineno}: {token!r} in {line}")
 
@@ -13994,19 +14070,30 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
         return Path(__file__).resolve().parents[2]
 
     def _files(self):
-        """Yield every readable file under the swept root.
+        """Yield every file the repository carries under the swept root.
 
         Walked rather than enumerated: an enumerated list guards the files
         somebody thought of, and the next document lands unguarded while the
         guard still passes.
 
+        ⚠️ **Tracked rather than present**, for the reason :func:`_tracked_paths`
+        gives. `.github/` carries no gitignored drafts today, so this changes
+        nothing about what is swept -- but the sweeps in this file run in the
+        same process as a test that writes an untracked probe *into*
+        `.github/review/`, and today that is harmless only because
+        `NoPrivateReferenceLeaksTests` happens to sort after this class.
+        Depending on class-name ordering for a correct result is not a property
+        worth keeping.
+
         Yields:
             Each file path.
         """
 
-        for path in sorted(self._root().rglob("*")):
-            if path.is_file() and "__pycache__" not in path.parts:
-                yield path
+        carried = _tracked_files_under((self._root().name,))
+        if carried is None:
+            self.skipTest("git is unavailable, cannot enumerate tracked files")
+        for _relative, path in carried:
+            yield path
 
     def test_every_rule_recognises_the_claim_it_forbids(self):
         """🔴 The control the sweep cannot give itself.
@@ -14262,11 +14349,16 @@ class NoDocumentMisdescribesTheSlimRunnerTests(unittest.TestCase):
                 self.assertIn(expected, seen)
 
     def test_no_file_under_dot_github_misdescribes_the_label(self):
+        # Tracked rather than present -- see `_tracked_paths`. Measured while
+        # answering the review of that change: an untracked scratch file under
+        # `.github/` carrying the retired sentence fails this guard, and a file
+        # the repository does not carry cannot misdescribe anything to a reader.
         root = self._root()
+        carried = _tracked_files_under((root.name,))
+        if carried is None:
+            self.skipTest("git is unavailable, cannot enumerate tracked files")
         offences = []
-        for path in sorted(root.rglob("*")):
-            if not path.is_file() or "__pycache__" in path.parts:
-                continue
+        for _relative, path in carried:
             try:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
