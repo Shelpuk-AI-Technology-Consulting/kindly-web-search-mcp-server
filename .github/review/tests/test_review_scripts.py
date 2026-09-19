@@ -551,9 +551,11 @@ def _declared_jobs(path):
 def _tracked_files_under(directories):
     """Return the files this repository carries under these directories.
 
-    The shared body of three sweeps that all mean the same thing by "every file
+    The shared body of every sweep that means the same thing by "every file
     here": every file *publishing publishes*. See :func:`_tracked_paths` for why
-    that is not the same question as what is on disk.
+    that is not the same question as what is on disk. (Not "the three sweeps" --
+    a count of callers in prose is what the round-two review of this change
+    removed twice over, and a fourth sweep would make it wrong silently.)
 
     Args:
         directories: Repo-relative top-level directory names, without a trailing
@@ -674,10 +676,13 @@ def _tracked_paths():
     """Return every path this repository tracks, repo-relative and posix-style.
 
     🔴 **Tracked, not present -- and the difference is a whole class of defect.**
-    Three guards in this file used to ask the *filesystem* whether a file
-    existed. The filesystem answers about the machine; these guards are all
-    asking about the repository, and the two differ for every gitignored or
-    merely untracked file. Measured, on a working copy holding an untracked
+    `test_every_literal_pattern_names_a_file_that_exists`,
+    `test_the_forward_looking_list_does_not_outlive_its_reason` and the private-
+    reference sweep all used to ask the *filesystem* whether a file existed. The
+    filesystem answers about the machine; every one of them is asking about the
+    repository, and the two differ for every gitignored or merely untracked
+    file. Named rather than counted, for the reason `rules/ci.md` gives about
+    its own opening sentence. Measured, on a working copy holding an untracked
     `AGENTS.md` and a gitignored `.requirements/`:
 
     * the private-reference sweep read four gitignored `.requirements/` drafts
@@ -1214,10 +1219,15 @@ class TestSelectRules(unittest.TestCase):
 
         `check=False` suppresses a non-zero *exit* and does nothing about a
         missing executable: `subprocess.run` raises `FileNotFoundError` for that.
-        So the branch every caller's ``skipTest`` depends on was unreachable, and
-        five tests would have errored with a traceback on a machine without git
-        -- the machine the skip exists for. CI always has git, so nothing there
-        could ever have shown it.
+        So the branch every caller's ``skipTest`` depends on was unreachable,
+        and every guard reading this would have errored with a traceback on a
+        machine without git -- the machine the skip exists for. CI always has
+        git, so nothing there could ever have shown it.
+
+        ⚠️ **This sentence used to count those guards**, and the count was the
+        second instance of the one removed from :func:`_tracked_paths`. Fixing
+        the first and leaving this is the very habit that docstring warns
+        about.
 
         Driven by making the call itself raise, rather than by editing `PATH`:
         the point is that :func:`_tracked_paths` converts an `OSError` into
@@ -14115,12 +14125,17 @@ class NoDocumentClaimsTheRepositoryHasNoTestGateTests(unittest.TestCase):
 
         ⚠️ **Tracked rather than present**, for the reason :func:`_tracked_paths`
         gives. `.github/` carries no gitignored drafts today, so this changes
-        nothing about what is swept -- but the sweeps in this file run in the
-        same process as a test that writes an untracked probe *into*
-        `.github/review/`, and today that is harmless only because
-        `NoPrivateReferenceLeaksTests` happens to sort after this class.
-        Depending on class-name ordering for a correct result is not a property
-        worth keeping.
+        nothing about what is swept; it is protection against the first one to
+        land, and against the untracked probe a test in this file writes *into*
+        `.github/review/` while these sweeps are in the same process.
+
+        ⚠️ **That probe is why this was converted, and the conversion is why it
+        no longer matters -- do not go looking for an ordering dependency.**
+        While these sweeps read `rglob`, the probe was invisible to them only
+        because `NoPrivateReferenceLeaksTests` sorts after this class; a rename
+        either side would have surfaced it as a failure in a guard unrelated to
+        the change. Reading the tracked set removes the question rather than
+        reordering it: an untracked file is unseen whenever it exists.
 
         Yields:
             Each file path.
