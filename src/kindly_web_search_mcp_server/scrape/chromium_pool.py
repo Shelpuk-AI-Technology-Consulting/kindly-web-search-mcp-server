@@ -319,6 +319,54 @@ class ChromiumSlot:
             self.user_data_dir = None
 
 
+class _WarmFirstQueue(asyncio.Queue[ChromiumSlot]):
+    """A queue of free slots that hands out a running browser before an empty slot.
+
+    Used only when the idle close is on (:attr:`ChromiumPool.idle_timeout_seconds`).
+    Among running browsers the most recently released goes first, so one
+    request at a time keeps reusing one browser and the others sit untouched
+    until their idle close fires. First in, first out would rotate through every
+    slot instead, cold-starting each in turn once the idle close empties it. An
+    empty slot is passed over while a running browser is queued, which a plain
+    last in, first out would not do: ``fetch_html_via_nodriver``'s restart path
+    releases an emptied slot and acquires again at once.
+
+    Built on the ``_init``/``_put``/``_get`` hooks, as the standard library's own
+    :class:`asyncio.LifoQueue` is.
+    """
+
+    def _init(self, maxsize: int) -> None:
+        """Hold the free slots in release order, the most recent last.
+
+        Args:
+            maxsize: Unused; the pool's queue is unbounded.
+        """
+        self._queue: list[ChromiumSlot] = []
+
+    def _put(self, item: ChromiumSlot) -> None:
+        """Queue ``item`` as the most recently released slot.
+
+        Args:
+            item: The slot being returned.
+        """
+        self._queue.append(item)
+
+    def _get(self) -> ChromiumSlot:
+        """Take the most recently released running browser, else the oldest slot.
+
+        With no running browser queued every slot costs a cold start, so the
+        oldest goes first, as in first in, first out: a fresh pool starts at
+        slot 0.
+
+        Returns:
+            The slot to hand out.
+        """
+        for index in range(len(self._queue) - 1, -1, -1):
+            if _holds_running_browser(self._queue[index]):
+                return self._queue.pop(index)
+        return self._queue.pop(0)
+
+
 @dataclass
 class ChromiumPool:
     """A fixed set of :class:`ChromiumSlot`, handed out one caller at a time.
@@ -330,8 +378,12 @@ class ChromiumPool:
             ``None`` for any free port.
         idle_timeout_seconds: How long a released slot's browser may sit unused
             before it is closed, or ``None`` to never close one for being idle.
+            Whether it is ``None`` at construction also picks :attr:`queue`'s
+            order, which does not change afterwards.
         slots: Every slot, held or queued.
-        queue: The slots free to acquire.
+        queue: The slots free to acquire: first in, first out, or, with the
+            idle close on, a running browser before an empty slot and the most
+            recently released first (see :class:`_WarmFirstQueue`).
         retiring: Browsers taken off their slot and still being terminated,
             keyed by the task doing it. Held so that both shutdown paths reach
             them -- a detached browser is no longer in ``slots`` -- and so the
@@ -350,6 +402,10 @@ class ChromiumPool:
     retiring: dict[asyncio.Task[None], ChromiumSlot] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # Warm-first exists so that idle closes trim the spare slots; without
+        # them the order stays first in, first out, as before the setting existed.
+        if self.idle_timeout_seconds is not None:
+            self.queue = _WarmFirstQueue()
         for idx in range(self.size):
             slot = ChromiumSlot(slot_id=idx)
             self.slots.append(slot)

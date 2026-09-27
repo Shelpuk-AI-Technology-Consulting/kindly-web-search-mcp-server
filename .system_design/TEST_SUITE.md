@@ -96,8 +96,9 @@ specific:
 - **All of `scrape/chromium_pool.py`** — no test file references it.
   *(Since narrowed: `tests/test_chromium_pool_slot_start.py` covers
   `ChromiumSlot._start`'s snap DevTools budget, and
-  `tests/test_chromium_pool_idle_close.py` the idle close and a launch
-  that fails or is cancelled inside `acquire`. The rest of the module stands.)*
+  `tests/test_chromium_pool_idle_close.py` the idle close, the order free
+  slots are handed out in, and a probe or launch that fails or is cancelled
+  inside `acquire`. The rest of the module stands.)*
 
 Working and not to be disturbed: 15 of 18 tests in
 `test_universal_html_loader.py` cover the Markdown-suffix probe path end to end,
@@ -3088,7 +3089,7 @@ The **Today** column describes *test coverage*, not implementation status.
 | Worker lifecycle and cleanup | gap — stale | L3 portable | `subsystem` | |
 | Worker retry/termination orchestration | covered — unmarked, see §5.2 | L3 portable | `subsystem` (open) | |
 | Pooled target creation (worker reuse branch) | covered (issue #96) — `test_worker_pooled_target.py` pins `browser.send` and `new_window=True`; the three Chromium behaviours it rests on are measured, not tested (`SYSTEM_DESIGN.md` §1.3) | L1 + L4 gap | `fast` (+ `chromium`, not run) | |
-| ChromiumPool | partial — `_start`'s snap DevTools budget, the idle close and a failed or cancelled launch, hermetically; the rest a gap | L1 + L3 Chromium | `fast` + `chromium` | |
+| ChromiumPool | partial — `_start`'s snap DevTools budget, the idle close, the free-slot order and a failed or cancelled probe or launch, hermetically; the rest a gap | L1 + L3 Chromium | `fast` + `chromium` | |
 | CLI entrypoints and `--` forwarding | covered | L1 | `fast` | |
 | Wheel build, install, console entrypoints | gap | L4 | `package` | |
 | Documented `uvx --from git+…` path | gap | L4 | nightly | |

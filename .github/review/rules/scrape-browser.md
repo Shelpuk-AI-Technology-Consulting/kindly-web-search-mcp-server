@@ -72,14 +72,22 @@ ships it as `0`. `tests/test_nodriver_worker_launch_resolvers.py` covers it.
   browser before terminating it, and `acquire` disarms the timer as soon as it
   has the slot.** Either reordered hands a request a browser that is being
   closed. `.system_design/SYSTEM_DESIGN.md` §1.6 gives the reasoning, and
-  `tests/test_chromium_pool_idle_close.py` pins both orders.
+  `tests/test_chromium_pool_idle_close.py` pins both orders. With the idle
+  close on, the free-slot queue hands out a running browser before an empty
+  slot, most recently released first. A plain FIFO queue there turns idle
+  closes into a cold start per request once the pool holds more than one slot,
+  and a plain LIFO queue cold-starts the restart path's re-acquire while a
+  running browser waits. With it off the queue stays FIFO, so pools that never
+  set the timeout behave as before.
 - `_pick_port` / `_pick_free_port` / `KINDLY_NODRIVER_PORT_RANGE`: a change that
   reintroduces a check-then-bind race between choosing a port and starting the
   browser produces a failure that only appears under concurrency.
 - **A reused browser carries state.** Cookies, storage and service workers
   survive between requests to different sites when reuse is on. A change that
   starts storing more per-page state should say what stops site A's state
-  reaching site B.
+  reaching site B. With the idle close on, sequential traffic is served
+  by one browser, so that state concentrates in one profile
+  (`.system_design/SYSTEM_DESIGN.md` §1.5).
 
 ## Retries must not amplify
 

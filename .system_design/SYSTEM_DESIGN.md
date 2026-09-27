@@ -22,7 +22,7 @@ others depend on:
 | Component | File | Obligation |
 |---|---|---|
 | Parent fetch | `scrape/universal_html.py` (`fetch_html_via_nodriver`) | Acquire a slot, spawn the worker, restart the slot on a failure that indicates a poisoned browser, release the slot exactly once |
-| Pool | `scrape/chromium_pool.py` (`ChromiumPool`, `ChromiumSlot`) | Launch Chromium, hand out one slot at a time, probe liveness before reuse, terminate on request, close a browser left idle when configured (§1.6) |
+| Pool | `scrape/chromium_pool.py` (`ChromiumPool`, `ChromiumSlot`) | Launch Chromium, hand out one slot at a time, probe liveness before reuse, terminate on request, close a browser left idle when configured, handing out a running browser before an empty slot while it is (§1.6) |
 | Worker | `scrape/nodriver_worker.py` (`_fetch_html`, reuse branch) | Connect to the slot's DevTools endpoint, obtain a page target, navigate, extract, and leave the browser as it found it |
 | Chromium | — | Outlive its last tab, and refuse a tab with no window to put it in |
 
@@ -178,7 +178,11 @@ how the issue-#96 defect survived.
 carries state. Precisely: closing the tab discards **that document** and its
 timers and in-flight requests; cookies, storage and service-worker registrations
 live in the slot's profile directory and survive every request the slot serves,
-until the slot's browser is terminated (§1.4, §1.6).
+until the slot's browser is terminated (§1.4, §1.6). With the idle close on,
+sequential traffic is served by one browser (§1.6), whose timer every release
+re-arms, so a profile in steady use is never closed for being idle: its state
+reaches every request until the worker fails, traffic pauses for longer than the
+timeout, or the process restarts.
 A new window is not a new profile. `Target.createBrowserContext` is the lever if
 per-request isolation is ever wanted, and nothing uses it today.
 
@@ -218,6 +222,31 @@ acquire, exactly as after §1.4's recycle. These details are load-bearing:
   armed for it, and a timer that finds one leaves it for `ensure_started` to
   relaunch as it would without this setting, so the next request is not told a
   crash was an idle close.
+- **With the idle close on, a running browser is handed out before an empty
+  slot, the most recently released first** (`_WarmFirstQueue`). A timer per
+  slot only trims a pool whose spare slots go untouched. First in, first out
+  rotates through every slot, so each sits idle for the pool size times the
+  gap between requests. Reproduced once with the doubles from
+  `tests/test_chromium_pool_idle_close.py` (a pool of 2, a 0.3 s timeout and
+  one request every 0.2 s): every request paid a cold start. The tests there
+  pin the order, not that timing. And the slot at
+  the head, released longest ago, is the first to be closed, so it is handed
+  out while a warm browser waits behind it. Plain last in, first out fixes
+  both but fails the restart path (`fetch_html_via_nodriver` terminates a
+  stale slot, releases it and acquires again at once): it would hand back the
+  slot just emptied and cold-start it while a warm browser waited. So an empty
+  slot, or one whose browser has exited, is passed over while any running
+  browser is queued; among empty slots the oldest goes first, so a fresh pool
+  still starts at slot 0. Waiting requests are unaffected: `asyncio.Queue`
+  wakes the requests that had to wait in arrival order, whatever `_get`
+  returns, exactly as under first in, first out.
+
+  **With the idle close off, the order stays first in, first out.** Nothing
+  closes a queued browser then, so the order only decides which warm browser
+  serves a request; changing it would alter every pool of more than one slot,
+  including those that never set the timeout. The cost of warm-first, which
+  only operators who set the timeout take on, is §1.5's state concentrating:
+  under sequential traffic one profile serves every request.
 
 A timer per release rather than a periodic sweep, because a sweep would wake the
 event loop for as long as the server runs, mostly to find nothing, and would need
