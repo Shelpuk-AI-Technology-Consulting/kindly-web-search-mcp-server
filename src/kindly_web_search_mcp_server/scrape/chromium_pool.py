@@ -53,10 +53,10 @@ def _resolve_idle_timeout_seconds() -> float | None:
     """Read how long a released pooled browser may sit unused before it is closed.
 
     Off unless configured, so a server that sets nothing never closes a browser
-    for being idle. Any positive, finite number of seconds is honoured as given, with no clamp: a
-    small value costs a cold start on most requests, which is the trade the
-    operator asked for, and ``KINDLY_NODRIVER_REUSE_BROWSER=0`` already covers
-    anyone who wants a fresh browser on every request.
+    for being idle. Any positive, finite number of seconds is honoured as given,
+    with no clamp: a small value costs a cold start on most requests, which is
+    the trade the operator asked for, and ``KINDLY_NODRIVER_REUSE_BROWSER=0``
+    already covers anyone who wants a fresh browser on every request.
 
     Returns:
         The timeout in seconds, or ``None`` -- idle closing off -- when
@@ -367,6 +367,11 @@ class ChromiumPool:
         Returns:
             A slot with a live browser, or ``None`` when none became free within
             ``acquire_timeout_seconds`` or its browser failed to start.
+
+        Raises:
+            asyncio.CancelledError: If the caller is cancelled while the slot's
+                browser is being probed or started. The slot is back in the
+                queue by then, without its browser.
         """
         try:
             slot = await asyncio.wait_for(
@@ -400,17 +405,27 @@ class ChromiumPool:
             await slot.ensure_started(
                 user_agent=user_agent, port_range=self.port_range, diagnostics=diagnostics
             )
-        except Exception as exc:
-            if diagnostics:
+        except BaseException as exc:
+            # The caller never received the slot, so its own `finally` cannot
+            # return it, and a slot lost here wedges a pool of one for the rest
+            # of the process. A cancellation -- a caller's deadline landing
+            # mid-probe or mid-launch -- may be what raised, and any await in
+            # this handler would be one more place for one to land, so nothing
+            # below awaits. Whatever the slot holds goes to the background
+            # terminate, since nothing can tell whether an interrupted probe or
+            # launch would have come good, and the slot goes straight back.
+            failed = isinstance(exc, Exception)
+            if failed and diagnostics:
                 diagnostics.emit(
                     "pool.slot_error",
                     "Failed to start pooled Chromium",
                     {"slot_id": slot.slot_id, "error": type(exc).__name__},
                 )
-            with contextlib.suppress(Exception):
-                await slot.terminate()
-            await self.release(slot, diagnostics=diagnostics)
-            return None
+            self._retire_browser(slot)
+            self._requeue(slot, diagnostics=diagnostics)
+            if failed:
+                return None
+            raise
 
         if diagnostics:
             diagnostics.emit(
@@ -423,6 +438,22 @@ class ChromiumPool:
     async def release(self, slot: ChromiumSlot, *, diagnostics: Diagnostics | None) -> None:
         """Return a slot to the queue, and arm its idle close when one is configured.
 
+        A coroutine because every caller awaits it; the work itself is
+        synchronous, in :meth:`_requeue`.
+
+        Args:
+            slot: The slot being returned.
+            diagnostics: Where to record the release, or ``None``.
+        """
+        self._requeue(slot, diagnostics=diagnostics)
+
+    def _requeue(self, slot: ChromiumSlot, *, diagnostics: Diagnostics | None) -> None:
+        """Put ``slot`` back on the queue and arm its idle close, without awaiting.
+
+        :meth:`acquire` needs this from a path a cancellation may be running
+        through, where an await is a place for that cancellation to land. The
+        queue is unbounded, so ``put_nowait`` cannot refuse.
+
         Args:
             slot: The slot being returned.
             diagnostics: Where to record the release, or ``None``.
@@ -434,7 +465,7 @@ class ChromiumPool:
                 {"slot_id": slot.slot_id, "host": slot.host, "port": slot.port},
             )
         self._arm_idle_close(slot)
-        await self.queue.put(slot)
+        self.queue.put_nowait(slot)
 
     def _arm_idle_close(self, slot: ChromiumSlot) -> None:
         """Schedule closing ``slot``'s browser if it is still unused after the idle timeout.
@@ -495,8 +526,11 @@ class ChromiumPool:
         directory, while the old one exits in its own.
 
         Args:
-            slot: The slot to empty. It must hold a browser process.
+            slot: The slot to empty. Nothing happens if it holds neither a
+                browser process nor a profile directory.
         """
+        if slot.proc is None and slot.user_data_dir is None:
+            return
         retired = ChromiumSlot(
             slot_id=slot.slot_id,
             host=slot.host,

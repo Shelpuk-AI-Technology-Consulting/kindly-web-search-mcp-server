@@ -14,6 +14,9 @@ make that safe, each of which a plausible edit would break:
   it is no longer in ``slots`` -- including after the event loop's own shutdown
   has cancelled its terminate;
 * a browser that exited on its own is not reported as closed for being idle;
+* a slot whose launch fails or is cancelled goes back to the queue, awaiting
+  nothing on the way -- a cold start the idle close makes routine, so a lost
+  slot there stops being a rare event;
 * nothing is armed when the setting is off, which is the default.
 
 Nothing here starts a browser, opens a socket or signals a process. The slot's
@@ -572,6 +575,128 @@ async def test_a_browser_that_exited_while_idle_is_not_reported_as_idle_closed(
     assert recorder.terminated == []
     assert slot.proc is proc
     assert slot.user_data_dir is not None and slot.user_data_dir.name == profile
+
+
+async def test_a_slot_whose_launch_is_cancelled_goes_back_to_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_dirs: Callable[[], tempfile.TemporaryDirectory[str]],
+) -> None:
+    """A caller's deadline landing mid-launch must not cost the pool its slot.
+
+    The caller never received the slot, so its own ``finally`` cannot return it;
+    with a pool of one, a slot lost here wedges every later request. Whatever the
+    slot holds is terminated, since nothing can tell whether the interrupted
+    launch would have come up. Idle closing is off here: the defect does not
+    need it, it only makes the cold start that exposes it routine.
+    """
+    recorder = TerminateRecorder()
+    monkeypatch.setattr(worker, "_terminate_process", recorder)
+    launching = asyncio.Event()
+    never = asyncio.Event()
+    half_started = FakeBrowserProcess()
+
+    async def slow_start(
+        self: chromium_pool.ChromiumSlot, *, user_agent: str, port_range: Any, diagnostics: Any
+    ) -> None:
+        if self.user_data_dir is None:
+            self.user_data_dir = profile_dirs()
+        self.proc = half_started  # type: ignore[assignment]
+        self.port = FAKE_PORT
+        launching.set()
+        await never.wait()
+
+    monkeypatch.setattr(chromium_pool.ChromiumSlot, "_start", slow_start)
+    pool = chromium_pool.ChromiumPool(size=1, acquire_timeout_seconds=1.0, port_range=None)
+    acquiring = asyncio.create_task(_acquire(pool))
+    await asyncio.wait_for(launching.wait(), timeout=WAIT_BOUND_SECONDS)
+
+    acquiring.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await acquiring
+
+    assert pool.queue.qsize() == 1
+    await _until(
+        lambda: recorder.terminated == [half_started] and not pool.retiring,
+        "the interrupted launch to be terminated",
+    )
+    assert pool.queue.get_nowait().proc is None
+
+
+async def test_a_failed_launch_returns_its_slot_without_awaiting_the_terminate(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_dirs: Callable[[], tempfile.TemporaryDirectory[str]],
+) -> None:
+    """``acquire`` returns ``None`` with the slot back in the queue while the terminate is still pending.
+
+    Awaiting the terminate there was a window of up to the terminate's grace
+    period in which a cancellation lost the slot: it landed in the handler, past
+    the clause that would have put the slot back. The gate holds the terminate
+    open, so an ``acquire`` that awaited it would not return at all.
+    """
+    gate = asyncio.Event()
+    recorder = TerminateRecorder(gate=gate)
+    monkeypatch.setattr(worker, "_terminate_process", recorder)
+    half_started = FakeBrowserProcess()
+
+    async def failing_start(
+        self: chromium_pool.ChromiumSlot, *, user_agent: str, port_range: Any, diagnostics: Any
+    ) -> None:
+        if self.user_data_dir is None:
+            self.user_data_dir = profile_dirs()
+        self.proc = half_started  # type: ignore[assignment]
+        raise RuntimeError("DevTools never became ready")
+
+    monkeypatch.setattr(chromium_pool.ChromiumSlot, "_start", failing_start)
+    pool = chromium_pool.ChromiumPool(size=1, acquire_timeout_seconds=1.0, port_range=None)
+    diagnostics = Diagnostics(request_id="failed", enabled=True, stream=io.StringIO())
+
+    slot = await asyncio.wait_for(
+        pool.acquire(user_agent="test-agent", diagnostics=diagnostics),
+        timeout=WAIT_BOUND_SECONDS,
+    )
+
+    assert slot is None
+    assert pool.queue.qsize() == 1
+    # The terminate is a task, so it starts on the loop's next turn -- after
+    # `acquire` has already returned, which is the point.
+    await _until(lambda: recorder.terminated == [half_started], "the terminate to start")
+    assert pool.retiring, "the terminate finished although its gate is shut"
+    assert [e["stage"] for e in diagnostics.entries] == ["pool.slot_error", "pool.release"]
+    gate.set()
+    await _until(lambda: not pool.retiring, "the terminate to finish")
+    assert pool.queue.get_nowait().proc is None
+
+
+async def test_a_launch_that_fails_before_its_process_exists_still_loses_its_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_dirs: Callable[[], tempfile.TemporaryDirectory[str]],
+) -> None:
+    """A failed launch discards the profile directory even when no process was started.
+
+    The directory is created before the browser is launched, so a launch that
+    fails in between leaves a slot holding a profile and no process. Discarding
+    it keeps the next launch from starting in whatever the failed one left there.
+    """
+    monkeypatch.setattr(worker, "_terminate_process", TerminateRecorder())
+    created: list[str] = []
+
+    async def failing_start(
+        self: chromium_pool.ChromiumSlot, *, user_agent: str, port_range: Any, diagnostics: Any
+    ) -> None:
+        if self.user_data_dir is None:
+            self.user_data_dir = profile_dirs()
+        created.append(self.user_data_dir.name)
+        raise RuntimeError("No Chromium-based browser executable found.")
+
+    monkeypatch.setattr(chromium_pool.ChromiumSlot, "_start", failing_start)
+    pool = chromium_pool.ChromiumPool(size=1, acquire_timeout_seconds=1.0, port_range=None)
+
+    assert await pool.acquire(user_agent="test-agent", diagnostics=None) is None
+    await _until(lambda: not pool.retiring, "the profile to be discarded")
+
+    queued = pool.queue.get_nowait()
+    assert queued.user_data_dir is None
+    assert created and not Path(created[0]).exists()
 
 
 @pytest.mark.parametrize("variant", ["async", "sync"])

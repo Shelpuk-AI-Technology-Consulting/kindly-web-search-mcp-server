@@ -178,7 +178,7 @@ how the issue-#96 defect survived.
 carries state. Precisely: closing the tab discards **that document** and its
 timers and in-flight requests; cookies, storage and service-worker registrations
 live in the slot's profile directory and survive every request the slot serves,
-until an idle close (§1.6) discards the profile.
+until the slot's browser is terminated (§1.4, §1.6).
 A new window is not a new profile. `Target.createBrowserContext` is the lever if
 per-request isolation is ever wanted, and nothing uses it today.
 
@@ -223,6 +223,17 @@ A timer per release rather than a periodic sweep, because a sweep would wake the
 event loop for as long as the server runs, mostly to find nothing, and would need
 its own start and stop around the pool. A `call_later` handle costs nothing until
 it fires, and a cancelled one never does.
+
+The idle close makes a cold start inside `acquire` routine, which is what
+exposes a cancellation there. A caller's deadline can land while `acquire` is
+probing or launching the slot's browser; the caller never received the slot, so
+its own `finally` cannot return it, and a pool of one would be wedged for the
+rest of the process. So when `ensure_started` raises anything, `acquire` hands
+whatever the slot holds to the same background terminate and puts the slot back
+on the queue, and awaits nothing in between: an await there would be one more
+place for the cancellation to land, which is how a failed launch whose terminate
+was interrupted used to lose the slot too. An interrupted probe costs the warm
+browser, because nothing can tell whether it would have passed.
 
 The close is invisible until the next request pays for it, so that request's
 diagnostics carry `pool.slot_idle_closed`. It is reported there and not when the

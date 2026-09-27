@@ -59,7 +59,11 @@ ships it as `0`. `tests/test_nodriver_worker_launch_resolvers.py` covers it.
 - **Every acquire must have a matching release on every path, including the
   exception path.** A leaked slot with a pool size of 1 wedges the server for
   every subsequent request until `KINDLY_NODRIVER_ACQUIRE_TIMEOUT_SECONDS`
-  expires — and then for the next one too.
+  expires — and then for the next one too. That includes a cancellation while
+  `acquire` is probing or launching the slot's browser: the caller never
+  received the slot, so its `finally` cannot return it. `acquire` puts it back
+  itself, and awaits nothing on that path, because an await there is somewhere
+  for the cancellation to land.
 - Both `terminate`/`terminate_sync` and `shutdown`/`shutdown_sync` exist because
   teardown happens from both async and interpreter-exit contexts. A new teardown
   path that only handles one leaves orphaned Chromium processes on the user's
