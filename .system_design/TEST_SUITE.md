@@ -93,9 +93,11 @@ specific:
   `_terminate_process_tree` four subsystem cases against a real process tree,
   plus L1 cases for the tree walk it now performs. The stream readers and the
   heartbeat still stand.)*
-- **All of `scrape/chromium_pool.py`** (372 lines) — no test file references it.
+- **All of `scrape/chromium_pool.py`** — no test file references it.
   *(Since narrowed: `tests/test_chromium_pool_slot_start.py` covers
-  `ChromiumSlot._start`'s snap DevTools budget. The rest of the module stands.)*
+  `ChromiumSlot._start`'s snap DevTools budget, and
+  `tests/test_chromium_pool_idle_close.py` the idle close. The rest of the
+  module stands.)*
 
 Working and not to be disturbed: 15 of 18 tests in
 `test_universal_html_loader.py` cover the Markdown-suffix probe path end to end,
@@ -2107,7 +2109,8 @@ and would misrepresent the contract.
 (`KINDLY_NODRIVER_REUSE_BROWSER`), pool sizing
 (`KINDLY_NODRIVER_BROWSER_POOL_SIZE`), port allocation within
 `KINDLY_NODRIVER_PORT_RANGE`, acquire timeout under contention
-(`KINDLY_NODRIVER_ACQUIRE_TIMEOUT_SECONDS`), concurrent acquisition, shutdown.
+(`KINDLY_NODRIVER_ACQUIRE_TIMEOUT_SECONDS`), concurrent acquisition, idle close
+(`KINDLY_NODRIVER_BROWSER_IDLE_TIMEOUT_SECONDS`), shutdown.
 Plus one real fetch through `_fetch_html` against a locally served page.
 
 ### 5.4 Anti-flake and cleanup requirements
@@ -3085,7 +3088,7 @@ The **Today** column describes *test coverage*, not implementation status.
 | Worker lifecycle and cleanup | gap — stale | L3 portable | `subsystem` | |
 | Worker retry/termination orchestration | covered — unmarked, see §5.2 | L3 portable | `subsystem` (open) | |
 | Pooled target creation (worker reuse branch) | covered (issue #96) — `test_worker_pooled_target.py` pins `browser.send` and `new_window=True`; the three Chromium behaviours it rests on are measured, not tested (`SYSTEM_DESIGN.md` §1.3) | L1 + L4 gap | `fast` (+ `chromium`, not run) | |
-| ChromiumPool | gap — no tests | L3 Chromium | `chromium` | |
+| ChromiumPool | partial — `_start`'s snap DevTools budget and the idle close, hermetically; the rest a gap | L1 + L3 Chromium | `fast` + `chromium` | |
 | CLI entrypoints and `--` forwarding | covered | L1 | `fast` | |
 | Wheel build, install, console entrypoints | gap | L4 | `package` | |
 | Documented `uvx --from git+…` path | gap | L4 | nightly | |
@@ -3910,11 +3913,11 @@ section did not have it.
 
 By default coverage.py reports only files it *observed being executed*. A module
 a given run never imports is absent from the report entirely — so
-`scrape/chromium_pool.py`, 372 lines, would contribute nothing and drag nothing
+`scrape/chromium_pool.py`, a whole module, would contribute nothing and drag nothing
 down under any run that does not reach it. It would be invisible rather than
 visibly at zero. Setting `source_pkgs` is what makes coverage.py report
 never-executed files. (That module is no longer wholly untested — the snap
-DevTools budget of `ChromiumSlot._start` is covered — but the guard's control
+DevTools budget of `ChromiumSlot._start` and the idle close are covered — but the guard's control
 uses a standalone probe script that imports one unrelated module, so the
 observable is unaffected.)
 

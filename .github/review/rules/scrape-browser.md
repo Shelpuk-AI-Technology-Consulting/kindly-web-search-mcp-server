@@ -64,6 +64,11 @@ ships it as `0`. `tests/test_nodriver_worker_launch_resolvers.py` covers it.
   teardown happens from both async and interpreter-exit contexts. A new teardown
   path that only handles one leaves orphaned Chromium processes on the user's
   machine. Check `_register_shutdown` still covers the change.
+- **The idle close (`KINDLY_NODRIVER_BROWSER_IDLE_TIMEOUT_SECONDS`) detaches a
+  browser before terminating it, and `acquire` disarms the timer as soon as it
+  has the slot.** Either reordered hands a request a browser that is being
+  closed. `.system_design/SYSTEM_DESIGN.md` §1.6 gives the reasoning, and
+  `tests/test_chromium_pool_idle_close.py` pins both orders.
 - `_pick_port` / `_pick_free_port` / `KINDLY_NODRIVER_PORT_RANGE`: a change that
   reintroduces a check-then-bind race between choosing a port and starting the
   browser produces a failure that only appears under concurrency.
