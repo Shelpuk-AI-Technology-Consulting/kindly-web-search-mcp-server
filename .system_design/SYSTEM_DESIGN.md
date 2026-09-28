@@ -22,7 +22,7 @@ others depend on:
 | Component | File | Obligation |
 |---|---|---|
 | Parent fetch | `scrape/universal_html.py` (`fetch_html_via_nodriver`) | Acquire a slot, spawn the worker, restart the slot on a failure that indicates a poisoned browser, release the slot exactly once |
-| Pool | `scrape/chromium_pool.py` (`ChromiumPool`, `ChromiumSlot`) | Launch Chromium, hand out one slot at a time, probe liveness before reuse, terminate on request |
+| Pool | `scrape/chromium_pool.py` (`ChromiumPool`, `ChromiumSlot`) | Launch Chromium, hand out one slot at a time, probe liveness before reuse, terminate on request, close a browser left idle when configured, handing out a running browser before an empty slot while it is (§1.6) |
 | Worker | `scrape/nodriver_worker.py` (`_fetch_html`, reuse branch) | Connect to the slot's DevTools endpoint, obtain a page target, navigate, extract, and leave the browser as it found it |
 | Chromium | — | Outlive its last tab, and refuse a tab with no window to put it in |
 
@@ -177,9 +177,97 @@ how the issue-#96 defect survived.
 `.github/review/rules/scrape-browser.md` already states that a reused browser
 carries state. Precisely: closing the tab discards **that document** and its
 timers and in-flight requests; cookies, storage and service-worker registrations
-live in the slot's profile directory and survive every request the slot serves.
+live in the slot's profile directory and survive every request the slot serves,
+until the slot's browser is terminated (§1.4, §1.6). With the idle close on,
+sequential traffic is served by one browser (§1.6), whose timer every release
+re-arms, so a profile in steady use is never closed for being idle: its state
+reaches every request until the worker fails, traffic pauses for longer than the
+timeout, or the process restarts.
 A new window is not a new profile. `Target.createBrowserContext` is the lever if
 per-request isolation is ever wanted, and nothing uses it today.
+
+### 1.6 Closing an idle browser
+
+`KINDLY_NODRIVER_BROWSER_IDLE_TIMEOUT_SECONDS` bounds how long a released slot
+keeps its browser. It is off unless set: the pool exists to avoid cold starts,
+and only the operator knows when a browser's memory is worth more than the next
+request's latency.
+
+`ChromiumPool.release` arms an asyncio timer on the slot and `acquire` disarms
+it. When it fires, `_close_idle` detaches the browser and its profile directory
+from the slot and terminates them in a background task. The slot stays in the
+queue with `proc` set to `None`, and `ensure_started` relaunches it on its next
+acquire, exactly as after §1.4's recycle. These details are load-bearing:
+
+- **Disarm as soon as `acquire` has the slot.** From that point a request holds
+  it, so the disarm comes before anything else `acquire` awaits. Placed after
+  the health probe, it would leave the timer free to fire during the probe's
+  await and close the browser the request is about to use.
+- **Detach, then terminate.** Awaiting `slot.terminate()` from the timer would
+  keep `slot.proc` pointing at the browser until it has exited — after a
+  SIGTERM, a grace period and, failing that, a SIGKILL. An acquire in that
+  window would probe it, might find it still answering, and be handed a browser
+  that is about to die. Detached first, any acquire finds no browser and
+  launches a fresh one in a fresh profile directory. The old browser holds its
+  DevTools port until it exits, so with a `KINDLY_NODRIVER_PORT_RANGE` no wider
+  than the pool, an acquire landing in that window can fail to pick a port; it
+  then returns `None`, as for any other failed launch.
+- **The detached browser stays reachable from both teardown paths.** It is no
+  longer in `slots`, so `ChromiumPool.retiring` holds it until its terminate
+  completes, and `shutdown` and `shutdown_sync` walk it too. A terminate that
+  was *cancelled* stays there: asyncio's runner cancels every pending task when
+  the event loop shuts down, before `atexit` runs `shutdown_sync`, and dropping
+  it would leave that browser to nobody.
+- **A browser that exited on its own is not an idle one.** The timer is not
+  armed for it, and a timer that finds one leaves it for `ensure_started` to
+  relaunch as it would without this setting, so the next request is not told a
+  crash was an idle close.
+- **With the idle close on, a running browser is handed out before an empty
+  slot, the most recently released first** (`_WarmFirstQueue`). A timer per
+  slot only trims a pool whose spare slots go untouched. First in, first out
+  rotates through every slot, so each sits idle for the pool size times the
+  gap between requests. Reproduced once with the doubles from
+  `tests/test_chromium_pool_idle_close.py` (a pool of 2, a 0.3 s timeout and
+  one request every 0.2 s): every request paid a cold start. The tests there
+  pin the order, not that timing. And the slot at
+  the head, released longest ago, is the first to be closed, so it is handed
+  out while a warm browser waits behind it. Plain last in, first out fixes
+  both but fails the restart path (`fetch_html_via_nodriver` terminates a
+  stale slot, releases it and acquires again at once): it would hand back the
+  slot just emptied and cold-start it while a warm browser waited. So an empty
+  slot, or one whose browser has exited, is passed over while any running
+  browser is queued; among empty slots the oldest goes first, so a fresh pool
+  still starts at slot 0. Waiting requests are unaffected: `asyncio.Queue`
+  wakes the requests that had to wait in arrival order, whatever `_get`
+  returns, exactly as under first in, first out.
+
+  **With the idle close off, the order stays first in, first out.** Nothing
+  closes a queued browser then, so the order only decides which warm browser
+  serves a request; changing it would alter every pool of more than one slot,
+  including those that never set the timeout. The cost of warm-first, which
+  only operators who set the timeout take on, is §1.5's state concentrating:
+  under sequential traffic one profile serves every request.
+
+A timer per release rather than a periodic sweep, because a sweep would wake the
+event loop for as long as the server runs, mostly to find nothing, and would need
+its own start and stop around the pool. A `call_later` handle costs nothing until
+it fires, and a cancelled one never does.
+
+The idle close makes a cold start inside `acquire` routine, which is what
+exposes a cancellation there. A caller's deadline can land while `acquire` is
+probing or launching the slot's browser; the caller never received the slot, so
+its own `finally` cannot return it, and a pool of one would be wedged for the
+rest of the process. So when `ensure_started` raises anything, `acquire` hands
+whatever the slot holds to the same background terminate and puts the slot back
+on the queue, and awaits nothing in between: an await there would be one more
+place for the cancellation to land, which is how a failed launch whose terminate
+was interrupted used to lose the slot too. An interrupted probe costs the warm
+browser, because nothing can tell whether it would have passed.
+
+The close is invisible until the next request pays for it, so that request's
+diagnostics carry `pool.slot_idle_closed`. It is reported there and not when the
+timer fires, because the request that released the slot has finished by then,
+and its diagnostics with it.
 
 ---
 

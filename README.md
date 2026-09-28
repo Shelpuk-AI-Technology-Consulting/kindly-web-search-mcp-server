@@ -913,6 +913,7 @@ To use the prebuilt image instead of building, replace the `build:` and `context
   - `KINDLY_NODRIVER_REUSE_BROWSER=0` disables reuse (fresh Chromium per request).
   - `KINDLY_NODRIVER_BROWSER_POOL_SIZE=2` controls how many Chromium instances are kept warm.
   - `KINDLY_NODRIVER_ACQUIRE_TIMEOUT_SECONDS=30` controls how long to wait for a pooled slot before falling back to per-request Chromium.
+  - `KINDLY_NODRIVER_BROWSER_IDLE_TIMEOUT_SECONDS=600` closes a pooled Chromium once it has sat unused that many seconds, so an idle server stops holding a browser's memory. The next request launches a fresh one, from a fresh profile, and pays a cold start (diagnostics emit `pool.slot_idle_closed`). With a pool larger than one, the most recently used running browser is handed out first, so light traffic keeps one browser warm and lets the rest close. Unset, the default, never closes a browser for being idle, and slots are handed out in turn as before.
   - Optional: `KINDLY_NODRIVER_PORT_RANGE=45000-45100` restricts remote debugging ports.
   - Pooled slots are health-checked before use and auto-restarted if the DevTools endpoint is stale (diagnostics emit `pool.slot_probe` and `pool.slot_restart`).
   - If pool acquisition times out or fails, the server falls back to per-request Chromium and emits a `pool.acquire_timeout`/`pool.slot_error` diagnostic when diagnostics are enabled.
