@@ -1,7 +1,7 @@
 # Rule: search providers (`search/`)
 
-Every search backend — Serper, SerpBase, Tavily, SearXNG, Sofya, You.com, Serply
-and apifare, in selection order — sits behind one registry. They share a single
+Every search backend — Serper, SerpBase, Tavily, SearXNG, Sofya, You.com, Serply,
+apifare and Cohesivity, in selection order — sits behind one registry. They share a single
 contract, which is why they share one rule file.
 
 ## Adding a provider touches more than `PROVIDERS`
@@ -86,10 +86,14 @@ Every provider module must:
    **SearXNG's base-URL userinfo is the credential that does not travel in a
    header, and so is reachable through a URL.** SerpBase's `api_key` query
    parameter used to be the other one; it moved to an `X-API-Key` header when the
-   provider went POST-only, and `DisclosureCase.carried_in_url` in
+   provider went POST-only. **Cohesivity's application key is the one that
+   does today**: the service accepts it only as the `key` query parameter, so
+   `search_cohesivity` passes it through `params=` and nowhere else, and relies
+   on the router dropping the URL from its `raise_for_status()` failure.
+   `DisclosureCase.carried_in_url` in
    `tests/test_provider_credential_disclosure.py` is the record of which
    providers carry it where — read that rather than this sentence if they
-   disagree. Both have disclosed to the MCP client in the past — see
+   disagree. SearXNG and SerpBase have disclosed to the MCP client in the past — see
    TEST_SUITE.md §14 — so
    **anything derived from a request URL or from `SEARXNG_BASE_URL` is
    credential-bearing until shown otherwise**, including a log line. Redaction is

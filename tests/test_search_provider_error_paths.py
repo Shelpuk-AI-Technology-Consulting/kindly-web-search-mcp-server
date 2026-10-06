@@ -47,6 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kindly_web_search_mcp_server.models import WebSearchResult
 from kindly_web_search_mcp_server.search.apifare import ApifareError, search_apifare
+from kindly_web_search_mcp_server.search.cohesivity import (
+    CohesivityError,
+    search_cohesivity,
+)
 from kindly_web_search_mcp_server.search.searxng import SearxngError, search_searxng
 from kindly_web_search_mcp_server.search.serpbase import SerpbaseError, search_serpbase
 from kindly_web_search_mcp_server.search.serper import SerperError, search_serper
@@ -152,6 +156,14 @@ PROVIDER_CASES: tuple[ProviderCase, ...] = (
         search_apifare,
         {"APIFARE_TOKEN": "test_key"},
         ApifareError,
+        httpx.HTTPStatusError,
+        httpx.ReadTimeout,
+    ),
+    ProviderCase(
+        "cohesivity",
+        search_cohesivity,
+        {"COHESIVITY_APPLICATION_KEY": "test_key"},
+        CohesivityError,
         httpx.HTTPStatusError,
         httpx.ReadTimeout,
     ),

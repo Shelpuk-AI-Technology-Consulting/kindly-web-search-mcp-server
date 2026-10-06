@@ -1,4 +1,4 @@
-"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com → Serply → apifare).
+"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com → Serply → apifare → Cohesivity).
 
 :data:`PROVIDERS` is the single source of truth for which providers exist, what
 configures them, and the order they are selected in. Adding a provider means
@@ -19,6 +19,7 @@ import httpx
 from ..models import WebSearchResult
 from ..utils.diagnostics import Diagnostics
 from .apifare import search_apifare
+from .cohesivity import search_cohesivity
 from .searxng import search_searxng
 from .serpbase import search_serpbase
 from .serper import search_serper
@@ -40,6 +41,7 @@ __all__ = [
     "any_provider_configured",
     "provider_env_vars",
     "search_apifare",
+    "search_cohesivity",
     "search_searxng",
     "search_serpbase",
     "search_serper",
@@ -73,8 +75,9 @@ class SearchProviderTransportError(RuntimeError):
     an LLM agent. This is not hypothetical: it happened, with SerpBase's
     ``api_key`` query parameter, and `.system_design/TEST_SUITE.md` section 14
     records it. SerpBase has since moved to a header; SearXNG keeps the shape
-    alive, so the concrete reason is still a live one rather than a precaution
-    against a future provider.
+    alive, and Cohesivity accepts its application key only as the ``key`` query
+    parameter, so the concrete reason is still a live one rather than a
+    precaution against a future provider.
 
     The URL is dropped rather than filtered. Stripping parameters whose names
     look credential-shaped is a denylist, and it fails open and silently on the
@@ -166,6 +169,13 @@ PROVIDERS: tuple[SearchProviderSpec, ...] = (
     SearchProviderSpec(
         "apifare", "apifare", "APIFARE_TOKEN", "search_apifare", "has_apifare_token"
     ),
+    SearchProviderSpec(
+        "cohesivity",
+        "Cohesivity",
+        "COHESIVITY_APPLICATION_KEY",
+        "search_cohesivity",
+        "has_cohesivity_key",
+    ),
 )
 
 
@@ -243,8 +253,8 @@ async def search_web(
         SearchProviderTransportError: If the selected provider's request fails at
             the HTTP layer. Replaces the ``httpx`` exception rather than letting
             it out, because that exception's message quotes the request URL --
-            which for SerpBase carries the API key. The original is chained as
-            ``__cause__``.
+            which for SearXNG and Cohesivity carries the credential. The
+            original is chained as ``__cause__``.
     """
     # Read each provider's configuration once, so the selection and the emitted
     # diagnostic cannot disagree if the environment changes mid-call.

@@ -170,7 +170,8 @@ for another.
 
 **Search-provider response parsing and error paths.** `search_serper`,
 `search_serpbase`, `search_tavily`, `search_searxng`, `search_sofya`,
-`search_youcom`, `search_serply` — the seven coroutines `PROVIDERS` dispatches to. Driven with
+`search_youcom`, `search_serply`, `search_apifare`, `search_cohesivity` — the nine
+coroutines `PROVIDERS` dispatches to. Driven with
 `httpx.MockTransport`, so this is L1 and belongs in the `fast` job.
 
 **Coverage today runs inversely to selection priority**, which is the reason this
@@ -417,6 +418,43 @@ the module would otherwise look arbitrary:
   split §14 records. `count` is forwarded unclamped — not because apifare
   documents no maximum, as Serply does, but because nothing is known about its
   bound at all; see the unverified-wire-format entry in §14.
+
+**Cohesivity, added after apifare, is appended last**, so a deployment that
+already had a key keeps its provider —
+`test_search_router.py::test_prefers_apifare_over_cohesivity_when_both_keys` pins
+the adjacent pair. It follows the E5-8 layout: `tests/test_cohesivity_unit.py`
+for the request and the parsing, written pytest-first, plus a row in the shared
+error-path table and a row in the credential-disclosure sweep. Four choices in
+the module would otherwise look arbitrary:
+
+- **The application key travels in the URL**, as the `key` query parameter,
+  because the service accepts no other form — measured against the live service:
+  an `Authorization: Bearer` header, an `X-Api-Key` header and a `key` field in
+  the body are all rejected. It is passed through `params=` and nowhere else, and
+  `raise_for_status()` failures are left to the router, whose conversion drops
+  the URL. Its `DisclosureCase` is therefore `carried_in_url=True`, the second
+  such row after SearXNG, and the unit module pins both halves: that the raw
+  `httpx.HTTPStatusError` *does* quote the key, and that the router's message for
+  400, 401, 403 and 429 is exactly the label and the status. §14 records the one
+  surface the router cannot reach — `httpx`'s own request log line.
+- **The body asks for highlights** (`"contents": {"highlights": {"numSentences":
+  2}}`) because without a `contents` request the service returns only an id, a
+  title and a URL, leaving nothing to build a snippet from. The highlights are
+  joined, whitespace-collapsed and capped at `SNIPPET_MAX_CHARS` (500). No other
+  provider caps its snippet; this one does because highlights are extracted page
+  text rather than a search engine's snippet — and the cap is not theoretical:
+  one live search through `search_cohesivity` (2026-10-06) returned three
+  results whose snippets all reached it. A result with no usable highlights
+  is kept with an empty snippet, as in Serply and apifare.
+- **`type` is `auto`**, one of the modes an anonymous tenant may use; others
+  answer 403. No filters are sent, because the provider contract passes none.
+  `numResults` is forwarded unclamped and the list capped locally.
+- **A missing or reshaped `results` list raises**, as in Serply, so Cohesivity
+  sits on the raising side of the split §14 records. **A 403 is not
+  intercepted**, although the service uses it for "search not provisioned":
+  quoting the service's message would add a second path from a response body into
+  an error message, which apifare's 402 shows the cost of; the README tells the
+  operator what a Cohesivity 403 usually means instead.
 
 **Launch-argument and sandbox decisions.** `_build_chromium_launch_args`,
 `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
@@ -3070,7 +3108,7 @@ The **Today** column describes *test coverage*, not implementation status.
 | Subsystem / behaviour | Today | Target layer | CI job | Owner |
 |---|---|---|---|---|
 | Provider routing, strict order, no fallback | covered | L1 | `fast` | |
-| Per-provider response parsing | covered (E5-8; Serply in PR #94; apifare in PR #95) — §3.1 records what landed | L1 | `fast` | |
+| Per-provider response parsing | covered (E5-8; Serply in PR #94; apifare in PR #95; Cohesivity after it) — §3.1 records what landed | L1 | `fast` | |
 | Provider errors: 401, 429, malformed JSON, timeout, empty | covered (E5-8) — every provider, one table | L1 (`httpx.MockTransport`) | `fast` | |
 | Provider registry ⇄ docs | covered | L2 | `fast` | |
 | StackExchange / GitHub issues / GitHub discussions / Wikipedia | partial — parsing covered, failure paths thin | L1 + L2 | `fast` | |
@@ -4855,8 +4893,9 @@ is nothing to test.
   error message. CLOSED**, with a second disclosure of the same class found and
   closed alongside it. `serpbase.py` **then** put `api_key` in the request
   `params` (it no longer does — the provider went POST-only and the key moved to
-  an `X-API-Key` header, so SearXNG is now the only credential reachable through
-  a URL; the incident is kept as written because it is what happened);
+  an `X-API-Key` header, leaving SearXNG's userinfo — and, since it was added,
+  Cohesivity's `key` query parameter — as the credentials reachable through a
+  URL; the incident is kept as written because it is what happened);
   `httpx.HTTPStatusError`'s message quotes the full URL, key included; and
   `search_web` was called with no `except` around it, so the provider exception
   propagated out of the MCP tool and FastMCP rendered its message into the
@@ -4918,8 +4957,8 @@ is nothing to test.
   `call_tool` raises FastMCP's `ToolError` and the served text and `isError` are
   composed one layer below it. The seven-provider sweep is kept
   non-vacuous by a **sibling case** asserting, once per provider, that the
-  credential was genuinely in flight — in the URL for the two providers that carry
-  it there, in a header for the five that do not — because an absence assertion
+  credential was genuinely in flight — in the URL for the providers that carry
+  it there (today SearXNG and Cohesivity), in a header for the rest — because an absence assertion
   over a provider that never sends a credential proves nothing. The sweep rows
   themselves assert absence only.
 
@@ -5154,6 +5193,23 @@ is nothing to test.
   A mismatch on the 200 path surfaces as `ApifareError` naming which part of the
   envelope was missing — not as an empty result set, which is what the module did
   when it arrived and what made this risk hard to see.
+
+- **Cohesivity's application key travels in the request URL, and `httpx` logs
+  request URLs. ACCEPTED** — a known exposure held by configuration, not by
+  code. The service accepts the key only as the `key` query parameter (§3.1), so
+  every `httpx` surface that renders the URL renders the key. Two exist. The
+  `HTTPStatusError` message is converted by the router and pinned by the
+  disclosure sweep. The other is `httpx`'s own `INFO` line, `HTTP Request: POST
+  <url> ...`, which quotes the full URL, key included —
+  `test_cohesivity_unit.py::test_httpx_request_logging_would_quote_the_key`
+  measures it. What keeps it out of the log stream is `configure_logging`, which
+  `server.py` calls at import and which holds the `httpx` logger at `WARNING`
+  whatever `LOG_LEVEL` says; `test_no_log_record_carries_the_key_under_the_shipped_logging`
+  pins that. It stays exposed to a host that re-opens the `httpx` logger to
+  `INFO` itself, or to code that calls `search_cohesivity` without importing the
+  server. A repair would have to live in the transport layer (an event hook or a
+  filter on the `httpx` logger) and would be the first of its kind here; it was
+  not taken in the change that added the provider.
 
 - **Quoting a validated top-up URL admits bounded remote prose, deliberately.
   ACCEPTED** — `_safe_topup_url` bounds *where* the link points and how long it

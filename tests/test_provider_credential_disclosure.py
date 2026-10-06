@@ -32,8 +32,8 @@ unrepaired tree; the rest already passed, so on their own they are
 regression cover and not evidence. Pointed at a header-authenticating provider,
 a "the secret is absent" assertion passes while proving nothing. So a **sibling
 case** asserts, once per provider, that the credential was genuinely *in flight*
--- in the request URL for SearXNG, now the only provider that carries it there,
-and in a request header for the rest. A provider that stopped being configured, or
+-- in the request URL for SearXNG and Cohesivity, the two providers that carry it
+there, and in a request header for the rest. A provider that stopped being configured, or
 was swapped for one that never disclosed, fails that control instead of passing
 quietly. The sweep rows themselves assert absence only; the control is what makes
 their absence mean something.
@@ -100,8 +100,9 @@ class DisclosureCase:
             cleared environment rather than patched onto the ambient one.
         secret: The exact substring that must never reach the MCP client.
         carried_in_url: ``True`` when this provider puts its credential in the
-            request URL -- currently only SearXNG through base URL userinfo.
-            ``False`` when it uses a header. This decides which
+            request URL -- SearXNG through base URL userinfo, and Cohesivity
+            through its ``key`` query parameter, the only form that service
+            accepts. ``False`` when it uses a header. This decides which
             in-flight control the case asserts, and is what stops a row passing
             because it silently stopped sending a credential at all.
     """
@@ -169,6 +170,13 @@ DISCLOSURE_CASES: tuple[DisclosureCase, ...] = (
         {"APIFARE_TOKEN": f"apifare-{SENTINEL}"},
         f"apifare-{SENTINEL}",
         False,
+    ),
+    DisclosureCase(
+        "cohesivity",
+        "Cohesivity",
+        {"COHESIVITY_APPLICATION_KEY": f"coh_app_{SENTINEL}"},
+        f"coh_app_{SENTINEL}",
+        True,
     ),
 )
 
