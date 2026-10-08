@@ -402,7 +402,8 @@ async def web_search(
       `SERPER_API_KEY` (Serper), `SERPBASE_API_KEY` (SerpBase), `TAVILY_API_KEY` (Tavily),
       `SEARXNG_BASE_URL` (SearXNG), `SOFYA_API_KEY` (Sofya), `YDC_API_KEY` (You.com),
       `SERPLY_API_KEY` (Serply), `APIFARE_TOKEN` (apifare, prepaid balance), or
-      `COHESIVITY_APPLICATION_KEY` (Cohesivity).
+      `COHESIVITY_APPLICATION_KEY` (Cohesivity; the value `auto` needs no signup and
+      sets itself up on the first search).
       If none is set, this tool will fail.
 
     Returns:

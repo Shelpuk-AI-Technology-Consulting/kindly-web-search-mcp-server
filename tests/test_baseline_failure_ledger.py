@@ -124,6 +124,8 @@ CLEARED_ENVIRONMENT_NAMES = (
     "YDC_API_KEY",
     "APIFARE_TOKEN",
     "COHESIVITY_APPLICATION_KEY",
+    # Where Cohesivity's `auto` mode keeps its state file.
+    "XDG_CONFIG_HOME",
     "LOG_LEVEL",
     "NO_PROXY",
     "HTTP_PROXY",

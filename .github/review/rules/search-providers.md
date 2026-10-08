@@ -57,7 +57,11 @@ diagnostics payload all read from it, and tests assert the documentation matches
 Every provider module must:
 
 1. Read **its own** environment variable, the one named in its
-   `SearchProviderSpec.env_var`, and nothing else.
+   `SearchProviderSpec.env_var`, and nothing else. One narrow exception:
+   Cohesivity's `COHESIVITY_APPLICATION_KEY=auto` mode also reads
+   `XDG_CONFIG_HOME` / `APPDATA` and the home directory, only to locate its
+   own state file — they say where a file goes, never which provider is
+   selected or what credential is sent.
 2. Return `list[WebSearchResult]` with all four required fields populated —
    `page_content` is documented as always a string, so a provider that leaves it
    empty must leave it `""`, never `None`.
@@ -78,6 +82,15 @@ Every provider module must:
    measured not to disclose today and is called out in TEST_SUITE.md §14. A
    provider that wraps `raise_for_status()` to "comply" with the old wording
    bypasses the conversion entirely.
+
+   Cohesivity's `auto` mode is the one provider that makes calls other than its
+   search: tool calls to Cohesivity's hosted MCP endpoint, which set a project up.
+   Its **search** failures still reach the router unconverted. Its **MCP-call**
+   failures are converted in the provider to `CohesivityBootstrapError`, whose
+   message is fixed text plus the HTTP status or the exception's class name —
+   never the `httpx` message, never reply text — because the caller needs to
+   know that setup failed and was not retried, and that URL carries no
+   credential.
 4. **Never put the API key anywhere but the request it authenticates.** Not in a
    log line, not in an exception message, not in a diagnostics payload. Check
    every new error path — a common shape is `raise ... f"{response.text}"` where
@@ -90,6 +103,12 @@ Every provider module must:
    does today**: the service accepts it only as the `key` query parameter, so
    `search_cohesivity` passes it through `params=` and nowhere else, and relies
    on the router dropping the URL from its `raise_for_status()` failure.
+   In `auto` mode Cohesivity also holds a **management key**, and both keys
+   arrive in a hosted-MCP reply, so those replies are secret-bearing: no message
+   quotes reply or edge-error text, and the one remote string quoted at all —
+   the claim link — must pass `_safe_claim_url` (https, exactly
+   `cohesivity.ai`, no key inside).
+   `AUTO_MODE_CASES` in the disclosure module sweeps that path.
    `DisclosureCase.carried_in_url` in
    `tests/test_provider_credential_disclosure.py` is the record of which
    providers carry it where — read that rather than this sentence if they

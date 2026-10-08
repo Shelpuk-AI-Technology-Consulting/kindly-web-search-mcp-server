@@ -453,8 +453,47 @@ the module would otherwise look arbitrary:
   sits on the raising side of the split §14 records. **A 403 is not
   intercepted**, although the service uses it for "search not provisioned":
   quoting the service's message would add a second path from a response body into
-  an error message, which apifare's 402 shows the cost of; the README tells the
-  operator what a Cohesivity 403 usually means instead.
+  an error message, which apifare's 402 shows the cost of. With an explicit key
+  that is still the behaviour; in `auto` mode (below) the 403 is classified, not
+  quoted.
+
+**`COHESIVITY_APPLICATION_KEY=auto` is zero-setup mode**; any other value is the
+key, used exactly as above, with no file read or written and no other call —
+`test_an_explicit_key_never_bootstraps_or_touches_files` pins that. In `auto`
+mode credentials come from, first hit wins, a project `.cohesivity` file in the
+working directory or a parent (stopping at the home directory; read only, its
+tenant never replaced), the server's own state file
+(`$XDG_CONFIG_HOME` or `~/.config`, or `%APPDATA%`, then
+`kindly-web-search/cohesivity-tenant.json`; four fields, `0600` in a `0700`
+directory, written by temp file and `os.replace`, a symlink refused), or a new
+anonymous project created through Cohesivity's hosted MCP endpoint
+(`create_tenant`, then `provision_resource`). The unit module drives all of it
+against one mocked transport answering both endpoints, with `HOME`,
+`XDG_CONFIG_HOME`, `APPDATA` and the working directory under `tmp_path`. The
+choices that would otherwise look arbitrary:
+
+- **Creation is never retried automatically.** A timeout, network error, 5xx or
+  unreadable reply leaves the outcome unknown, so it fails as
+  `CohesivityBootstrapError` instead; searches that were waiting on the
+  module-level lock behind that attempt fail with it rather than calling
+  `create_tenant` themselves. Concurrent searches therefore create at most one
+  project, pinned with the success and the failure both.
+- **Recovery is bounded per search**: one `provision_resource` and one retry for
+  a 403 "Service not provisioned"; one replacement and one retry for a 401/410
+  on a saved project, or for one past `expires_at` that `tenant_status` does
+  not report claimed. A paused project or a used-up lifetime allowance creates
+  nothing: `claim_tenant` is called and `CohesivityAllowanceError` carries its
+  link, which the router passes through as a provider error. A per-minute 429 is
+  left to the router as a plain status.
+- **The edge error body is read only to classify it** — `error.message`,
+  `tenant_state` and `window_kind`, shapes taken from the service's own source —
+  and never quoted. The claim link is the one remote string quoted, after
+  `_safe_claim_url`.
+- **Hosted-MCP replies are secret-bearing**, so MCP-call failures are converted
+  in the provider to fixed text naming the tool and the status or exception
+  class. `AUTO_MODE_CASES` in the disclosure module sweeps both keys through the
+  served payload, the log records and the diagnostics stream, with its own
+  in-flight control.
 
 **Launch-argument and sandbox decisions.** `_build_chromium_launch_args`,
 `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
@@ -5210,6 +5249,8 @@ is nothing to test.
   server. A repair would have to live in the transport layer (an event hook or a
   filter on the `httpx` logger) and would be the first of its kind here; it was
   not taken in the change that added the provider.
+  In `auto` mode the same holds for an application key that came from a
+  `.cohesivity` file or the state file rather than the environment.
 
 - **Quoting a validated top-up URL admits bounded remote prose, deliberately.
   ACCEPTED** — `_safe_topup_url` bounds *where* the link points and how long it

@@ -212,7 +212,7 @@ export SERPLY_API_KEY="..."
 # or
 export APIFARE_TOKEN="..."
 # or (Cohesivity, see "Cohesivity setup" below):
-export COHESIVITY_APPLICATION_KEY="coh_app_..."
+export COHESIVITY_APPLICATION_KEY="auto"
 # or (self-hosted SearXNG):
 export SEARXNG_BASE_URL="https://searx.example.org"
 ```
@@ -230,7 +230,7 @@ $env:SERPLY_API_KEY="..."
 # or
 $env:APIFARE_TOKEN="..."
 # or (Cohesivity, see "Cohesivity setup" below):
-$env:COHESIVITY_APPLICATION_KEY="coh_app_..."
+$env:COHESIVITY_APPLICATION_KEY="auto"
 # or (self-hosted SearXNG):
 $env:SEARXNG_BASE_URL="https://searx.example.org"
 ```
@@ -249,7 +249,7 @@ $env:SEARXNG_HEADERS_JSON='{"Authorization":"Bearer ..."}'
 $env:SEARXNG_USER_AGENT="Mozilla/5.0 ..."
 ```
 
-Cohesivity setup ([cohesivity.ai](https://cohesivity.ai)): run `npx @cohesivity/init` (anonymous, no signup), which writes your keys to a `.cohesivity` file — keep it out of version control. Provision search once (ask your coding agent, which uses the file's management key), then set `COHESIVITY_APPLICATION_KEY` to the file's `coh_application_key`. An HTTP 403 from Cohesivity usually means search is not provisioned yet. Anonymous tenants last 72 hours and get 50 search requests (5 per minute) until claimed through the one-click link; claimed free accounts include monthly search credits.
+Cohesivity setup ([cohesivity.ai](https://cohesivity.ai)): set `COHESIVITY_APPLICATION_KEY=auto`. No signup, nothing else to do: the server uses a project `.cohesivity` file if one is in its working directory or a parent, otherwise it creates an anonymous Cohesivity project on the first search and stores its keys privately in `~/.config/kindly-web-search/cohesivity-tenant.json` (`$XDG_CONFIG_HOME/...` if set; `%APPDATA%\kindly-web-search\` on Windows). Anonymous projects get 50 searches (5 per minute) for 72 hours; when they run out, the tool error includes a one-click link to keep the project for free. A real `coh_app_...` application key also works and is used as given.
 
 Optional (recommended for better GitHub Issue / PR extraction):
 
