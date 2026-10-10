@@ -32,8 +32,8 @@ unrepaired tree; the rest already passed, so on their own they are
 regression cover and not evidence. Pointed at a header-authenticating provider,
 a "the secret is absent" assertion passes while proving nothing. So a **sibling
 case** asserts, once per provider, that the credential was genuinely *in flight*
--- in the request URL for SearXNG, now the only provider that carries it there,
-and in a request header for the rest. A provider that stopped being configured, or
+-- in the request URL for SearXNG and Cohesivity, the two providers that carry it
+there, and in a request header for the rest. A provider that stopped being configured, or
 was swapped for one that never disclosed, fails that control instead of passing
 quietly. The sweep rows themselves assert absence only; the control is what makes
 their absence mean something.
@@ -47,6 +47,13 @@ driven from here; it is pinned in ``test_apifare_unit.py`` by planting the token
 in the 402 body. The row below still belongs here: it covers every *other* status
 apifare can answer with.
 
+**Cohesivity's zero-setup mode has rows of its own**, ``AUTO_MODE_CASES``. With
+``COHESIVITY_APPLICATION_KEY=auto`` the environment holds no key: both the
+application key and the management key arrive in a reply from Cohesivity's
+hosted MCP endpoint, so the rows above cannot reach them. Those rows sweep the
+served text, every log record and the diagnostics stream, with their own
+in-flight control.
+
 ``build_environment`` is imported from ``test_search_provider_error_paths``
 rather than copied. Its docstring records the measured reason an environment has
 to be cleared and rebuilt rather than patched -- SearXNG alone reads nine
@@ -56,6 +63,7 @@ Renaming it there breaks this module too.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,8 +108,9 @@ class DisclosureCase:
             cleared environment rather than patched onto the ambient one.
         secret: The exact substring that must never reach the MCP client.
         carried_in_url: ``True`` when this provider puts its credential in the
-            request URL -- currently only SearXNG through base URL userinfo.
-            ``False`` when it uses a header. This decides which
+            request URL -- SearXNG through base URL userinfo, and Cohesivity
+            through its ``key`` query parameter, the only form that service
+            accepts. ``False`` when it uses a header. This decides which
             in-flight control the case asserts, and is what stops a row passing
             because it silently stopped sending a credential at all.
     """
@@ -169,6 +178,13 @@ DISCLOSURE_CASES: tuple[DisclosureCase, ...] = (
         {"APIFARE_TOKEN": f"apifare-{SENTINEL}"},
         f"apifare-{SENTINEL}",
         False,
+    ),
+    DisclosureCase(
+        "cohesivity",
+        "Cohesivity",
+        {"COHESIVITY_APPLICATION_KEY": f"coh_app_{SENTINEL}"},
+        f"coh_app_{SENTINEL}",
+        True,
     ),
 )
 
@@ -829,6 +845,328 @@ async def test_an_over_long_query_fails_without_quoting_the_url_or_the_credentia
     assert type(raised.value) is httpx.InvalidURL
     assert case.secret not in str(raised.value)
     assert query[:100] not in str(raised.value)
+
+
+# --------------------------------------------------------------------------
+# Cohesivity's zero-setup mode: two secrets, handed out by a second endpoint.
+# --------------------------------------------------------------------------
+
+#: Zero-setup mode's keys. Neither comes from the environment: the hosted MCP
+#: endpoint hands both out in its ``create_tenant`` reply, so the reply is
+#: secret-bearing and every path that reads one is a disclosure surface the
+#: rows above cannot reach -- their environment holds the key itself.
+AUTO_APP_KEY = f"coh_app_auto-{SENTINEL}"
+AUTO_MGMT_KEY = f"coh_mgmt_auto-{SENTINEL}"
+AUTO_CLAIM_URL = "https://cohesivity.ai/c/claim-token"
+
+
+@dataclass(frozen=True)
+class AutoModeCase:
+    """Describe one zero-setup failure to drive through the tool boundary.
+
+    Attributes:
+        name: Short identifier, used as the parametrization id.
+        edge_status: The status the search endpoint answers with.
+        edge_body: The JSON body it answers with.
+        echoing_tool: An MCP tool whose reply echoes both keys back as a tool
+            error, as a hostile or compromised endpoint might; ``None`` when
+            every tool succeeds.
+        on_wire: Where the in-flight control requires a key to have been sent:
+            ``"search-url"`` for the application key in a search request URL,
+            ``"mcp-body"`` for the management key in an MCP request body.
+        expected: Text the served error must carry, so a case cannot pass by
+            serving nothing useful.
+    """
+
+    name: str
+    edge_status: int
+    edge_body: dict[str, object]
+    echoing_tool: str | None
+    on_wire: tuple[str, ...]
+    expected: str
+
+
+_PAUSED = {
+    "error": {"code": 403, "message": f"[Cohesivity] Tenant paused {AUTO_APP_KEY}"},
+    "tenant_state": "paused",
+}
+_LIFETIME_429 = {
+    "error": {"code": 429, "message": f"[Cohesivity] Plan limit {AUTO_MGMT_KEY}"},
+    "window_kind": "all_time",
+}
+
+AUTO_MODE_CASES: tuple[AutoModeCase, ...] = (
+    AutoModeCase(
+        "edge-401",
+        401,
+        {"error": {"code": 401, "message": AUTO_APP_KEY}},
+        None,
+        ("search-url", "mcp-body"),
+        "HTTP 401",
+    ),
+    AutoModeCase(
+        "edge-429-per-minute",
+        429,
+        {"error": {"code": 429}, "window_kind": "utc_minute"},
+        None,
+        ("search-url", "mcp-body"),
+        "HTTP 429",
+    ),
+    AutoModeCase(
+        "edge-500",
+        500,
+        {"error": {"code": 500, "message": AUTO_MGMT_KEY}},
+        None,
+        ("search-url", "mcp-body"),
+        "HTTP 500",
+    ),
+    AutoModeCase(
+        "edge-paused", 403, _PAUSED, None, ("search-url", "mcp-body"), AUTO_CLAIM_URL
+    ),
+    AutoModeCase(
+        "edge-quota",
+        429,
+        _LIFETIME_429,
+        None,
+        ("search-url", "mcp-body"),
+        AUTO_CLAIM_URL,
+    ),
+    AutoModeCase("create-echoes", 200, {}, "create_tenant", (), "create_tenant"),
+    AutoModeCase(
+        "provision-echoes", 200, {}, "provision_resource", ("mcp-body",), "provision"
+    ),
+    AutoModeCase(
+        "claim-echoes",
+        403,
+        _PAUSED,
+        "claim_tenant",
+        ("search-url", "mcp-body"),
+        "no claim link",
+    ),
+)
+
+AUTO_CASE_IDS = tuple(case.name for case in AUTO_MODE_CASES)
+
+
+def _mcp_result(
+    structured: dict[str, object], *, error: str | None = None
+) -> httpx.Response:
+    """Build a hosted-MCP ``tools/call`` reply.
+
+    Args:
+        structured: The tool's ``structuredContent`` on success.
+        error: Tool-error text; when given the reply is ``isError: true``.
+
+    Returns:
+        The reply.
+    """
+    if error is not None:
+        result: dict[str, object] = {
+            "content": [{"type": "text", "text": error}],
+            "isError": True,
+        }
+    else:
+        result = {
+            "content": [{"type": "text", "text": "ok"}],
+            "structuredContent": structured,
+            "isError": False,
+        }
+    return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": result})
+
+
+async def call_the_tool_in_auto_mode(
+    case: AutoModeCase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[str, list[httpx.Request], list[bytes]]:
+    """Drive ``web_search`` in zero-setup mode and return what the client is served.
+
+    The environment is cleared as for every other row, and the locations zero-setup
+    mode reads -- ``HOME``, ``XDG_CONFIG_HOME``, ``APPDATA`` and the working
+    directory -- are all moved under ``tmp_path``, so no real credentials file
+    can be read or written. Diagnostics are on, so their stream is swept too.
+
+    Args:
+        case: The failure to drive.
+        tmp_path: pytest's per-case directory.
+        monkeypatch: pytest's patcher, which restores everything it touched.
+
+    Returns:
+        The served text prefixed with ``isError=``, every request the transport
+        saw, and every reply body it served.
+    """
+    import asyncio
+
+    from kindly_web_search_mcp_server.search import cohesivity
+    from kindly_web_search_mcp_server.server import mcp
+
+    home = tmp_path / "home"
+    work = home / "work"
+    work.mkdir(parents=True)
+    build_environment(
+        {
+            "COHESIVITY_APPLICATION_KEY": "auto",
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "APPDATA": str(home / "AppData"),
+            "KINDLY_DIAGNOSTICS": "1",
+        },
+        monkeypatch,
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(cohesivity, "_BOOTSTRAP_LOCK", asyncio.Lock())
+
+    sent: list[httpx.Request] = []
+    replies: list[bytes] = []
+    echo = f"refused: {AUTO_APP_KEY} {AUTO_MGMT_KEY}"
+    credentials_file = (
+        "tenant_id=tenant_auto\n"
+        f"coh_management_key={AUTO_MGMT_KEY}\n"
+        f"coh_application_key={AUTO_APP_KEY}\n"
+        "expires_at=2099-01-01T00:00:00Z\n"
+    )
+    successes: dict[str, dict[str, object]] = {
+        "create_tenant": {
+            "tenant_id": "tenant_auto",
+            "credentials_file": {
+                "filename": ".cohesivity",
+                "content": credentials_file,
+            },
+        },
+        "provision_resource": {"result": {"success": True, "status": "active"}},
+        "claim_tenant": {"tenant_id": "tenant_auto", "approval_url": AUTO_CLAIM_URL},
+    }
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        """Answer as the hosted MCP endpoint or as the search endpoint.
+
+        Args:
+            request: The outgoing request.
+
+        Returns:
+            The scripted reply.
+        """
+        if str(request.url) == cohesivity.MCP_ENDPOINT:
+            tool = json.loads(request.content)["params"]["name"]
+            if tool == case.echoing_tool:
+                return _mcp_result({}, error=echo)
+            return _mcp_result(successes[tool])
+        return httpx.Response(case.edge_status, json=case.edge_body)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record the request and the reply served for it.
+
+        Args:
+            request: The outgoing request.
+
+        Returns:
+            The scripted reply.
+        """
+        sent.append(request)
+        response = answer(request)
+        replies.append(response.content)
+        return response
+
+    class _CohesivityClient(REAL_ASYNC_CLIENT):  # type: ignore[valid-type,misc]
+        """An ``AsyncClient`` whose transport is always the fake Cohesivity."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            """Force the fake transport regardless of what the caller asked for.
+
+            Args:
+                *args: Positional arguments forwarded to :class:`httpx.AsyncClient`.
+                **kwargs: Keyword arguments forwarded likewise, with ``transport``
+                    replaced.
+            """
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", _CohesivityClient)
+
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(
+            name="web_search", arguments={"query": "q", "num_results": 1}
+        ),
+    )
+    served = await mcp._mcp_server.request_handlers[CallToolRequest](request)
+
+    result = served.root
+    text = " ".join(getattr(block, "text", "") for block in result.content)
+    return f"isError={result.isError} {text}", sent, replies
+
+
+@pytest.mark.parametrize("case", AUTO_MODE_CASES, ids=AUTO_CASE_IDS)
+async def test_no_zero_setup_key_reaches_the_client_a_log_or_diagnostics(
+    case: AutoModeCase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Neither key handed out by the hosted MCP endpoint leaves the process.
+
+    Swept in what the client is served, in every log record, and in the
+    diagnostics stream. The remote end echoes keys back in error bodies and tool
+    errors, so absence means nothing quoted them, not that they were never there.
+
+    Args:
+        case: The failure to drive.
+        tmp_path: pytest's per-case directory.
+        monkeypatch: pytest's patcher.
+        caplog: pytest's log capture, opened to ``DEBUG`` for this package.
+        capsys: pytest's stream capture, which holds the diagnostics stream.
+    """
+    import logging
+
+    with caplog.at_level(logging.DEBUG, logger="kindly_web_search_mcp_server"):
+        client_text, _sent, _replies = await call_the_tool_in_auto_mode(
+            case, tmp_path, monkeypatch
+        )
+    streams = capsys.readouterr()
+    logged = [record.getMessage() for record in caplog.records]
+
+    assert "isError=True" in client_text
+    assert "Cohesivity" in client_text
+    assert case.expected in client_text
+    assert "web_search.start" in streams.err, "diagnostics were not on"
+    for secret in (AUTO_APP_KEY, AUTO_MGMT_KEY):
+        assert secret not in client_text
+        assert secret not in streams.err
+        assert secret not in streams.out
+        assert not [line for line in logged if secret in line]
+
+
+@pytest.mark.parametrize("case", AUTO_MODE_CASES, ids=AUTO_CASE_IDS)
+async def test_each_zero_setup_case_actually_puts_its_keys_in_flight(
+    case: AutoModeCase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control for the sweep above, as for the provider rows.
+
+    Both keys must have been served by the fake endpoint, and each must have
+    been sent where the case says -- otherwise an absence assertion would hold
+    for a provider that never obtained a key at all.
+
+    Args:
+        case: The failure to drive.
+        tmp_path: pytest's per-case directory.
+        monkeypatch: pytest's patcher.
+    """
+    _client_text, sent, replies = await call_the_tool_in_auto_mode(
+        case, tmp_path, monkeypatch
+    )
+
+    served = b" ".join(replies).decode()
+    assert AUTO_APP_KEY in served and AUTO_MGMT_KEY in served
+    if "search-url" in case.on_wire:
+        assert any(request.url.params.get("key") == AUTO_APP_KEY for request in sent), (
+            "no search carried the application key"
+        )
+    if "mcp-body" in case.on_wire:
+        assert any(AUTO_MGMT_KEY in request.content.decode() for request in sent), (
+            "no MCP call carried the management key"
+        )
 
 
 # --------------------------------------------------------------------------
