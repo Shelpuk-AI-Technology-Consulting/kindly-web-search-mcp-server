@@ -45,7 +45,8 @@ async def search_serper(
         return []
 
     api_key = _get_serper_api_key()
-    url = "https://google.serper.dev/search"
+    base_url = os.environ.get("SERPER_BASE_URL") or "https://google.serper.dev"
+    url = f"{base_url.rstrip('/')}/search"
     payload = {"q": query, "num": int(num_results)}
     headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
 

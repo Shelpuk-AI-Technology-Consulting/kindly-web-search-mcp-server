@@ -928,3 +928,7 @@ To use the prebuilt image instead of building, replace the `build:` and `context
 
 - Don’t commit API keys.
 - Prefer env-var expansion (Codex `env_vars`, Cursor `${env:...}`, Gemini `$VAR`, Claude Code `${VAR}`) instead of hardcoding secrets.
+
+## Search endpoint configuration
+
+Support any Serper.dev-compatible endpoint (like litescrape.com, serpbase.dev, serpensapi.org, and others). Set `SERPER_BASE_URL` to the provider base URL (without `/search`) and `SERPER_API_KEY` to its API key. Trailing slashes are removed and `/search` is appended automatically; the default remains `https://google.serper.dev`.
