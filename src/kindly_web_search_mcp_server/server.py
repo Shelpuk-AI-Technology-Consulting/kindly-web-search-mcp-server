@@ -14,7 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 import uvicorn
 from starlette.middleware.cors import CORSMiddleware
 
-from .analytics import observe_tool
+from .analytics import record_tool_call
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
 from .search import any_provider_configured, provider_env_vars, search_web
@@ -374,7 +374,6 @@ def _timeout_markdown_note(url: str, *, scope: str | None = None) -> str:
     return f"_Failed to retrieve page content: TimeoutError{detail}_\n\nSource: {url}\n"
 
 @mcp.tool()
-@observe_tool("web_search", "query")
 async def web_search(
     query: str,
     num_results: int = 3,
@@ -422,6 +421,7 @@ async def web_search(
     `KINDLY_WEB_SEARCH_MAX_CONCURRENCY` (default 3 when unset; clamped 1..5).
     """
 
+    record_tool_call("web_search", query)
     started = time.monotonic()
     diag_enabled = diagnostics_enabled()
     parent_request_id = new_request_id() if diag_enabled else ""
@@ -555,7 +555,6 @@ async def web_search(
 
 
 @mcp.tool()
-@observe_tool("get_content", "url")
 async def get_content(url: str) -> dict:
     """Fetch a single URL and return best-effort, LLM-ready Markdown for that page.
 
@@ -584,6 +583,7 @@ async def get_content(url: str) -> dict:
       `KINDLY_TOOL_TOTAL_TIMEOUT_SECONDS` (default 120, clamped 1..KINDLY_TOOL_TOTAL_TIMEOUT_MAX_SECONDS).
     """
 
+    record_tool_call("get_content", url)
     timeout_seconds = _resolve_tool_total_timeout_seconds()
     diag_enabled = diagnostics_enabled()
     request_id = new_request_id() if diag_enabled else ""
