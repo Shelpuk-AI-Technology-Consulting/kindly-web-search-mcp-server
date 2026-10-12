@@ -14,6 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 import uvicorn
 from starlette.middleware.cors import CORSMiddleware
 
+from .analytics import observe_tool
 from .models import GetContentResponse, WebSearchResponse
 from .content.resolver import resolve_page_content_markdown
 from .search import any_provider_configured, provider_env_vars, search_web
@@ -373,6 +374,7 @@ def _timeout_markdown_note(url: str, *, scope: str | None = None) -> str:
     return f"_Failed to retrieve page content: TimeoutError{detail}_\n\nSource: {url}\n"
 
 @mcp.tool()
+@observe_tool("web_search", "query")
 async def web_search(
     query: str,
     num_results: int = 3,
@@ -553,6 +555,7 @@ async def web_search(
 
 
 @mcp.tool()
+@observe_tool("get_content", "url")
 async def get_content(url: str) -> dict:
     """Fetch a single URL and return best-effort, LLM-ready Markdown for that page.
 

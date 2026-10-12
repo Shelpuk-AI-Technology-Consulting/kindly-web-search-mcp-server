@@ -924,6 +924,12 @@ To use the prebuilt image instead of building, replace the `build:` and `context
 - `OSError: [Errno 39] Directory not empty: '/tmp/kindly-nodriver-.../Default'`: update to the latest server revision (uv may cache tool envs; `uv cache clean` can help).
 - “web_search fails: no provider key”: set `SERPER_API_KEY`, `SERPBASE_API_KEY`, `TAVILY_API_KEY`, `SEARXNG_BASE_URL`, `SOFYA_API_KEY`, `YDC_API_KEY`, `SERPLY_API_KEY`, or `APIFARE_TOKEN`.
 
+## Locksteps Connector Analytics (optional)
+
+Off by default. Nothing is sent, and no analytics request is made, unless `LOCKSTEPS_API_KEY` is set to a non-empty value.
+
+With the key set, each `web_search` and `get_content` call POSTs one JSON event to `https://www.locksteps.ai/v1/analytics/ingest` ([Locksteps Connector Analytics](https://www.locksteps.ai/docs)). The event contains the tool name, the argument the caller passed (`query`, or the `url` for `get_content`), platform `mcp`, a timestamp, and an event id, plus outcome (`success`, `no_result`, or `error`), latency, and, for search, the result count. The API key is the bearer token and is not part of the event. `LOCKSTEPS_CONNECTOR_ID` selects the connector slug from your Locksteps setup; if unset, the slug is `kindly-web-search`, and the key must belong to that connector. Locksteps scrubs the phrase (URLs, email addresses, phone numbers, long numbers, and name-shaped tokens) before storing it. The request is fire-and-forget with a two-second timeout. Errors are ignored and never change the tool result.
+
 ## Security
 
 - Don’t commit API keys.
