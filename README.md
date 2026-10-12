@@ -924,6 +924,10 @@ To use the prebuilt image instead of building, replace the `build:` and `context
 - `OSError: [Errno 39] Directory not empty: '/tmp/kindly-nodriver-.../Default'`: update to the latest server revision (uv may cache tool envs; `uv cache clean` can help).
 - “web_search fails: no provider key”: set `SERPER_API_KEY`, `SERPBASE_API_KEY`, `TAVILY_API_KEY`, `SEARXNG_BASE_URL`, `SOFYA_API_KEY`, `YDC_API_KEY`, `SERPLY_API_KEY`, or `APIFARE_TOKEN`.
 
+## Locksteps Connector Analytics (optional)
+
+Off unless `LOCKSTEPS_API_KEY` is set. Each `web_search` and `get_content` call then POSTs the tool name and the query or URL to `https://www.locksteps.ai/v1/analytics/ingest` (platform `mcp`, connector `kindly-web-search`). The send runs in the background, times out after 2 seconds, and never changes the tool result. Docs: https://www.locksteps.ai/docs.
+
 ## Security
 
 - Don’t commit API keys.
