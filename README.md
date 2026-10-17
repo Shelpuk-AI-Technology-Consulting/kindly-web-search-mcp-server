@@ -127,6 +127,8 @@ Both probes validate the response (`text/markdown`, ≥1 KB, non-empty after san
 
 ## Requirements
 
+The search-provider requirement below applies to Kindly's `web_search`. You can use `get_content` on its own, including with the [optional Parallel search workflow](#optional-keyless-search-with-parallel).
+
 - A search provider (priority order): `SERPER_API_KEY` (recommended) → `SERPBASE_API_KEY` (SerpBase, Google results) → `TAVILY_API_KEY` → `SEARXNG_BASE_URL` (self-hosted SearXNG) → `SOFYA_API_KEY` → `YDC_API_KEY` (You.com) → `SERPLY_API_KEY` (Serply) → `APIFARE_TOKEN` (apifare, prepaid balance)
 - A Chromium-based browser installed on the same machine running the MCP client (Chrome/Chromium/Edge/Brave)
   - Without a browser: specialized sources (StackExchange, GitHub Issues/Discussions, Wikipedia, arXiv) still work well, but universal HTML `page_content` extraction may fail for other sites.
@@ -264,6 +266,47 @@ First-run note: the first `uvx` invocation may take 30–60 seconds while it bui
 
 Now configure your MCP client to run that command.
 Make sure your API keys are set in the same shell/OS environment that launches the MCP client (unless you paste them directly into the client config).
+
+## Optional: keyless search with Parallel
+
+Use [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) to find URLs, then Kindly's `get_content` to read the source conversation. Parallel provides free web search without an account or API key; anonymous searches use Fast mode. Free access has usage limits, with authenticated access available for higher-volume use.
+
+Your MCP client coordinates two separate servers. Kindly's own `web_search` still requires a configured search provider and keeps its existing provider selection order.
+
+For example, add both servers to Cursor's `.cursor/mcp.json` (merge with any existing `mcpServers` entries):
+
+```json
+{
+  "mcpServers": {
+    "parallel-search": {
+      "url": "https://search.parallel.ai/mcp"
+    },
+    "kindly-web-search": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/Shelpuk-AI-Technology-Consulting/kindly-web-search-mcp-server",
+        "kindly-web-search-mcp-server",
+        "start-mcp-server"
+      ]
+    }
+  }
+}
+```
+
+Install `uvx` as described in [Quickstart](#quickstart). If Kindly is already configured, keep its entry and add only `parallel-search`. For retrieval-only use, Kindly needs no search-provider variables; when none are set in the client's environment, it logs a startup warning about search configuration but still serves `get_content`. The browser and optional source credentials in [Requirements](#requirements) still apply to content retrieval.
+
+After enabling both servers, try this prompt:
+
+```text
+Use parallel-search's web_search to find a Stack Overflow question about
+cancelling other asyncio.gather tasks when one raises an exception.
+Then use kindly-web-search's get_content on the question URL to read
+the answers and explain how cancellation works.
+```
+
+Parallel's `web_search` returns source URLs in `results[].url`; pass a chosen URL to Kindly's `get_content(url)`. Kindly returns best-effort Markdown in `page_content`, using its [content resolver](#content-resolver) for supported sources. Select the server explicitly when both expose a tool named `web_search`.
 
 ## Client setup
 
