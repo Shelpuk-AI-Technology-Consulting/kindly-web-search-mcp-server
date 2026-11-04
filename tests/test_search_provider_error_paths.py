@@ -47,6 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kindly_web_search_mcp_server.models import WebSearchResult
 from kindly_web_search_mcp_server.search.apifare import ApifareError, search_apifare
+from kindly_web_search_mcp_server.search.firecrawl import (
+    FirecrawlError,
+    search_firecrawl,
+)
 from kindly_web_search_mcp_server.search.searxng import SearxngError, search_searxng
 from kindly_web_search_mcp_server.search.serpbase import SerpbaseError, search_serpbase
 from kindly_web_search_mcp_server.search.serper import SerperError, search_serper
@@ -152,6 +156,14 @@ PROVIDER_CASES: tuple[ProviderCase, ...] = (
         search_apifare,
         {"APIFARE_TOKEN": "test_key"},
         ApifareError,
+        httpx.HTTPStatusError,
+        httpx.ReadTimeout,
+    ),
+    ProviderCase(
+        "firecrawl",
+        search_firecrawl,
+        {"FIRECRAWL_API_KEY": "test_key"},
+        FirecrawlError,
         httpx.HTTPStatusError,
         httpx.ReadTimeout,
     ),

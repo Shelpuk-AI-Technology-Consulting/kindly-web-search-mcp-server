@@ -281,6 +281,56 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out[0].link, "https://serply.example")
         mock_apifare.assert_not_awaited()
 
+    async def test_uses_firecrawl_when_only_firecrawl_key(self) -> None:
+        """Select Firecrawl when it is the only configured provider"""
+        from kindly_web_search_mcp_server.search import PROVIDERS, search_web
+
+        # `patch.dict` restores the environment, so no key leaks into later tests.
+        with patch.dict(os.environ):
+            for provider in PROVIDERS:
+                os.environ.pop(provider.env_var, None)
+            os.environ["FIRECRAWL_API_KEY"] = "fc_test"
+
+            with patch(
+                "kindly_web_search_mcp_server.search.search_firecrawl", new_callable=AsyncMock
+            ) as mock_firecrawl:
+                mock_firecrawl.return_value = [
+                    WebSearchResult(title="F", link="https://firecrawl.example", snippet="sn", page_content="")
+                ]
+                out = await search_web("q", num_results=1)
+
+        self.assertEqual(out[0].link, "https://firecrawl.example")
+        mock_firecrawl.assert_awaited()
+
+    async def test_prefers_apifare_over_firecrawl_when_both_keys(self) -> None:
+        """Keep an existing apifare deployment on apifare after Firecrawl is added
+
+        Firecrawl is appended last, so setting its key beside any earlier
+        provider's must not change which provider serves the query. apifare is the
+        provider immediately before it in the registry, so this pins the one
+        adjacency the new entry could have broken.
+        """
+        from kindly_web_search_mcp_server.search import PROVIDERS, search_web
+
+        with patch.dict(os.environ):
+            for provider in PROVIDERS:
+                os.environ.pop(provider.env_var, None)
+            os.environ["APIFARE_TOKEN"] = "apifare_test"
+            os.environ["FIRECRAWL_API_KEY"] = "fc_test"
+
+            with patch(
+                "kindly_web_search_mcp_server.search.search_apifare", new_callable=AsyncMock
+            ) as mock_apifare, patch(
+                "kindly_web_search_mcp_server.search.search_firecrawl", new_callable=AsyncMock
+            ) as mock_firecrawl:
+                mock_apifare.return_value = [
+                    WebSearchResult(title="A", link="https://apifare.example", snippet="sn", page_content="")
+                ]
+                out = await search_web("q", num_results=1)
+
+        self.assertEqual(out[0].link, "https://apifare.example")
+        mock_firecrawl.assert_not_awaited()
+
     async def test_raises_when_no_provider_configured(self) -> None:
         from kindly_web_search_mcp_server.search import WebSearchProviderError, search_web
 
@@ -290,6 +340,7 @@ class TestSearchRouter(unittest.IsolatedAsyncioTestCase):
         os.environ.pop("SOFYA_API_KEY", None)
         os.environ.pop("YDC_API_KEY", None)
         os.environ.pop("SERPLY_API_KEY", None)
+        os.environ.pop("FIRECRAWL_API_KEY", None)
 
         with self.assertRaises(WebSearchProviderError):
             await search_web("q", num_results=1)

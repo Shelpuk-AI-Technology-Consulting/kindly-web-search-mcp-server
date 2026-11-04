@@ -170,6 +170,13 @@ DISCLOSURE_CASES: tuple[DisclosureCase, ...] = (
         f"apifare-{SENTINEL}",
         False,
     ),
+    DisclosureCase(
+        "firecrawl",
+        "Firecrawl",
+        {"FIRECRAWL_API_KEY": f"fc-{SENTINEL}"},
+        f"fc-{SENTINEL}",
+        False,
+    ),
 )
 
 CASE_IDS = tuple(case.name for case in DISCLOSURE_CASES)

@@ -418,6 +418,27 @@ the module would otherwise look arbitrary:
   documents no maximum, as Serply does, but because nothing is known about its
   bound at all; see the unverified-wire-format entry in §14.
 
+**Firecrawl, added after apifare, is appended last**, so a deployment that
+already had a key keeps its provider: `test_search_router.py::test_prefers_apifare_over_firecrawl_when_both_keys`
+pins the adjacent pair. It follows the same layout: `tests/test_firecrawl_unit.py`
+for the request and the parsing, written pytest-first, a row in the shared
+error-path table, a row in the credential-disclosure sweep, and
+`tests/test_firecrawl_live.py`, gated like `test_apifare_live.py`. Three choices
+in the module would otherwise look arbitrary:
+
+- **Only search is requested.** The v2 endpoint can also return each result's
+  page content when `scrapeOptions` are sent, but `page_content` is this
+  server's own job, done by the resolver chain for every provider. The request
+  case pins the whole JSON body (`query`, `limit`, `origin`), so starting to send
+  `scrapeOptions` has to be deliberate.
+- **`limit` is clamped to 100**, as You.com and Sofya clamp: the API documents
+  1-100 and answers a larger value with HTTP 400, which would turn a large
+  `num_results` into a failed search.
+- **An absent `data.web` key returns `[]`; a missing `data` object or a `web`
+  key of the wrong type raises**, the same split as apifare, so Firecrawl sits on
+  the raising side of the split §14 records. A list where the `data` object
+  should be (the older v1 envelope) raises rather than parsing as zero hits.
+
 **Launch-argument and sandbox decisions.** `_build_chromium_launch_args`,
 `_resolve_sandbox_enabled`, `_resolve_browser_executable_path`,
 `_resolve_start_retry_attempts`, `_resolve_snap_backoff_multiplier`,

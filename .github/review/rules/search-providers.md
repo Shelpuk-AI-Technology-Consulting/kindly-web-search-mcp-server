@@ -1,8 +1,8 @@
 # Rule: search providers (`search/`)
 
-Every search backend — Serper, SerpBase, Tavily, SearXNG, Sofya, You.com, Serply
-and apifare, in selection order — sits behind one registry. They share a single
-contract, which is why they share one rule file.
+Every search backend (Serper, SerpBase, Tavily, SearXNG, Sofya, You.com, Serply,
+apifare and Firecrawl, in selection order) sits behind one registry. They share a
+single contract, which is why they share one rule file.
 
 ## Adding a provider touches more than `PROVIDERS`
 
