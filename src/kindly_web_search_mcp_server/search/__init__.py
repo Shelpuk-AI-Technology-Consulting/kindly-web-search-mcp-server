@@ -1,4 +1,4 @@
-"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com → Serply → apifare).
+"""Search providers (Serper → SerpBase → Tavily → SearXNG → Sofya → You.com → Serply → apifare → Firecrawl).
 
 :data:`PROVIDERS` is the single source of truth for which providers exist, what
 configures them, and the order they are selected in. Adding a provider means
@@ -19,6 +19,7 @@ import httpx
 from ..models import WebSearchResult
 from ..utils.diagnostics import Diagnostics
 from .apifare import search_apifare
+from .firecrawl import search_firecrawl
 from .searxng import search_searxng
 from .serpbase import search_serpbase
 from .serper import search_serper
@@ -40,6 +41,7 @@ __all__ = [
     "any_provider_configured",
     "provider_env_vars",
     "search_apifare",
+    "search_firecrawl",
     "search_searxng",
     "search_serpbase",
     "search_serper",
@@ -165,6 +167,13 @@ PROVIDERS: tuple[SearchProviderSpec, ...] = (
     ),
     SearchProviderSpec(
         "apifare", "apifare", "APIFARE_TOKEN", "search_apifare", "has_apifare_token"
+    ),
+    SearchProviderSpec(
+        "firecrawl",
+        "Firecrawl",
+        "FIRECRAWL_API_KEY",
+        "search_firecrawl",
+        "has_firecrawl_key",
     ),
 )
 
